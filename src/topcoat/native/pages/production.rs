@@ -419,12 +419,33 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
     )
     .unwrap();
     for mount in ["", "/app", "/ACC"] {
-        let (status, html) = home_fixture::document(
+        let (status, initial_html) = home_fixture::document(
             &fixture,
             mount,
             &format!("/ACC/pages?move_test={page_id}"),
             true,
             None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let initial_document = scraper::Html::parse_document(&initial_html);
+        let list = initial_document
+            .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+            .next()
+            .unwrap();
+        let expanded = run_folder_tree_handler(&serde_json::json!({
+            "signals": home_fixture::page_signals(&initial_html),
+            "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
+            "target_kind": "toggle",
+            "folder_id": folder_id,
+        }));
+        let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+        let (status, html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages?move_test={page_id}"),
+            true,
+            Some(expanded_signals),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -752,8 +773,24 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
 #[tokio::test]
 async fn native_pages_move_action_is_read_only_for_viewers() {
     let fixture = home_fixture::fixture();
-    let (page_id, _, _, _, _) = seed_page_with_folders(&fixture, false);
-    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    let (page_id, _, folder_id, _, _) = seed_page_with_folders(&fixture, false);
+    let (status, initial_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let initial_document = scraper::Html::parse_document(&initial_html);
+    let list = initial_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap();
+    let expanded = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&initial_html),
+        "toggle_handler": list.value().attr("data-topcoat-on:click").unwrap(),
+        "target_kind": "toggle",
+        "folder_id": folder_id,
+    }));
+    let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+    let (status, html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(expanded_signals)).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
     let row_selector = format!("[data-native-page-row='{}']", page_id);
@@ -1556,6 +1593,9 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
         stale["requests"].as_array().unwrap().is_empty(),
         "a row from an earlier folder revision cannot dispatch a stale delete",
     );
+    let baseline = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+    }));
     let disposed = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&html),
         "delete_handler": handler,
@@ -1569,8 +1609,7 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
         "a disposed list owner cannot dispatch a queued delete",
     );
     assert_eq!(
-        disposed["signals"],
-        serde_json::Value::Object(home_fixture::page_signals(&html)),
+        disposed["signals"], baseline["signals"],
         "a disposed callback leaves list-owned state unchanged",
     );
     let reply = serde_json::to_value(
@@ -1586,6 +1625,10 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
         "signals": home_fixture::page_signals(&html),
         "delete_handler": handler,
         "target_kind": "delete",
+        "revision_binding": error
+            .value()
+            .attr("data-topcoat-bind:data-revision")
+            .unwrap(),
         "expanded_binding": row
             .value()
             .attr("data-topcoat-bind:aria-expanded")

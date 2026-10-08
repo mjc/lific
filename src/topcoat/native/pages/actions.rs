@@ -1,7 +1,10 @@
 //! Authenticated native page writes. Services own authorization and SQLite.
 use super::super::{context, session};
 use crate::{
-    db::models::{CreateFolder, CreatePage, Folder, Page, UpdatePage},
+    db::{
+        models::{CreateFolder, CreatePage, Folder, Page, UpdatePage},
+        queries::ResourceTable,
+    },
     error::LificError,
     realtime::RealtimeHub,
 };
@@ -147,6 +150,53 @@ pub(super) async fn create_folder(
             }
         },
         folder_outcome,
+    ))
+}
+
+#[procedure("/__native_pages/delete-folder")]
+pub(super) async fn delete_folder(
+    cx: &Cx,
+    account: i64,
+    project_id: i64,
+    folder_id: i64,
+) -> topcoat::Result<FolderOutcome> {
+    let caller = session::read(cx, context::caller(cx))?;
+    match crate::api::require_user(&caller.identity) {
+        Ok(user) if user.id == account => {}
+        Ok(_) => return Ok(failed_folder("forbidden")),
+        Err(LificError::Forbidden(message)) if message == "authentication required" => {
+            return Ok(failed_folder("reauth"));
+        }
+        Err(error) => {
+            return Ok(failed_folder(&classify(error).status.unwrap_err()));
+        }
+    }
+    let result = caller
+        .scope(async {
+            crate::services::structure::commit_delete(
+                context::db(cx),
+                app_context::<RealtimeHub>(cx),
+                &caller.identity,
+                ResourceTable::Folders,
+                folder_id,
+                |conn, owning_project_id| {
+                    if owning_project_id != project_id {
+                        return Err(LificError::Forbidden(
+                            "This folder belongs to a different project.".into(),
+                        ));
+                    }
+                    crate::db::queries::delete_folder(conn, folder_id)
+                },
+            )
+        })
+        .await;
+    Ok(result.map_or_else(
+        |error| failed_folder(&classify(error).status.unwrap_err()),
+        |_| FolderOutcome {
+            status: Ok("deleted".into()),
+            folder_id: None,
+            folder_name: None,
+        },
     ))
 }
 

@@ -1,5 +1,5 @@
 //! New-folder menu, inline composer, and owner-scoped handlers for Pages.
-use super::super::super::runtime::whitespace::StrEcmaTrimExt;
+use super::super::super::runtime::{signal_vec::SignalVecExt, whitespace::StrEcmaTrimExt};
 use super::super::browser;
 use super::actions::create_folder;
 use topcoat::{
@@ -43,9 +43,10 @@ pub(super) fn views<'a>(
     project_id: i64,
     folder: Signal<String>,
     revision: Signal<usize>,
+    expanded: Signal<Vec<i64>>,
     state: State,
 ) -> Views<'a> {
-    let create = create_attributes(cx, account, project_id, state.clone(), revision);
+    let create = create_attributes(cx, account, project_id, state.clone(), revision, expanded);
     let menu_toggle = menu_toggle_attributes(cx, state.menu_open.clone());
     let menu_item = menu_item_attributes(
         cx,
@@ -218,6 +219,7 @@ fn create_attributes(
     project_id: i64,
     state: State,
     revision: Signal<usize>,
+    expanded: Signal<Vec<i64>>,
 ) -> Attributes {
     let State {
         name,
@@ -253,6 +255,9 @@ fn create_attributes(
                                 busy.set(false);
                                 name.set("".to_owned());
                                 if outcome.status.is_ok() {
+                                    if outcome.folder_id.is_some() {
+                                        expanded.push(outcome.folder_id.unwrap());
+                                    }
                                     revision.increment();
                                 } else {
                                     error.set(outcome.status.unwrap_err());

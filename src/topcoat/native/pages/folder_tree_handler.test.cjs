@@ -34,8 +34,24 @@ const readExpanded = input.expanded_binding
 const readRevision = input.revision_binding
   ? vm.runInNewContext(`cx => (${input.revision_binding})`, context)
   : null;
+const readErrorHidden = input.error_binding
+  ? vm.runInNewContext(`cx => (${input.error_binding})`, context)
+  : null;
 let deleteStopped = false;
-const event = (type, target = {}, currentTarget = target) => {
+const element = () => ({
+  getAttribute(name) {
+    if (name === 'data-folder-id') return String(input.folder_id || '');
+    if (name === 'data-folder-name') return input.folder_name || '';
+    if (name === 'data-folder-revision') return String(input.folder_revision || 0);
+    return null;
+  },
+  closest(selector) {
+    if (input.target_kind === 'delete' && selector === '[data-native-page-folder-delete]') return this;
+    if (input.target_kind === 'toggle' && selector === '[data-native-page-folder-toggle]') return this;
+    return null;
+  },
+});
+const event = (type, target = element(), currentTarget = target) => {
   const nativeEvent = new context.Event(type);
   Object.assign(nativeEvent, {
     key: 'Enter',
@@ -53,8 +69,9 @@ const flush = async () => {
 };
 
 async function run() {
-  const expandedBefore = readExpanded ? unbox(readExpanded(cx)) : null;
-  const revisionBefore = readRevision ? unbox(readRevision(cx)) : null;
+  if (input.dispose_before) fixture.controller.abort();
+  const expandedBefore = readExpanded ? unbox(readExpanded(cx).dehydrate()) === 'true' : null;
+  const revisionBefore = readRevision ? Number(unbox(readRevision(cx).dehydrate())) : null;
   if (input.toggle_handler) {
     const toggleEvent = event('click');
     await fixture.handler(input.toggle_handler)(cx.event(toggleEvent));
@@ -67,6 +84,9 @@ async function run() {
     const deleteEvent = event('click');
     await fixture.handler(input.delete_handler)(cx.event(deleteEvent));
     deleteStopped = deleteEvent.stopped;
+    if (input.repeat_delete) {
+      await fixture.handler(input.delete_handler)(cx.event(event('click')));
+    }
     await flush();
     if (input.scenario === 'pending') {
       if (typeof finishRequest !== 'function') throw new Error('delete procedure did not start');
@@ -74,8 +94,8 @@ async function run() {
       await flush();
     }
   }
-  const expandedAfter = readExpanded ? unbox(readExpanded(cx)) : null;
-  const revisionAfter = readRevision ? unbox(readRevision(cx)) : null;
+  const expandedAfter = readExpanded ? unbox(readExpanded(cx).dehydrate()) === 'true' : null;
+  const revisionAfter = readRevision ? Number(unbox(readRevision(cx).dehydrate())) : null;
   const signals = Object.fromEntries(Object.keys(input.signals)
     .map(id => [id, cx.signal(id).get().dehydrate()]));
   process.stdout.write(JSON.stringify({
@@ -83,6 +103,7 @@ async function run() {
     expanded_after: expandedAfter,
     revision_before: revisionBefore,
     revision_after: revisionAfter,
+    error_hidden: readErrorHidden ? unbox(readErrorHidden(cx).dehydrate()) : null,
     stopped: deleteStopped,
     requests,
     signals,
