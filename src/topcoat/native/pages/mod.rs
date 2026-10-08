@@ -2,6 +2,7 @@
 mod actions;
 mod activity;
 mod editor_state;
+mod export;
 mod folder_create;
 mod folder_tree;
 mod labels;

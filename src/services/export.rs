@@ -165,17 +165,26 @@ pub(crate) async fn single_file_response(
     fallback_name: &'static str,
     permit: OwnedSemaphorePermit,
 ) -> Result<axum::response::Response, LificError> {
-    let (prepared, permit) = match format {
-        "json" => blocking_export(permit, move || PreparedExport::json(&bundle)).await?,
+    let (prepared, permit) = prepare_single_file(bundle, format, fallback_name, permit).await?;
+    stream_response(prepared, permit).await
+}
+
+async fn prepare_single_file(
+    bundle: crate::export::ExportBundle,
+    format: &str,
+    fallback_name: &'static str,
+    permit: OwnedSemaphorePermit,
+) -> Result<(PreparedExport, OwnedSemaphorePermit), LificError> {
+    match format {
+        "json" => blocking_export(permit, move || PreparedExport::json(&bundle)).await,
         "markdown" => {
             blocking_export(permit, move || {
                 PreparedExport::markdown(bundle, fallback_name)
             })
-            .await?
+            .await
         }
         _ => unreachable!("format was validated before export"),
-    };
-    stream_response(prepared, permit).await
+    }
 }
 
 pub(crate) async fn stream_response(
@@ -273,6 +282,59 @@ pub(crate) fn stream_body(
 pub(crate) fn content_disposition(filename: &str) -> Result<HeaderValue, LificError> {
     HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
         .map_err(|e| LificError::Internal(format!("invalid content-disposition header: {e}")))
+}
+
+fn authorize_page_snapshot(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+    page_id: i64,
+) -> Result<(), LificError> {
+    let fresh = crate::auth::refresh_identity(conn, identity.as_ref())?;
+    let project_id = crate::db::queries::page_project_id(conn, page_id)?;
+    authz::require_project_or_workspace_role_conn(conn, &fresh, project_id, Role::Viewer)
+}
+
+/// Resolve the page once, then reauthorize that stable row at every export boundary.
+pub(crate) async fn page(
+    db: DbPool,
+    identity: &Option<ResolvedIdentity>,
+    identifier: String,
+    format: Option<String>,
+) -> Result<axum::response::Response, LificError> {
+    if let Some(format) = format.as_deref()
+        && !matches!(format, "json" | "markdown")
+    {
+        return Err(LificError::BadRequest(
+            "invalid export format. Expected 'markdown' or 'json'".into(),
+        ));
+    }
+    let page_id = {
+        let conn = db.read()?;
+        let tx = conn.unchecked_transaction()?;
+        let page_id = crate::db::queries::resolve_page_identifier(&tx, &identifier)?;
+        authorize_page_snapshot(&tx, identity, page_id)?;
+        tx.commit()?;
+        page_id
+    };
+    let slot = db.acquire_export_slot()?;
+    let work_db = db.clone();
+    let work_identity = identity.clone();
+    let (bundle, slot) = blocking_export(slot, move || {
+        let conn = work_db.read()?;
+        let tx = conn.unchecked_transaction()?;
+        authorize_page_snapshot(&tx, &work_identity, page_id)?;
+        let bundle = crate::export::export_page_snapshot_by_id(&tx, page_id)?;
+        tx.commit()?;
+        Ok(bundle)
+    })
+    .await?;
+    let format = format.unwrap_or_else(|| "markdown".to_owned());
+    let (prepared, slot) = prepare_single_file(bundle, &format, "page.md", slot).await?;
+    {
+        let conn = db.read()?;
+        authorize_page_snapshot(&conn, identity, page_id)?;
+    }
+    stream_response(prepared, slot).await
 }
 
 /// Resolve current Viewer authority before acquiring shared export capacity.
