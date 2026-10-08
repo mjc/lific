@@ -1,6 +1,10 @@
 //! Native Pages browsing and project page detail.
 mod actions;
+mod status;
 mod view;
+
+#[cfg(test)]
+mod production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};
