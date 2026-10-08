@@ -263,7 +263,7 @@ fn level<'view, 'data>(
             }
             let folder_row = row(
                 cx,
-                &folder,
+                folder,
                 state.expanded_signal.clone(),
                 state.can_edit,
                 state.revision,
