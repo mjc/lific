@@ -96,12 +96,15 @@ async function run() {
   }
   const expandedAfter = readExpanded ? unbox(readExpanded(cx).dehydrate()) === 'true' : null;
   const revisionAfter = readRevision ? Number(unbox(readRevision(cx).dehydrate())) : null;
+  const currentRevision = readRevision
+    ? unbox(readRevision(cx).dehydrate())
+    : input.folder_revision || 0;
   const signals = Object.fromEntries(Object.keys(input.signals)
     .map(id => [id, cx.signal(id).get().dehydrate()]));
 
-  const delegateHandler = input.toggle_handler || input.delete_handler || input.keydown_handler;
-  if (delegateHandler) {
-    const dispatchFolderId = async (folderId, handler = delegateHandler, type = 'click') => {
+  const toggleHandler = input.toggle_handler || input.keydown_handler;
+  if (toggleHandler) {
+    const dispatchFolderId = async (folderId, handler = toggleHandler, type = 'click') => {
       const diagnostic = handlerFixture(input.signals, async () => ({
         ok: true,
         json: async () => input.reply,
@@ -112,7 +115,7 @@ async function run() {
       const target = {
         getAttribute(name) {
           if (name === 'data-folder-id') return folderId;
-          if (name === 'data-folder-revision') return String(input.folder_revision || 0);
+          if (name === 'data-folder-revision') return String(currentRevision);
           return null;
         },
         closest(selector) {
@@ -127,7 +130,7 @@ async function run() {
         stopPropagation() {},
         preventDefault() {},
       });
-      await diagnostic.handler(delegateHandler)(diagnostic.cx.event(nativeEvent));
+      await diagnostic.handler(handler)(diagnostic.cx.event(nativeEvent));
       return {before, after: JSON.stringify(snapshot())};
     };
     const largeState = await dispatchFolderId('9007199254740993');

@@ -1354,11 +1354,23 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
             .next()
             .unwrap()
-            .value()
-            .attr("data-topcoat-on:click")
-            .unwrap(),
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap(),
         "target_kind": "toggle",
         "folder_id": child_folder,
+        "expanded_binding": child_closed_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{child_folder}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:aria-expanded")
+            .unwrap(),
     }));
     assert_eq!(child_reopened["expanded_after"], true);
     let child_reopened_signals = serde_json::from_value(child_reopened["signals"].clone()).unwrap();
@@ -1729,10 +1741,22 @@ async fn native_pages_folder_filter_renders_focused_subtree_and_valid_tree_order
             .next()
             .unwrap()
             .value()
-            .attr("data-topcoat-on:click")
-            .unwrap(),
+        .attr("data-topcoat-on:click")
+        .unwrap(),
         "target_kind": "toggle",
         "folder_id": child_folder,
+        "expanded_binding": child_closed_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{child_folder}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:aria-expanded")
+            .unwrap(),
     }));
     assert_eq!(child_reopened["expanded_after"], true);
     let reopened_signals = serde_json::from_value(child_reopened["signals"].clone()).unwrap();
@@ -1938,7 +1962,10 @@ async fn native_pages_folder_tree_is_visible_but_read_only_for_viewers() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(outcome["v"]["status"]["err"], "forbidden");
+    assert_eq!(
+        outcome["v"]["status"]["err"], "requires at least 'maintainer' access to this project",
+        "the canonical procedure returns its client-safe authority error",
+    );
     assert!(
         queries::list_folders(&fixture.db.read().unwrap(), project_id)
             .unwrap()
