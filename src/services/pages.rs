@@ -183,18 +183,62 @@ pub(crate) fn commit_update(
     realtime: &RealtimeHub,
     identity: &Option<ResolvedIdentity>,
     id: i64,
-    mut input: UpdatePage,
+    input: UpdatePage,
+) -> Result<Page, LificError> {
+    commit_update_with(db, realtime, identity, id, |_| input)
+}
+
+pub(crate) enum PageLabelChange<'a> {
+    Attach(&'a str),
+    Remove(&'a str),
+}
+
+/// Apply one label intent to the current set, preserving labels attached by
+/// other writers and avoiding a sequence conflict over unrelated page fields.
+pub(crate) fn commit_label_change(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+    change: PageLabelChange<'_>,
+) -> Result<Page, LificError> {
+    commit_update_with(db, realtime, identity, id, |current| {
+        let mut labels = current.labels.clone();
+        match change {
+            PageLabelChange::Attach(name) => {
+                if !labels.iter().any(|label| label == name) {
+                    labels.push(name.to_owned());
+                }
+            }
+            PageLabelChange::Remove(name) => labels.retain(|label| label != name),
+        }
+        UpdatePage {
+            labels: Some(labels),
+            ..Default::default()
+        }
+    })
+}
+
+fn commit_update_with(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+    patch: impl FnOnce(&Page) -> UpdatePage,
 ) -> Result<Page, LificError> {
     let project_id = {
         let conn = db.read()?;
         crate::db::queries::get_page(&conn, id)?.project_id
     };
     require_page_role(db, identity, project_id, Role::Maintainer)?;
-    let user = crate::api::require_user(identity)?;
-    input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
+    crate::api::require_user(identity)?;
     let page = db.transaction(|conn| {
-        let project_id = crate::db::queries::get_page(conn, id)?.project_id;
-        require_page_role_conn(conn, identity, project_id, Role::Maintainer)?;
+        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+        let user = crate::api::require_user(&identity)?;
+        let current = crate::db::queries::get_page(conn, id)?;
+        require_page_role_conn(conn, &identity, current.project_id, Role::Maintainer)?;
+        let mut input = patch(&current);
+        input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         crate::db::queries::update_page(conn, id, &input)
     })?;
     publish_project_update(realtime, &page);
