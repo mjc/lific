@@ -214,6 +214,114 @@ fn assert_native_initial_html(html: &str, prefix: &str, issue: &Issue) -> Html {
 }
 
 #[tokio::test]
+async fn native_issue_breadcrumbs_preserve_scope_navigation_and_identifier_copy() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = html(response).await;
+        let document = Html::parse_document(&html);
+        let breadcrumb = document
+            .select(&Selector::parse("nav[aria-label='Breadcrumb']").unwrap())
+            .next()
+            .expect("IssueDetail renders its existing breadcrumb trail");
+        let labels = breadcrumb
+            .select(&Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
+            .map(|item| item.text().collect::<String>().trim().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["ACC", "Issues", "ACC-1"]);
+        let project = breadcrumb
+            .select(&Selector::parse("a[title='ACC']").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(
+            project.attr("href"),
+            Some(format!("{mount}/ACC/overview").as_str())
+        );
+        let list = breadcrumb
+            .select(&Selector::parse("#native-issue-list-return-ACC-1").unwrap())
+            .next()
+            .expect("Escape retains the real list-return anchor");
+        assert!(list.attr("data-topcoat-link").is_some());
+        assert_eq!(
+            list.attr("href"),
+            Some(format!("{mount}/ACC/issues").as_str())
+        );
+        let current = breadcrumb
+            .select(&Selector::parse("[aria-current='page']").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(current.text().collect::<String>().trim(), "ACC-1");
+        let copy = breadcrumb_copy_input(&html, &document, "baseline");
+        let copied = home_fixture::evaluate_handler(
+            "src/topcoat/native/breadcrumbs_handler.test.cjs",
+            &copy,
+        );
+        assert_eq!(copied["copied"], serde_json::json!(["ACC", "ACC-1"]));
+        let destination = home_fixture::evaluate_handler(
+            "src/topcoat/native/breadcrumbs_handler.test.cjs",
+            &serde_json::json!({
+                "phase":"issue_list_return",
+                "signals":home_fixture::page_signals(&html),
+                "return_mount":list.attr("data-topcoat-on:mount").unwrap(),
+                "return_href_binding":list.attr("data-topcoat-bind:href").unwrap(),
+                "return_title_binding":list.attr("data-topcoat-bind:title").unwrap(),
+                "list_href":format!("{mount}/ACC/issues"),
+                "board_href":format!("{mount}/ACC/board"),
+            }),
+        );
+        assert_eq!(destination["passed"], true);
+    }
+}
+
+fn breadcrumb_copy_input(html: &str, document: &Html, phase: &str) -> serde_json::Value {
+    let button = |label: &str| {
+        document
+            .select(&Selector::parse(&format!("button[aria-label='Copy {label}']")).unwrap())
+            .next()
+            .expect("the breadcrumb exposes its emitted identifier copy handler")
+    };
+    let project = button("ACC");
+    let identifier = button("ACC-1");
+    let icon_bindings = identifier
+        .children()
+        .filter_map(scraper::ElementRef::wrap)
+        .filter(|child| child.value().name() == "span")
+        .map(|child| child.attr("data-topcoat-bind:hidden"))
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "phase":phase,
+        "signals":home_fixture::page_signals(html),
+        "project_handler":project.attr("data-topcoat-on:click").unwrap(),
+        "identifier_handler":identifier.attr("data-topcoat-on:click").unwrap(),
+        "project_id":"ACC",
+        "identifier":"ACC-1",
+        "copy_hidden_binding":icon_bindings.first().copied().flatten(),
+        "check_hidden_binding":icon_bindings.get(1).copied().flatten(),
+    })
+}
+
+#[tokio::test]
+async fn native_issue_breadcrumb_copy_matches_main_feedback_and_lifecycle() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "/app").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = html(response).await;
+    let document = Html::parse_document(&html);
+    let mut input = breadcrumb_copy_input(&html, &document, "main_parity");
+    input["account_id"] = serde_json::json!(
+        queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+            .unwrap()
+            .id
+    );
+    let output =
+        home_fixture::evaluate_handler("src/topcoat/native/breadcrumbs_handler.test.cjs", &input);
+    assert_eq!(output["passed"], true);
+}
+
+#[tokio::test]
 async fn native_issue_production_maintainer_get_renders_initial_controls_at_every_mount() {
     // Missing boundary: the normal issue route must resolve data and role in
     // Rust, then compose the native editor and Markdown document on initial GET.

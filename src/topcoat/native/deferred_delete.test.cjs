@@ -84,6 +84,12 @@ function fixture() {
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted label updates.');
   };
+  const errorToast=(requestedAccount='7',accepted=true)=>{
+    const event=new Event('lific:native-toast-error',{cancelable:true});
+    event.detail=base.hydrate(input.toast_errors[requestedAccount]);
+    window.dispatchEvent(event);
+    assert.equal(event.defaultPrevented,accepted,'Only the current account owner accepts the error toast.');
+  };
   const advance=amount=>{
     const target=now+amount;
     while(true){const next=[...timers].filter(([,timer])=>timer.at<=target).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;timers.delete(next[0]);now=next[1].at;next[1].callback();}
@@ -107,12 +113,36 @@ function fixture() {
   const finishLabels=async(outcome='saved')=>{pending.shift().resolve({ok:true,json:async()=>input.label_replies[outcome]});await flush();};
   const texts=()=>signalIds.map(id=>base.signal(id).get().toString());
   const snapshot=()=>Object.fromEntries(signalIds.map(id=>[id,base.signal(id).get().dehydrate()]));
-  return {schedule,assignModule,updateLabels,advance,replace,finish,finishModule,finishLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,updateLabels,errorToast,advance,replace,finish,finishModule,finishLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
 if(input.probe_only){
   process.stdout.write(JSON.stringify(fixture().snapshot()));
   return;
 }
+test('Account errors use the shared expiring toast without Undo or network work',async()=>{
+  const f=fixture();f.errorToast();await flush();
+  assert.ok(f.texts().includes("Couldn't copy to clipboard"));
+  assert.ok(f.texts().includes('error'));
+  assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
+  f.click(f.owner.toasts[0].undo);await flush();
+  assert.equal(f.calls.length,0);assert.deepEqual(f.navigations,[]);
+  await tick(f,7999);
+  assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
+  await tick(f,1);
+  assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+});
+test('Account errors reject foreign and retired owners and transfer their deadline',async()=>{
+  const f=fixture();const baseline=f.snapshot();f.errorToast('8',false);
+  assert.deepEqual(f.snapshot(),baseline);
+  f.errorToast();await tick(f,2000);f.replace({key:'7:OTHER'});
+  await tick(f,5999);
+  assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
+  await tick(f,1);
+  assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+  f.replace({key:'8:OTHER',mount:false});const retired=f.snapshot();
+  f.errorToast('7',false);assert.deepEqual(f.snapshot(),retired);
+  assert.equal(f.calls.length,0);assert.deepEqual(f.navigations,[]);
+});
 test('Label writes start immediately without an Undo action',async()=>{
   const f=fixture();f.updateLabels();await flush();
   assert.equal(f.calls.length,1);
