@@ -27,15 +27,18 @@ pub(crate) const TOAST_CAPACITY: usize = 4;
 
 #[record]
 #[derive(Clone)]
-pub(crate) struct ToastErrorRequest {
+pub(crate) struct ToastRequest {
     pub account_id: i64,
     pub message: String,
 }
 
+pub(crate) type ToastErrorRequest = ToastRequest;
+type ToastRequestSurrogate = <ToastRequest as Surrogated>::Surrogate;
+
 type OwnerHandlesSurrogate<'a> = <&'a OwnerHandles as Surrogated>::Surrogate;
 type ModuleRequestSurrogate = <ModuleRequest as Surrogated>::Surrogate;
 type ModuleAssignmentReplySurrogate = <ModuleAssignmentReply as Surrogated>::Surrogate;
-type ToastErrorRequestSurrogate = <ToastErrorRequest as Surrogated>::Surrogate;
+type ToastErrorRequestSurrogate = ToastRequestSurrogate;
 
 // Each owner supplies handles once; the shared factory contains the Rust-authored actions.
 #[record]
@@ -300,6 +303,9 @@ pub(crate) fn handler_factory() -> Js {
         let _error_message = message.clone();
         let _error_kind = kind.clone();
         let _error_remaining = remaining.clone();
+        let _success_message = message.clone();
+        let _success_kind = kind.clone();
+        let _success_remaining = remaining.clone();
         let _allocate_module_request = module_request.clone();
         let _close_module_request = module_request.clone();
         let _undo_module_request = module_request;
@@ -773,6 +779,18 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
+        let _success_accept = |request: ToastRequestSurrogate| {
+            if request.account_id != account_id {
+                false
+            } else {
+                let index = raw!("${_allocate}()", 0_usize);
+                _success_message.index(index).set(request.message);
+                _success_kind.index(index).set("success".to_owned());
+                _success_remaining.index(index).set(5_000.0_f64);
+                raw!("${_timer}(${index});", ());
+                true
+            }
+        };
         let _failure_toast = |label: StringSurrogate, _restore: StringSurrogate| {
             let index = raw!("${_allocate}()", 0_usize);
             _failure_toast_message
@@ -944,6 +962,9 @@ pub(crate) fn handler_factory() -> Js {
             owner.nativePageLabelNetworkFailure = ${_page_label_network_failure};
             window.addEventListener('lific:native-toast-error',event=>{
                 if (${_error_accept}(event.detail).toString()==='true') event.preventDefault();
+            },{signal:cx.abortSignal});
+            window.addEventListener('lific:native-toast-success',event=>{
+                if (${_success_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-label-request',event=>{
                 if (${_label_accept}(event.detail).toString()==='true') event.preventDefault();

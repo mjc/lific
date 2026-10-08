@@ -85,6 +85,14 @@ pub(crate) fn delete_confirm_message(reference_count: usize) -> String {
     format!("Removes the file and its {reference_count} reference{suffix}.")
 }
 
+pub(crate) fn delete_success_message(reference_count: usize) -> String {
+    if reference_count == 0 {
+        return "File deleted.".into();
+    }
+    let suffix = if reference_count == 1 { "" } else { "s" };
+    format!("File deleted, along with {reference_count} reference{suffix}.")
+}
+
 pub(crate) fn can_delete(
     uploader_id: Option<i64>,
     viewer_id: Option<i64>,
@@ -164,6 +172,19 @@ mod tests {
         assert!(can_delete(None, Some(2), true, false));
         assert!(can_delete(None, Some(2), false, true));
         assert!(!can_delete(Some(8), Some(2), false, false));
+    }
+
+    #[test]
+    fn delete_success_message_matches_main_reference_copy() {
+        assert_eq!(delete_success_message(0), "File deleted.");
+        assert_eq!(
+            delete_success_message(1),
+            "File deleted, along with 1 reference."
+        );
+        assert_eq!(
+            delete_success_message(4),
+            "File deleted, along with 4 references."
+        );
     }
 
     #[test]
