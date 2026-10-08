@@ -417,12 +417,24 @@ fn roster_action_attrs(
         } else {
             action.clone()
         };
-        let grants_access = operation == "promote" || operation == "reactivate";
-        if busy_id.get() != 0
-            || (grants_access
-                && (reauth_id.get() != 0 || settings_saving.get() || settings_confirmation.get()))
-        {
+        let grants_access = if operation == "promote" {
+            true
+        } else {
+            operation == "reactivate"
+        };
+        if busy_id.get() != 0 {
             return;
+        }
+        if grants_access {
+            if reauth_id.get() != 0 {
+                return;
+            }
+            if settings_saving.get() {
+                return;
+            }
+            if settings_confirmation.get() {
+                return;
+            }
         }
         busy_id.set(user_id);
         pending_id.set(0_i64);
@@ -442,8 +454,12 @@ fn roster_action_attrs(
             }
             busy_id.set(0_i64);
             if result.0 {
-                let was_active_admin = is_admin.get() && is_active.get();
-                let is_active_admin = result.1 && result.2;
+                let was_active_admin = if is_admin.get() {
+                    is_active.get()
+                } else {
+                    false
+                };
+                let is_active_admin = if result.1 { result.2 } else { false };
                 if was_active_admin != is_active_admin {
                     admin_count.set(if is_active_admin {
                         admin_count.get() + 1
@@ -459,16 +475,26 @@ fn roster_action_attrs(
                     reauth_error.set("".to_owned());
                 }
                 row_error.set("".to_owned());
-            } else if result.3 == recent_auth_required
-                && (operation == "promote" || operation == "reactivate")
-            {
-                reauth_id.set(user_id);
-                reauth_action.set(operation.clone());
-                reauth_password.set("".to_owned());
-                reauth_error.set("".to_owned());
             } else {
-                row_error_id.set(user_id);
-                row_error.set(result.3);
+                if result.3 == recent_auth_required {
+                    if operation == "promote" {
+                        reauth_id.set(user_id);
+                        reauth_action.set(operation.clone());
+                        reauth_password.set("".to_owned());
+                        reauth_error.set("".to_owned());
+                    } else if operation == "reactivate" {
+                        reauth_id.set(user_id);
+                        reauth_action.set(operation.clone());
+                        reauth_password.set("".to_owned());
+                        reauth_error.set("".to_owned());
+                    } else {
+                        row_error_id.set(user_id);
+                        row_error.set(result.3);
+                    }
+                } else {
+                    row_error_id.set(user_id);
+                    row_error.set(result.3);
+                }
             }
         };
         raw!(
@@ -535,20 +561,27 @@ fn confirm_member_reauth_attrs(
         let action_user_id = user_id;
         let action = reauth_action.get();
         let password = reauth_password.get();
-        if reauth_id.get() != action_user_id
-            || action_user_id == 0
-            || password.is_empty()
-            || reauth_busy.get()
-        {
+        if reauth_id.get() != action_user_id {
+            return;
+        }
+        if action_user_id == 0 {
+            return;
+        }
+        if password.is_empty() {
+            return;
+        }
+        if reauth_busy.get() {
             return;
         }
         reauth_busy.set(true);
         reauth_error.set("".to_owned());
         let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
         let _failed = || {
-            if raw!("${_live}()", true) && reauth_id.get() == action_user_id {
-                reauth_busy.set(false);
-                reauth_error.set("Couldn't confirm your password. Try again.".to_owned());
+            if raw!("${_live}()", true) {
+                if reauth_id.get() == action_user_id {
+                    reauth_busy.set(false);
+                    reauth_error.set("Couldn't confirm your password. Try again.".to_owned());
+                }
             }
         };
         let _confirm = async || {
@@ -562,8 +595,12 @@ fn confirm_member_reauth_attrs(
             }
             reauth_busy.set(false);
             if result.0 {
-                let was_active_admin = is_admin.get() && is_active.get();
-                let is_active_admin = result.1 && result.2;
+                let was_active_admin = if is_admin.get() {
+                    is_active.get()
+                } else {
+                    false
+                };
+                let is_active_admin = if result.1 { result.2 } else { false };
                 if was_active_admin != is_active_admin {
                     admin_count.set(if is_active_admin {
                         admin_count.get() + 1
@@ -741,6 +778,11 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
     };
     let people_count = roster.len();
     let singular_people = people_count == 1;
+    let roster_admin_count = roster_state.admin_count.clone();
+    let roster_rows = roster
+        .iter()
+        .map(|user| roster_row(cx, account, user, &roster_state))
+        .collect::<Vec<_>>();
     Ok(view! {
         cx =>
         <div class="flex-1 overflow-y-auto">
@@ -966,14 +1008,14 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
                             "people"
                         }
                         " on this instance · "
-                        $(roster_state.admin_count.get())
+                        $(roster_admin_count.get())
                         " admin."
                     </p>
                     <div
                         class="overflow-hidden rounded-xl bg-[var(--surface)] shadow-sm"
                     >
-                        for user in roster.iter() {
-                            (roster_row(cx, account, user, &roster_state))
+                        for row in roster_rows {
+                            (row)
                         }
                     </div>
                     <p
@@ -987,10 +1029,23 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
     })
 }
 
-fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) -> BoxView<'_> {
+fn roster_row<'a>(
+    cx: &'a Cx,
+    account: i64,
+    user: &RosterEntry,
+    state: &RosterState,
+) -> BoxView<'a> {
     let id = user.id;
     let display_name = user.display_name.clone();
     let username = user.username.clone();
+    let initials = user.initials.clone();
+    let created_at = super::super::dates::absolute(cx, &user.created_at);
+    let make_admin_label = format!("make @{username} an admin.");
+    let restore_label = format!("restore @{username}.");
+    let remove_admin_label = format!("Remove instance admin from {display_name}");
+    let promote_label = format!("Make {display_name} an instance admin");
+    let deactivate_label = format!("Deactivate {display_name}");
+    let reactivate_label = format!("Restore {display_name}");
     let row_cx = cx.keyed((account, id));
     let is_admin = signal(&row_cx, || user.is_admin);
     let is_active = signal(&row_cx, || user.is_active);
@@ -1043,6 +1098,9 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
         is_active.clone(),
         state,
     );
+    let confirm_reauth =
+        confirm_member_reauth_attrs(cx, account, id, is_admin.clone(), is_active.clone(), state);
+    let cancel_reauth = cancel_member_reauth_attrs(cx, state);
     let when_busy = state.busy_id.clone();
     let when_pending = state.pending_id.clone();
     let when_action = state.pending_action.clone();
@@ -1056,7 +1114,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                 <div
                     class="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-micro font-semibold text-[var(--accent-text)]"
                 >
-                    (user.initials.clone())
+                    (initials)
                 </div>
                 <div class="min-w-0 flex-1">
                     <div class="truncate leading-tight text-body text-[var(--text)]">
@@ -1071,7 +1129,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         class="mt-0.5 truncate font-mono text-caption text-[var(--text-faint)]"
                     >
                         "@"
-                        (user.username.clone())
+                        (username)
                     </div>
                 </div>
                 <span
@@ -1095,7 +1153,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                 <span
                     class="hidden w-[5.5rem] shrink-0 text-right text-caption tabular-nums text-[var(--text-faint)] sm:block"
                 >
-                    (super::super::dates::absolute(cx, &user.created_at))
+                    (created_at)
                 </span>
                 if id != account {
                     <div
@@ -1105,9 +1163,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         <button
                             type="button"
                             title="Remove instance admin"
-                            aria-label=(format!(
-                                "Remove instance admin from {display_name}",
-                            ))
+                            aria-label=(remove_admin_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--warn-text)]"
                             :hidden=$(!is_admin.get())
                             :disabled=$(when_busy.get() != 0)
@@ -1118,13 +1174,18 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         <button
                             type="button"
                             title="Make instance admin"
-                            aria-label=(format!("Make {display_name} an instance admin"))
+                            aria-label=(promote_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--accent-subtle)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
                             :hidden=$(is_admin.get())
-                            :disabled=$(when_busy.get() != 0
-                                || when_reauth.get() != 0
-                                || settings_saving.get()
-                                || settings_confirmation.get())
+                            :disabled=$(if when_busy.get() != 0 {
+                                true
+                            } else if when_reauth.get() != 0 {
+                                true
+                            } else if settings_saving.get() {
+                                true
+                            } else {
+                                settings_confirmation.get()
+                            })
                             (promote)
                         >
                             "Promote"
@@ -1132,7 +1193,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         <button
                             type="button"
                             title="Deactivate account"
-                            aria-label=(format!("Deactivate {display_name}"))
+                            aria-label=(deactivate_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                             :hidden=$(!is_active.get())
                             :disabled=$(when_busy.get() != 0)
@@ -1143,13 +1204,18 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         <button
                             type="button"
                             title="Restore account"
-                            aria-label=(format!("Restore {display_name}"))
+                            aria-label=(reactivate_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--success-bg)] hover:text-[var(--success)] disabled:cursor-not-allowed disabled:opacity-40"
                             :hidden=$(is_active.get())
-                            :disabled=$(when_busy.get() != 0
-                                || when_reauth.get() != 0
-                                || settings_saving.get()
-                                || settings_confirmation.get())
+                            :disabled=$(if when_busy.get() != 0 {
+                                true
+                            } else if when_reauth.get() != 0 {
+                                true
+                            } else if settings_saving.get() {
+                                true
+                            } else {
+                                settings_confirmation.get()
+                            })
                             (reactivate)
                         >
                             "Restore"
@@ -1190,7 +1256,11 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
             <p
                 class="px-4 pb-2.5 -mt-1 text-caption text-[var(--error)]"
                 role="alert"
-                :hidden=$(row_error.get().is_empty() || row_error_id.get() != id)
+                :hidden=$(if row_error.get().is_empty() {
+                    true
+                } else {
+                    row_error_id.get() != id
+                })
             >
                 $(row_error.get())
             </p>
@@ -1203,9 +1273,9 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                     <p class="text-body-sm text-[var(--text)]">
                         "Verify it's you to "
                         $(if reauth_action.get() == "promote" {
-                            format!("make @{username} an admin.")
+                            make_admin_label
                         } else {
-                            format!("restore @{username}.")
+                            restore_label
                         })
                         " Expanding access needs a recent sign-in, and you have been signed in for a while."
                     </p>
@@ -1236,16 +1306,12 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                         <button
                             type="button"
                             class="rounded-md bg-[var(--btn-success)] px-3 py-1.5 text-body-sm font-medium text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-                            :disabled=$(reauth_busy.get()
-                                || reauth_password.get().is_empty())
-                            (confirm_member_reauth_attrs(
-                                cx,
-                                account,
-                                id,
-                                is_admin.clone(),
-                                is_active.clone(),
-                                state,
-                            ))
+                            :disabled=$(if reauth_busy.get() {
+                                true
+                            } else {
+                                reauth_password.get().is_empty()
+                            })
+                            (confirm_reauth)
                         >
                             $(if reauth_busy.get() {
                                 "Verifying…"
@@ -1257,7 +1323,7 @@ fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) ->
                             type="button"
                             class="rounded-md px-3 py-1.5 text-body-sm text-[var(--text-muted)] hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
                             :disabled=$(reauth_busy.get())
-                            (cancel_member_reauth_attrs(cx, state))
+                            (cancel_reauth)
                         >
                             "Cancel"
                         </button>
