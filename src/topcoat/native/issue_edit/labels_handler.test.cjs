@@ -24,9 +24,9 @@ function run(phase) {
     return signal(id);
   };
   const bindingId = source => {
-    const before = new Set(referenced);
+    referenced.clear();
     vm.runInNewContext(`cx => (${source})`, context)(cx);
-    const ids = [...referenced].filter(id => !before.has(id));
+    const ids = [...referenced];
     assert.equal(ids.length, 1, 'binding resolves exactly one picker-owned signal');
     return ids[0];
   };
