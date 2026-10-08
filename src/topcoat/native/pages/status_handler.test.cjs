@@ -49,7 +49,12 @@ const unbox = value => {
 };
 const signalValues = () => Object.keys(input.signals).map(id => unbox(cx.signal(id).dehydrate()));
 const referencedValues = () => [...referencedSignals].map(id => unbox(cx.signal(id).dehydrate()));
-const hasSequence = expected => referencedValues().some(value => String(value) === String(expected));
+const sequenceSignal = () => {
+  const candidates = [...referencedSignals].filter(id => id !== titleSignal && id !== bodySignal &&
+    String(unbox(input.signals[id])) === String(input.expected_seq));
+  assert.equal(candidates.length, 1, 'the emitted handler references one page sequence signal');
+  return candidates[0];
+};
 if (input.scenario !== 'capture') {
   cx.signal(titleSignal).set(cx.hydrate('Unsaved title draft'));
   cx.signal(bodySignal).set(cx.hydrate('Unsaved body draft'));
@@ -76,21 +81,21 @@ async function run() {
   } else if (input.scenario === 'success') {
     assert.ok(referencedValues().includes('active'),
       'the actual saved status is published');
-    assert.ok(hasSequence(input.expected_seq + 1),
-      'success advances the shared page sequence');
+    assert.equal(unbox(cx.signal(sequenceSignal()).dehydrate()), unbox(input.reply.v.seq),
+      'success adopts the sequence from the typed production reply');
     assert.equal(unbox(cx.signal(titleSignal).dehydrate()), 'Unsaved title draft');
     assert.equal(unbox(cx.signal(bodySignal).dehydrate()), 'Unsaved body draft');
   } else if (input.scenario === 'conflict') {
     assert.ok(referencedValues().includes('draft'),
       'a conflict restores the locally selected status');
-    assert.ok(hasSequence(input.expected_seq),
+    assert.equal(unbox(cx.signal(sequenceSignal()).dehydrate()), String(input.expected_seq),
       'a conflict never adopts the unseen remote sequence');
     assert.ok(referencedValues().some(value => typeof value === 'string' && value.includes('changed elsewhere')),
       'the conflict is visible while the editor is closed');
   } else if (input.scenario === 'transport_failure') {
     assert.ok(referencedValues().includes('draft'),
       'a transport failure restores the locally selected status');
-    assert.ok(!hasSequence(input.expected_seq + 1),
+    assert.equal(unbox(cx.signal(sequenceSignal()).dehydrate()), String(input.expected_seq),
       'a transport failure cannot advance the sequence');
     assert.ok(referencedValues().some(value => typeof value === 'string' && value.includes("Couldn't save")),
       'the transport failure remains visible');
