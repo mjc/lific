@@ -98,6 +98,43 @@ async function run() {
   const revisionAfter = readRevision ? Number(unbox(readRevision(cx).dehydrate())) : null;
   const signals = Object.fromEntries(Object.keys(input.signals)
     .map(id => [id, cx.signal(id).get().dehydrate()]));
+
+  const delegateHandler = input.toggle_handler || input.delete_handler || input.keydown_handler;
+  if (delegateHandler) {
+    const diagnostic = handlerFixture(input.signals, async () => ({
+      ok: true,
+      json: async () => input.reply,
+    }), input.browser_source);
+    const largeFolderId = '9007199254740993';
+    const largeTarget = {
+      getAttribute(name) {
+        if (name === 'data-folder-id') return largeFolderId;
+        if (name === 'data-folder-revision') return String(input.folder_revision || 0);
+        return null;
+      },
+      closest(selector) {
+        return selector === '[data-native-page-folder-toggle]' ? this : null;
+      },
+    };
+    const largeEvent = new diagnostic.context.Event('click');
+    Object.assign(largeEvent, {
+      target: largeTarget,
+      currentTarget: largeTarget,
+      stopPropagation() {},
+      preventDefault() {},
+    });
+    await diagnostic.handler(delegateHandler)(diagnostic.cx.event(largeEvent));
+    const largeSignals = Object.fromEntries(Object.keys(input.signals)
+      .map(id => [id, diagnostic.cx.signal(id).get().dehydrate()]));
+    const largeState = JSON.stringify(largeSignals);
+    if (!largeState.includes('"v":"9007199254740993"')) {
+      throw new Error('folder row IDs must cross the DOM boundary without JavaScript Number rounding');
+    }
+    if (largeState.includes('"v":"9007199254740992"')) {
+      throw new Error('large folder row IDs were rounded before updating the expanded state');
+    }
+  }
+
   process.stdout.write(JSON.stringify({
     expanded_before: expandedBefore,
     expanded_after: expandedAfter,
