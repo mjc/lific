@@ -4,7 +4,7 @@ use super::super::super::runtime::whitespace::{
 };
 use super::super::{context, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
-use super::status;
+use super::{pin, status};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,

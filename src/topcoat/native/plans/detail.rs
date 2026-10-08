@@ -1280,7 +1280,10 @@ fn action_button<'a>(
     let failed_message = message.clone();
     let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
-        if !browser.is_disposed() && !busy.get() {
+        if browser.is_disposed() {
+            return;
+        }
+        if !busy.get() {
             let confirmed = if delete_action {
                 raw!(
                     "cx.hydrate(window.confirm('Delete this plan? This cannot be undone.'))",
