@@ -411,6 +411,13 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
     let fixture = home_fixture::fixture();
     let (page_id, account, folder_id, destination_folder, _) =
         seed_page_with_folders(&fixture, true);
+    let move_reply = serde_json::to_value(
+        super::actions::MoveOutcome {
+            status: Ok("saved".to_owned()),
+        }
+        .into_surrogate(),
+    )
+    .unwrap();
     for mount in ["", "/app", "/ACC"] {
         let (status, html) = home_fixture::document(
             &fixture,
@@ -592,6 +599,7 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
         ] {
             let result = run_move_handler(&serde_json::json!({
                 "scenario": scenario,
+                "reply": move_reply.clone(),
                 "signals": home_fixture::page_signals(&opened_html),
                 "open_handler": open_handler,
                 "open_binding": open_binding,

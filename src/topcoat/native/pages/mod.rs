@@ -1,6 +1,7 @@
 //! Native Pages browsing and project page detail.
 mod actions;
 mod metadata;
+mod move_picker;
 mod pin;
 mod status;
 mod view;
