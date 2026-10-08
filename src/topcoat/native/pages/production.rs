@@ -1082,8 +1082,15 @@ async fn native_pages_folder_creation_requires_editor_authority() {
 #[tokio::test]
 async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
     let fixture = home_fixture::fixture();
-    let (page_id, _, _project_id, root_folder, child_folder) =
-        seed_nested_folder_page(&fixture, true);
+    let (
+        page_id,
+        _,
+        _project_id,
+        root_folder,
+        child_folder,
+        grandchild_folder,
+        great_grandchild_folder,
+    ) = seed_nested_folder_page(&fixture, true);
     let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
@@ -1095,11 +1102,15 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         .next()
         .expect("the recursive page tree renders its root folder");
     assert_eq!(root_row.value().attr("role"), Some("button"));
-    let root_click = root_row
+    let list = document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap();
+    let root_click = list
         .value()
         .attr("data-topcoat-on:click")
-        .expect("folder expansion is an emitted click handler");
-    let root_keydown = root_row
+        .expect("the list owner delegates folder clicks");
+    let root_keydown = list
         .value()
         .attr("data-topcoat-on:keydown")
         .expect("folder expansion supports keyboard activation");
@@ -1110,6 +1121,8 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
     let opened = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&html),
         "toggle_handler": root_click,
+        "target_kind": "toggle",
+        "folder_id": root_folder,
         "expanded_binding": expanded_binding,
     }));
     assert_eq!(opened["expanded_before"], false);
@@ -1138,10 +1151,18 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             .is_none(),
         "a page stays hidden while its own folder is collapsed",
     );
-    let child_click = child_row.value().attr("data-topcoat-on:click").unwrap();
+    let child_click = opened_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
     let child_open = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&opened_html),
         "toggle_handler": child_click,
+        "target_kind": "toggle",
+        "folder_id": child_folder,
         "expanded_binding": child_row
             .value()
             .attr("data-topcoat-bind:aria-expanded")
@@ -1161,18 +1182,72 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             .is_some(),
         "expanding the child renders its page row",
     );
-    let expanded_root = scraper::Html::parse_document(&nested_html);
-    let root_row = expanded_root
+    let nested_document = scraper::Html::parse_document(&nested_html);
+    let _grandchild = nested_document
         .select(
-            &scraper::Selector::parse(&format!("[data-native-page-folder-toggle='{root_folder}']"))
-                .unwrap(),
+            &scraper::Selector::parse(&format!(
+                "[data-native-page-folder-toggle='{grandchild_folder}']"
+            ))
+            .unwrap(),
+        )
+        .next()
+        .expect("the third folder level appears under an expanded child");
+    let grandchild_click = nested_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let grandchild_open = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&nested_html),
+        "toggle_handler": grandchild_click,
+        "target_kind": "toggle",
+        "folder_id": grandchild_folder,
+    }));
+    let grandchild_signals = serde_json::from_value(grandchild_open["signals"].clone()).unwrap();
+    let (status, deep_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(grandchild_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(deep_html.contains(&format!(
+        "data-native-page-folder-toggle=\"{great_grandchild_folder}\""
+    )));
+    let deep_document = scraper::Html::parse_document(&deep_html);
+    let _great_grandchild = deep_document
+        .select(
+            &scraper::Selector::parse(&format!(
+                "[data-native-page-folder-toggle='{great_grandchild_folder}']"
+            ))
+            .unwrap(),
         )
         .next()
         .unwrap();
+    let deepest_click = deep_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let deepest_open = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&deep_html),
+        "toggle_handler": deepest_click,
+        "target_kind": "toggle",
+        "folder_id": great_grandchild_folder,
+    }));
+    let deepest_signals = serde_json::from_value(deepest_open["signals"].clone()).unwrap();
+    let (status, deepest_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(deepest_signals)).await;
+    assert_eq!(status, StatusCode::OK);
     let collapsed = run_folder_tree_handler(&serde_json::json!({
-        "signals": home_fixture::page_signals(&nested_html),
+        "signals": home_fixture::page_signals(&deepest_html),
         "keydown_handler": root_keydown,
-        "expanded_binding": root_row
+        "target_kind": "toggle",
+        "folder_id": root_folder,
+        "expanded_binding": scraper::Html::parse_document(&deepest_html)
+            .select(&scraper::Selector::parse(&format!("[data-native-page-folder-toggle='{root_folder}']")).unwrap())
+            .next()
+            .unwrap()
             .value()
             .attr("data-topcoat-bind:aria-expanded")
             .unwrap(),
@@ -1188,10 +1263,7 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
     );
     let collapsed_document = scraper::Html::parse_document(&collapsed_html);
     let root_click = collapsed_document
-        .select(
-            &scraper::Selector::parse(&format!("[data-native-page-folder-toggle='{root_folder}']"))
-                .unwrap(),
-        )
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
         .next()
         .unwrap()
         .value()
@@ -1200,6 +1272,8 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
     let reopened = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&collapsed_html),
         "toggle_handler": root_click,
+        "target_kind": "toggle",
+        "folder_id": root_folder,
     }));
     let reopened_signals = serde_json::from_value(reopened["signals"].clone()).unwrap();
     let (status, reopened_html) =
@@ -1209,6 +1283,192 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         reopened_html.contains(&format!("data-native-folder-page=\"{page_id}\"")),
         "expansion state for nested folders survives ancestor collapse",
     );
+    assert!(
+        reopened_html.contains(&format!(
+            "data-native-page-folder-toggle=\"{great_grandchild_folder}\""
+        )),
+        "expansion state is retained through four nested folder levels",
+    );
+}
+
+#[tokio::test]
+async fn native_pages_folder_filter_renders_focused_subtree_and_valid_tree_order() {
+    use crate::db::models::{CreateFolder, CreatePage};
+
+    let fixture = home_fixture::fixture();
+    let (nested_page_id, _, project_id, selected_folder, child_folder, _, _) =
+        seed_nested_folder_page(&fixture, true);
+    let (direct_page_id, unfiled_page_id, unrelated_folder, unrelated_page_id) = {
+        let conn = fixture.db.write().unwrap();
+        conn.execute(
+            "UPDATE pages SET status = 'active' WHERE id = ?1",
+            [nested_page_id],
+        )
+        .unwrap();
+        let unrelated_folder = queries::create_folder(
+            &conn,
+            &CreateFolder {
+                project_id,
+                parent_id: None,
+                name: "Unrelated root".into(),
+            },
+        )
+        .unwrap()
+        .id;
+        let direct_page_id = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                folder_id: Some(selected_folder),
+                title: "Selected folder page".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let unfiled_page_id = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                title: "Unfiled page".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let unrelated_page_id = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                folder_id: Some(unrelated_folder),
+                title: "Unrelated folder page".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        (
+            direct_page_id,
+            unfiled_page_id,
+            unrelated_folder,
+            unrelated_page_id,
+        )
+    };
+
+    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let _tree = document
+        .select(&scraper::Selector::parse("ul[aria-label='Pages and folders']").unwrap())
+        .next()
+        .expect("Browse renders the Pages folder tree");
+    let root_folder_marker = format!("data-native-page-folder-row=\"{selected_folder}\"");
+    let unfiled_page_marker = format!("data-native-folder-page=\"{unfiled_page_id}\"");
+    assert!(
+        html.find(&root_folder_marker).unwrap() < html.find(&unfiled_page_marker).unwrap(),
+        "Main renders folders before pages at each tree level",
+    );
+    let tree_start = html.find("aria-label=\"Pages and folders\"").unwrap();
+    let marker_at = html.find(&root_folder_marker).unwrap();
+    let tree_markup_before_row = &html[tree_start..marker_at];
+    assert_eq!(
+        tree_markup_before_row.matches("<li").count()
+            - tree_markup_before_row.matches("</li").count(),
+        1,
+        "a root folder row is inside one list item, not a nested li",
+    );
+
+    let filter = document
+        .select(&scraper::Selector::parse("select[aria-label='Filter by folder']").unwrap())
+        .next()
+        .unwrap();
+    let filter_handler = filter.value().attr("data-topcoat-on:change").unwrap();
+    let filter_binding = filter.value().attr("data-topcoat-bind:value").unwrap();
+    let filtered = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "handlers": [],
+        "change_handler": filter_handler,
+        "folder_value": selected_folder.to_string(),
+        "folder_value_binding": filter_binding,
+    }));
+    assert_eq!(filtered["filter_value"], selected_folder.to_string());
+    let filtered_signals = serde_json::from_value(filtered["signals"].clone()).unwrap();
+    let (status, filtered_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(filtered_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered_document = scraper::Html::parse_document(&filtered_html);
+    assert!(
+        filtered_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-row='{selected_folder}']"
+                ))
+                .unwrap()
+            )
+            .next()
+            .is_none(),
+        "the selected folder is the tree root and its own row is omitted",
+    );
+    assert!(
+        filtered_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-row='{unrelated_folder}']"
+                ))
+                .unwrap()
+            )
+            .next()
+            .is_none(),
+        "unrelated root folders are omitted from the focused subtree",
+    );
+    assert!(
+        filtered_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-row='{child_folder}']"
+                ))
+                .unwrap()
+            )
+            .next()
+            .is_some(),
+        "direct child folders remain in the focused subtree",
+    );
+    assert!(filtered_html.contains(&format!("data-native-folder-page=\"{direct_page_id}\"")));
+    assert!(!filtered_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")));
+    assert!(!filtered_html.contains(&format!("data-native-folder-page=\"{unrelated_page_id}\"")));
+
+    let list = filtered_document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap();
+    let click = list.value().attr("data-topcoat-on:click").unwrap();
+    let child_row = filtered_document
+        .select(
+            &scraper::Selector::parse(&format!(
+                "[data-native-page-folder-toggle='{child_folder}']"
+            ))
+            .unwrap(),
+        )
+        .next()
+        .unwrap();
+    let expanded = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&filtered_html),
+        "toggle_handler": click,
+        "target_kind": "toggle",
+        "folder_id": child_folder,
+        "expanded_binding": child_row.value().attr("data-topcoat-bind:aria-expanded").unwrap(),
+    }));
+    let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+    let (status, expanded_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(expanded_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        expanded_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")),
+        "expanding a child retains pages in the selected folder's descendants",
+    );
 }
 
 #[tokio::test]
@@ -1216,7 +1476,7 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
     use topcoat::runtime::Surrogated;
 
     let fixture = home_fixture::fixture();
-    let (page_id, account, project_id, root_folder, child_folder) =
+    let (page_id, account, project_id, root_folder, child_folder, grandchild, great_grandchild) =
         seed_nested_folder_page(&fixture, true);
     let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -1228,14 +1488,91 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
         )
         .next()
         .expect("the root folder has a tree row");
-    let delete = row
+    let _delete = row
         .select(&scraper::Selector::parse("button[title='Delete folder']").unwrap())
         .next()
         .expect("maintainers get Main's Delete folder row action");
-    let handler = delete
+    let handler = document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap()
         .value()
         .attr("data-topcoat-on:click")
-        .expect("folder deletion uses an emitted click handler");
+        .expect("the list owner delegates folder deletion");
+    let error = document
+        .select(&scraper::Selector::parse("[data-native-page-folder-error]").unwrap())
+        .next()
+        .expect("folder deletion failures have a list-owned alert");
+    let error_binding = error
+        .value()
+        .attr("data-topcoat-bind:hidden")
+        .expect("the folder error alert tracks its visibility");
+    let failed_reply = serde_json::to_value(
+        super::actions::FolderOutcome {
+            status: Err("offline".into()),
+            folder_id: None,
+            folder_name: None,
+        }
+        .into_surrogate(),
+    )
+    .unwrap();
+    let failed = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "delete_handler": handler,
+        "target_kind": "delete",
+        "folder_id": root_folder,
+        "folder_name": "Research folder",
+        "error_binding": error_binding,
+        "revision_binding": error
+            .value()
+            .attr("data-topcoat-bind:data-revision")
+            .unwrap(),
+        "reply": failed_reply,
+        "repeat_delete": true,
+    }));
+    assert_eq!(failed["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(failed["error_hidden"], false);
+    assert_eq!(
+        failed["revision_after"], failed["revision_before"],
+        "a failed delete leaves folder and page catalogs unchanged",
+    );
+    let failed_signals = serde_json::from_value(failed["signals"].clone()).unwrap();
+    let (status, failed_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(failed_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        failed_html.contains("Couldn't delete Research folder: offline"),
+        "a rejected delete keeps the folder and exposes its row error",
+    );
+    let stale = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "delete_handler": handler,
+        "target_kind": "delete",
+        "folder_id": root_folder,
+        "folder_name": "Research folder",
+        "folder_revision": 1,
+    }));
+    assert!(
+        stale["requests"].as_array().unwrap().is_empty(),
+        "a row from an earlier folder revision cannot dispatch a stale delete",
+    );
+    let disposed = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "delete_handler": handler,
+        "target_kind": "delete",
+        "folder_id": root_folder,
+        "folder_name": "Research folder",
+        "dispose_before": true,
+    }));
+    assert!(
+        disposed["requests"].as_array().unwrap().is_empty(),
+        "a disposed list owner cannot dispatch a queued delete",
+    );
+    assert_eq!(
+        disposed["signals"],
+        serde_json::Value::Object(home_fixture::page_signals(&html)),
+        "a disposed callback leaves list-owned state unchanged",
+    );
     let reply = serde_json::to_value(
         super::actions::FolderOutcome {
             status: Ok("saved".into()),
@@ -1248,14 +1585,22 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
     let emitted = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&html),
         "delete_handler": handler,
+        "target_kind": "delete",
         "expanded_binding": row
             .value()
             .attr("data-topcoat-bind:aria-expanded")
             .unwrap(),
         "mount": "/app",
+        "folder_id": root_folder,
+        "folder_name": "Research folder",
         "reply": reply,
     }));
     assert_eq!(emitted["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        emitted["revision_after"],
+        emitted["revision_before"].as_u64().unwrap() + 1,
+        "a successful delete refreshes the folder tree and page rows",
+    );
     assert_eq!(
         emitted["stopped"], true,
         "delete does not toggle its parent row"
@@ -1274,6 +1619,8 @@ async fn native_pages_folder_delete_uses_emitted_row_and_canonical_procedure() {
     let folders = queries::list_folders(&fixture.db.read().unwrap(), project_id).unwrap();
     assert!(folders.iter().all(|folder| folder.id != root_folder));
     assert!(folders.iter().all(|folder| folder.id != child_folder));
+    assert!(folders.iter().all(|folder| folder.id != grandchild));
+    assert!(folders.iter().all(|folder| folder.id != great_grandchild));
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
     assert_eq!(
         page.folder_id, None,
@@ -1286,7 +1633,7 @@ async fn native_pages_folder_tree_is_visible_but_read_only_for_viewers() {
     use topcoat::runtime::Surrogated;
 
     let fixture = home_fixture::fixture();
-    let (_, account, project_id, root_folder, _) = seed_nested_folder_page(&fixture, false);
+    let (_, account, project_id, root_folder, _, _, _) = seed_nested_folder_page(&fixture, false);
     let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
@@ -1396,7 +1743,7 @@ fn run_folder_tree_handler(input: &serde_json::Value) -> serde_json::Value {
 fn seed_nested_folder_page(
     fixture: &home_fixture::Fixture,
     editable: bool,
-) -> (i64, i64, i64, i64, i64) {
+) -> (i64, i64, i64, i64, i64, i64, i64) {
     use crate::db::models::CreateFolder;
 
     let (page_id, account, _) = seed_page(fixture, editable);
@@ -1422,12 +1769,40 @@ fn seed_nested_folder_page(
     )
     .unwrap()
     .id;
+    let grandchild_folder = queries::create_folder(
+        &conn,
+        &CreateFolder {
+            project_id,
+            parent_id: Some(child_folder),
+            name: "Deep folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
+    let great_grandchild_folder = queries::create_folder(
+        &conn,
+        &CreateFolder {
+            project_id,
+            parent_id: Some(grandchild_folder),
+            name: "Deepest folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
     conn.execute(
         "UPDATE pages SET folder_id = ?1 WHERE id = ?2",
         rusqlite::params![child_folder, page_id],
     )
     .unwrap();
-    (page_id, account, project_id, root_folder, child_folder)
+    (
+        page_id,
+        account,
+        project_id,
+        root_folder,
+        child_folder,
+        grandchild_folder,
+        great_grandchild_folder,
+    )
 }
 
 fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
