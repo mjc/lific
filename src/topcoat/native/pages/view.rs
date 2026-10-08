@@ -1,5 +1,6 @@
 //! Native Pages list and editor, populated from the authorized shared service.
 use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
+use super::super::breadcrumbs::{self, Segment};
 use super::super::fuzzy::score as fuzzy_score;
 use super::super::{context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
@@ -849,6 +850,20 @@ pub(super) fn detail<'a>(
             return Err(topcoat::router::error::not_found().into());
         }
     }
+    let folder_name = match (page.project_id, page.folder_id) {
+        (Some(project_id), Some(folder_id)) => {
+            let structure = session::read(
+                cx,
+                crate::services::pages::project_structure(context::db(cx), identity, project_id),
+            )?;
+            structure
+                .folders
+                .into_iter()
+                .find(|folder| folder.id == folder_id)
+                .map(|folder| folder.name)
+        }
+        _ => None,
+    };
     let can_edit = match crate::services::pages::require_page_role(
         context::db(cx),
         identity,
@@ -869,7 +884,8 @@ pub(super) fn detail<'a>(
             project: project,
             page: page,
             can_edit: can_edit,
-            list_path: list_path
+            list_path: list_path,
+            folder_name: folder_name
         )
     }
     .boxed())
@@ -918,8 +934,34 @@ async fn page_detail(
     page: PageModel,
     can_edit: bool,
     list_path: String,
+    folder_name: Option<String>,
 ) -> topcoat::Result<impl View> {
-    let list_attrs = navigation::attrs(cx, &list_path);
+    let overview_path = format!("/{project}/overview");
+    let mut segments = vec![
+        Segment {
+            content: breadcrumbs::link(cx, &project, &overview_path, true),
+            hide_below_sm: true,
+            copy: Some(project.clone()),
+        },
+        Segment {
+            content: breadcrumbs::link(cx, "Pages", &list_path, false),
+            hide_below_sm: true,
+            copy: None,
+        },
+    ];
+    if let Some(folder_name) = folder_name {
+        segments.push(Segment {
+            content: breadcrumbs::link(cx, &folder_name, &list_path, false),
+            hide_below_sm: false,
+            copy: None,
+        });
+    }
+    segments.push(Segment {
+        content: breadcrumbs::current(cx, &page.identifier, true),
+        hide_below_sm: false,
+        copy: Some(page.identifier.clone()),
+    });
+    let breadcrumb = breadcrumbs::render(cx, account, segments);
     let title = signal(cx, || page.title.clone());
     let body = signal(cx, || page.content.clone());
     let title_draft = signal(cx, || page.title.clone());
@@ -961,12 +1003,7 @@ async fn page_detail(
             class="native-pages h-full min-h-0 overflow-y-auto leading-[1.6] text-[var(--text)]"
         >
             <main class="native-pages__detail max-w-[860px] mx-auto px-6 py-6">
-                <a
-                    class="text-body-sm text-[var(--text-muted)] no-underline hover:text-[var(--text)]"
-                    (list_attrs)
-                >
-                    "‹ Pages"
-                </a>
+                (breadcrumb)
                 <div class="mt-5 mb-6">
                     <div class="font-mono text-caption text-[var(--text-muted)]">
                         (page.identifier)

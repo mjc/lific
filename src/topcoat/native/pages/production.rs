@@ -147,15 +147,27 @@ async fn native_pages_detail_renders_main_breadcrumbs_for_filed_and_unfiled_page
     let fixture = home_fixture::fixture();
     let (page_id, _, folder_id, _, _) = seed_page_with_folders(&fixture, false);
     let folder_name = "Research <draft> & review";
-    fixture
-        .db
-        .write()
-        .unwrap()
-        .execute(
-            "UPDATE folders SET name = ?1 WHERE id = ?2",
-            rusqlite::params![folder_name, folder_id],
+    let parent_folder_name = "Parent folder should not appear";
+    {
+        use crate::db::models::CreateFolder;
+
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        let parent = queries::create_folder(
+            &conn,
+            &CreateFolder {
+                project_id,
+                parent_id: None,
+                name: parent_folder_name.to_owned(),
+            },
         )
         .unwrap();
+        conn.execute(
+            "UPDATE folders SET name = ?1, parent_id = ?2 WHERE id = ?3",
+            rusqlite::params![folder_name, parent.id, folder_id],
+        )
+        .unwrap();
+    }
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
 
     for mount in ["", "/app", "/ACC"] {
@@ -214,6 +226,12 @@ async fn native_pages_detail_renders_main_breadcrumbs_for_filed_and_unfiled_page
                 .collect::<String>()
                 .contains("Private folder")
         );
+        assert!(
+            !breadcrumb
+                .text()
+                .collect::<String>()
+                .contains(parent_folder_name)
+        );
 
         let visible_items = breadcrumb
             .select(&scraper::Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
@@ -264,6 +282,20 @@ async fn native_pages_detail_renders_main_breadcrumbs_for_filed_and_unfiled_page
             .next()
             .expect("the page identifier is the current crumb");
         assert_eq!(current.text().collect::<String>().trim(), page.identifier);
+        assert!(
+            current
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .any(|class| class == "font-mono")
+        );
+        assert!(
+            current
+                .ancestors()
+                .filter_map(scraper::ElementRef::wrap)
+                .all(|ancestor| ancestor.value().name() != "a")
+        );
         let project_copy = breadcrumb
             .select(&scraper::Selector::parse("button[aria-label='Copy ACC']").unwrap())
             .next()
@@ -366,6 +398,16 @@ async fn native_pages_detail_renders_main_breadcrumbs_for_filed_and_unfiled_page
         visible_labels,
         ["ACC", "Pages", unfiled.identifier.as_str()]
     );
+    let current = breadcrumb
+        .select(&scraper::Selector::parse("[aria-current='page']").unwrap())
+        .next()
+        .expect("unfiled identifier is also the unlinked current crumb");
+    assert!(
+        current
+            .ancestors()
+            .filter_map(scraper::ElementRef::wrap)
+            .all(|ancestor| ancestor.value().name() != "a")
+    );
     assert!(
         breadcrumb
             .select(&scraper::Selector::parse("a[title]").unwrap())
@@ -420,12 +462,8 @@ async fn native_pages_detail_owns_four_fresh_account_toast_slots() {
     let document = scraper::Html::parse_document(&html);
     let slots = document
         .select(&scraper::Selector::parse("[data-native-toast-slot]").unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        slots.len(),
-        4,
-        "PageDetail gets the account-owned toast stack"
-    );
+        .count();
+    assert_eq!(slots, 4, "PageDetail gets the account-owned toast stack");
 }
 
 #[tokio::test]
