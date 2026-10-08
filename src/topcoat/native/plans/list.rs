@@ -1,5 +1,5 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
-use super::super::{context, mascot, navigation, session, transport};
+use super::super::{browser, context, mascot, navigation, session, transport};
 use crate::{
     db::models::{CreatePlan, Plan, Project, Role},
     error::LificError,
@@ -33,6 +33,8 @@ pub(super) fn content<'a>(
         Err(error) => return session::read(cx, Err(error)),
     };
     let active = signal(&owner, || selected);
+    let tabs_restored = signal(&owner, || false);
+    let explicit_tab = route_tab_is_explicit(query);
     let creating = signal(&owner, || false);
     let draft = signal(&owner, || "".to_owned());
     let message = signal(&owner, || "".to_owned());
@@ -138,7 +140,9 @@ pub(super) fn content<'a>(
                     selected_tab: $(active.get()),
                     active: active,
                     creating_state: creating,
-                    draft: draft
+                    draft: draft,
+                    tabs_restored: tabs_restored,
+                    explicit_tab: explicit_tab
                 )
             </div>
         </main>
@@ -222,6 +226,8 @@ mod row_shards {
         active: Signal<String>,
         creating_state: Signal<bool>,
         draft: Signal<String>,
+        tabs_restored: Signal<bool>,
+        explicit_tab: bool,
     ) -> topcoat::Result<impl View> {
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -259,6 +265,16 @@ mod row_shards {
             Err(LificError::Forbidden(_)) => false,
             Err(error) => return session::read(cx, Err(error)),
         };
+        let storage_key = format!("lific:subtab:plans:{}", project_row.id);
+        let fallback_all = !plans.is_empty() && !plans.iter().any(|plan| plan.status == "active");
+        let restore_tabs = tab_restore_attributes(
+            cx,
+            storage_key.clone(),
+            active.clone(),
+            tabs_restored,
+            explicit_tab,
+            fallback_all,
+        );
         let selected_rows = plans
             .iter()
             .filter(|plan| selected_tab == "all" || plan.status == selected_tab)
@@ -278,6 +294,7 @@ mod row_shards {
                 count,
                 active.clone(),
                 creating_state.clone(),
+                storage_key.clone(),
             ));
         }
         let rows = if selected_tab == "all" {
@@ -347,6 +364,7 @@ mod row_shards {
                 class="flex gap-1 p-1 rounded-lg bg-[var(--bg)] w-fit mb-6"
                 aria-label="Plan status"
                 role="tablist"
+                (restore_tabs)
             >
                 for tab in tabs {
                     (tab)
@@ -384,15 +402,68 @@ mod row_shards {
     }
 }
 
+fn route_tab_is_explicit(query: &str) -> bool {
+    serde_urlencoded::from_str::<Vec<(String, String)>>(query)
+        .ok()
+        .and_then(|params| {
+            params
+                .into_iter()
+                .find(|(key, _)| key == "status")
+                .map(|(_, value)| value)
+        })
+        .is_some_and(|tab| TABS.contains(&tab.as_str()))
+}
+
+fn tab_restore_attributes(
+    cx: &Cx,
+    storage_key: String,
+    active: Signal<String>,
+    restored: Signal<bool>,
+    explicit_tab: bool,
+    fallback_all: bool,
+) -> Attributes {
+    let browser = browser::bindings();
+    let handler = expr!(|_event: Event| {
+        if !browser.is_disposed() {
+            if !restored.get() {
+                restored.set(true);
+                if !explicit_tab {
+                    let saved = browser.stored(storage_key.clone());
+                    if saved == "active" {
+                        active.set("active".to_owned());
+                    } else if saved == "done" {
+                        active.set("done".to_owned());
+                    } else if saved == "archived" {
+                        active.set("archived".to_owned());
+                    } else if saved == "all" {
+                        active.set("all".to_owned());
+                    } else if fallback_all {
+                        active.set("all".to_owned());
+                    }
+                }
+            }
+        }
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:mount",
+        handler.into_evaluated_and_js().1,
+    );
+    attributes
+}
+
 fn tab_button<'a>(
     cx: &'a Cx,
     status: &'static str,
     count: usize,
     active: Signal<String>,
     creating: Signal<bool>,
+    storage_key: String,
 ) -> BoxView<'a> {
     let label = format!("{} {count}", status_label(status));
     let id = status.to_owned();
+    let browser = browser::bindings();
     view! {
         cx =>
         <button
@@ -401,12 +472,15 @@ fn tab_button<'a>(
             class="px-2.5 py-1 rounded-md border-0 bg-transparent text-body-sm text-[var(--text-muted)] hover:text-[var(--text)] aria-selected:bg-[var(--surface)] aria-selected:text-[var(--text)]"
             :aria-selected=$(active.get() == id)
             @click=$(move |_event: Event| {
-                active.set(id.clone());
-                if id == "done" {
-                    creating.set(false);
-                } else {
-                    if id == "archived" {
+                if !browser.is_disposed() {
+                    active.set(id.clone());
+                    browser.store(storage_key.clone(), id.clone());
+                    if id == "done" {
                         creating.set(false);
+                    } else {
+                        if id == "archived" {
+                            creating.set(false);
+                        }
                     }
                 }
             })
