@@ -152,6 +152,8 @@ async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_writ
             "mode_preview": mode_preview.value().attr("data-topcoat-on:click").expect("Preview emits a handler"),
             "mode_edit_pressed": mode_edit.value().attr("data-topcoat-bind:aria-pressed").unwrap(),
             "mode_preview_pressed": mode_preview.value().attr("data-topcoat-bind:aria-pressed").unwrap(),
+            "mode_edit_class": mode_edit.value().attr("data-topcoat-bind:class").unwrap(),
+            "mode_preview_class": mode_preview.value().attr("data-topcoat-bind:class").unwrap(),
             "mode_group_hidden": mode_group.value().attr("data-topcoat-bind:hidden").unwrap(),
             "empty_cta_hidden": empty_cta.value().attr("data-topcoat-bind:hidden").unwrap(),
             "empty_cta_text": empty_cta.text().collect::<String>(),
