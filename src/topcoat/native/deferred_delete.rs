@@ -1099,6 +1099,14 @@ mod tests {
                                 message:"Couldn't copy to clipboard".into(),
                             }.into_surrogate(),
                         )).collect::<std::collections::BTreeMap<_,_>>()),
+                        "toast_successes": ([
+                            (7_i64, "File deleted."),
+                            (7_i64, "File deleted, along with 1 reference."),
+                            (7_i64, "File deleted, along with 4 references."),
+                            (8_i64, "foreign account"),
+                        ].into_iter().enumerate().map(|(index, (account_id, message))| (
+                            index.to_string(), ToastErrorRequest { account_id, message:message.into() }.into_surrogate()
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
                         "page_label_requests": (["attach", "remove", "wrong_account", "invalid_page"].into_iter().map(|mode| (
                             mode,
                             super::super::pages::labels_action::Request {

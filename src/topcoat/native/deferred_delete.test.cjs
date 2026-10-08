@@ -109,6 +109,12 @@ function fixture() {
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'Only the current account owner accepts the error toast.');
   };
+  const successToast=(request='0',accepted=true)=>{
+    const event=new Event('lific:native-toast-success',{cancelable:true});
+    event.detail=base.hydrate(input.toast_successes[request]);
+    window.dispatchEvent(event);
+    assert.equal(event.defaultPrevented,accepted,'Only the current account owner accepts the success toast.');
+  };
   const updatePageLabels=(mode='attach',accepted=true)=>{
     const event=new Event('lific:native-page-label-request',{cancelable:true});
     event.detail=base.hydrate(input.page_label_requests[mode]);
@@ -140,7 +146,7 @@ function fixture() {
   const finishPageLabels=async(outcome='saved')=>{pending.shift().resolve({ok:true,json:async()=>input.page_label_replies[outcome]});await flush();};
   const texts=()=>signalIds.map(id=>base.signal(id).get().toString());
   const snapshot=()=>Object.fromEntries(signalIds.map(id=>[id,base.signal(id).get().dehydrate()]));
-  return {schedule,assignModule,updateLabels,updatePageLabels,errorToast,advance,replace,finish,finishModule,finishLabels,finishPageLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,updateLabels,updatePageLabels,errorToast,successToast,advance,replace,finish,finishModule,finishLabels,finishPageLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
 if(input.probe_only){
   process.stdout.write(JSON.stringify(fixture().snapshot()));
@@ -157,6 +163,27 @@ test('Account errors use the shared expiring toast without Undo or network work'
   assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
   await tick(f,1);
   assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+});
+test('Account success messages use transient success slots and exact reference copy',async()=>{
+  for(const [index,message] of [
+    ['0','File deleted.'],
+    ['1','File deleted, along with 1 reference.'],
+    ['2','File deleted, along with 4 references.'],
+  ]){
+    const f=fixture();f.successToast(index);await flush();
+    assert.ok(f.texts().includes(message));
+    assert.ok(f.texts().includes('success'));
+    assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
+    assert.equal(f.owner.toasts[0].undo.hidden,true,'Success notifications never offer Undo.');
+    await tick(f,4999);assert.equal(f.owner.toasts[0].dataset.nativeToastId==='0',false);
+    await tick(f,1);assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+  }
+});
+test('Success notifications reject foreign accounts and retired owners',async()=>{
+  const f=fixture(),baseline=f.snapshot();f.successToast('3',false);assert.deepEqual(f.snapshot(),baseline);
+  f.successToast();f.replace({key:'8:OTHER',mount:false});const retired=f.snapshot();
+  f.successToast('0',false);assert.deepEqual(f.snapshot(),retired);
+  assert.equal(f.timers.size,0);
 });
 test('Account errors reject foreign and retired owners and transfer their deadline',async()=>{
   const f=fixture();const baseline=f.snapshot();f.errorToast('8',false);
