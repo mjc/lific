@@ -143,6 +143,292 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
 }
 
 #[tokio::test]
+async fn native_pages_detail_renders_main_breadcrumbs_for_filed_and_unfiled_pages() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, folder_id, _, _) = seed_page_with_folders(&fixture, false);
+    let folder_name = "Research <draft> & review";
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE folders SET name = ?1 WHERE id = ?2",
+            rusqlite::params![folder_name, folder_id],
+        )
+        .unwrap();
+    let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+
+    for mount in ["", "/app", "/ACC"] {
+        let (status, html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let breadcrumb = document
+            .select(&scraper::Selector::parse("nav[aria-label='Breadcrumb']").unwrap())
+            .next()
+            .expect("PageDetail renders an accessible breadcrumb trail");
+        let visible_labels = breadcrumb
+            .select(&scraper::Selector::parse("ol > li").unwrap())
+            .filter(|item| item.value().attr("aria-hidden") != Some("true"))
+            .map(|item| item.text().collect::<String>().trim().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible_labels,
+            ["ACC", "Pages", folder_name, page.identifier.as_str()],
+            "filed pages include project, Pages, authorized folder name, and identifier",
+        );
+
+        let project_link = breadcrumb
+            .select(&scraper::Selector::parse("a[title='ACC']").unwrap())
+            .next()
+            .expect("the project crumb links to overview");
+        let pages_link = breadcrumb
+            .select(&scraper::Selector::parse("a[title='Pages']").unwrap())
+            .next()
+            .expect("the Pages crumb links to the list");
+        let folder_link = breadcrumb
+            .select(&scraper::Selector::parse("a[title]").unwrap())
+            .find(|link| link.value().attr("title") == Some(folder_name))
+            .expect("the folder crumb returns to the Pages list");
+        assert_eq!(
+            project_link.value().attr("href").unwrap(),
+            format!("{mount}/ACC/overview")
+        );
+        assert_eq!(
+            pages_link.value().attr("href").unwrap(),
+            format!("{mount}/ACC/pages")
+        );
+        assert_eq!(
+            folder_link.value().attr("href").unwrap(),
+            format!("{mount}/ACC/pages")
+        );
+        assert!(
+            !breadcrumb
+                .text()
+                .collect::<String>()
+                .contains("Private folder")
+        );
+
+        let visible_items = breadcrumb
+            .select(&scraper::Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
+            .collect::<Vec<_>>();
+        for item in &visible_items[..2] {
+            let classes = item.value().attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:flex"));
+        }
+        let separators = breadcrumb
+            .select(&scraper::Selector::parse("ol > li[aria-hidden='true']").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(separators.len(), 3);
+        assert!(separators[..2].iter().all(|separator| {
+            let classes = separator.value().attr("class").unwrap_or_default();
+            classes.split_whitespace().any(|class| class == "hidden")
+                && classes.split_whitespace().any(|class| class == "sm:flex")
+        }));
+        assert!(
+            separators[2]
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .all(|class| class != "hidden"),
+            "the separator between the visible folder and identifier stays visible on phones"
+        );
+        let folder_item = scraper::ElementRef::wrap(
+            breadcrumb
+                .select(&scraper::Selector::parse("a[title]").unwrap())
+                .find(|link| link.value().attr("title") == Some(folder_name))
+                .unwrap()
+                .parent()
+                .unwrap(),
+        )
+        .expect("the folder link belongs to its breadcrumb item");
+        assert!(
+            folder_item
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .all(|class| class != "hidden")
+        );
+
+        let current = breadcrumb
+            .select(&scraper::Selector::parse("[aria-current='page']").unwrap())
+            .next()
+            .expect("the page identifier is the current crumb");
+        assert_eq!(current.text().collect::<String>().trim(), page.identifier);
+        let project_copy = breadcrumb
+            .select(&scraper::Selector::parse("button[aria-label='Copy ACC']").unwrap())
+            .next()
+            .expect("the project identifier can be copied");
+        let page_copy = breadcrumb
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "button[aria-label='Copy {}']",
+                    page.identifier
+                ))
+                .unwrap(),
+            )
+            .next()
+            .expect("the page identifier can be copied");
+        for button in [project_copy, page_copy] {
+            assert!(button.value().attr("data-topcoat-on:click").is_some());
+            let classes = button.value().attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:grid"));
+            assert!(
+                classes
+                    .split_whitespace()
+                    .any(|class| class == "group-hover:w-5")
+            );
+            assert!(
+                classes
+                    .split_whitespace()
+                    .any(|class| class == "focus-visible:w-5")
+            );
+            assert!(
+                classes
+                    .split_whitespace()
+                    .any(|class| class == "group-hover:opacity-100")
+            );
+            assert!(
+                classes
+                    .split_whitespace()
+                    .any(|class| class == "focus-visible:opacity-100")
+            );
+        }
+        assert!(
+            breadcrumb
+                .select(&scraper::Selector::parse("button[aria-label^='Copy ']").unwrap())
+                .all(|button| !button
+                    .value()
+                    .attr("aria-label")
+                    .unwrap()
+                    .contains(folder_name))
+        );
+
+        let copied = home_fixture::evaluate_handler(
+            "src/topcoat/native/breadcrumbs_handler.test.cjs",
+            &serde_json::json!({
+                "phase": "integration",
+                "signals": home_fixture::page_signals(&html),
+                "project_handler": project_copy.value().attr("data-topcoat-on:click").unwrap(),
+                "identifier_handler": page_copy.value().attr("data-topcoat-on:click").unwrap(),
+                "project_id": "ACC",
+                "identifier": page.identifier.clone(),
+            }),
+        );
+        assert_eq!(
+            copied["copied"],
+            serde_json::json!(["ACC", page.identifier.as_str()])
+        );
+        assert_eq!(copied["events_stopped"], serde_json::json!([true, true]));
+        assert_eq!(copied["events_prevented"], serde_json::json!([true, true]));
+    }
+    assert_eq!(
+        queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .folder_id,
+        Some(folder_id),
+        "viewer breadcrumb rendering has no side effects",
+    );
+
+    let unfiled_fixture = home_fixture::fixture();
+    let (unfiled_id, _, _) = seed_page(&unfiled_fixture, false);
+    let unfiled = queries::get_page(&unfiled_fixture.db.read().unwrap(), unfiled_id).unwrap();
+    let (status, html) = home_fixture::document(
+        &unfiled_fixture,
+        "/ACC",
+        &format!("/ACC/pages/{unfiled_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let breadcrumb = document
+        .select(&scraper::Selector::parse("nav[aria-label='Breadcrumb']").unwrap())
+        .next()
+        .expect("unfiled pages render the same breadcrumb navigation");
+    let visible_labels = breadcrumb
+        .select(&scraper::Selector::parse("ol > li").unwrap())
+        .filter(|item| item.value().attr("aria-hidden") != Some("true"))
+        .map(|item| item.text().collect::<String>().trim().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible_labels,
+        ["ACC", "Pages", unfiled.identifier.as_str()]
+    );
+    assert!(
+        breadcrumb
+            .select(&scraper::Selector::parse("a[title]").unwrap())
+            .all(|link| link.value().attr("title") != Some("Research <draft> & review"))
+    );
+    let separators = breadcrumb
+        .select(&scraper::Selector::parse("ol > li[aria-hidden='true']").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(separators.len(), 2);
+    assert!(separators.iter().all(|separator| {
+        let classes = separator.value().attr("class").unwrap_or_default();
+        classes.split_whitespace().any(|class| class == "hidden")
+            && classes.split_whitespace().any(|class| class == "sm:flex")
+    }));
+    let project_copy = breadcrumb
+        .select(&scraper::Selector::parse("button[aria-label='Copy ACC']").unwrap())
+        .next()
+        .expect("unfiled page trail copies the project identifier");
+    let page_copy = breadcrumb
+        .select(
+            &scraper::Selector::parse(&format!("button[aria-label='Copy {}']", unfiled.identifier))
+                .unwrap(),
+        )
+        .next()
+        .expect("unfiled page trail copies the page identifier");
+    let copied = home_fixture::evaluate_handler(
+        "src/topcoat/native/breadcrumbs_handler.test.cjs",
+        &serde_json::json!({
+            "phase": "integration",
+            "signals": home_fixture::page_signals(&html),
+            "project_handler": project_copy.value().attr("data-topcoat-on:click").unwrap(),
+            "identifier_handler": page_copy.value().attr("data-topcoat-on:click").unwrap(),
+            "project_id": "ACC",
+            "identifier": unfiled.identifier.clone(),
+        }),
+    );
+    assert_eq!(
+        copied["copied"],
+        serde_json::json!(["ACC", unfiled.identifier.as_str()])
+    );
+    assert_eq!(copied["events_stopped"], serde_json::json!([true, true]));
+    assert_eq!(copied["events_prevented"], serde_json::json!([true, true]));
+}
+
+#[tokio::test]
+async fn native_pages_detail_owns_four_fresh_account_toast_slots() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, false);
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let slots = document
+        .select(&scraper::Selector::parse("[data-native-toast-slot]").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        slots.len(),
+        4,
+        "PageDetail gets the account-owned toast stack"
+    );
+}
+
+#[tokio::test]
 async fn native_page_status_write_checks_account_and_role() {
     use topcoat::runtime::Surrogated;
 

@@ -20,6 +20,14 @@ use topcoat::{
 };
 
 pub(crate) const TOAST_CAPACITY: usize = 4;
+
+#[record]
+#[derive(Clone)]
+pub(crate) struct ToastErrorRequest {
+    pub account_id: i64,
+    pub message: String,
+}
+
 type OwnerHandlesSurrogate<'a> = <&'a OwnerHandles as Surrogated>::Surrogate;
 type ModuleRequestSurrogate = <ModuleRequest as Surrogated>::Surrogate;
 type ModuleAssignmentReplySurrogate = <ModuleAssignmentReply as Surrogated>::Surrogate;
@@ -971,6 +979,13 @@ mod tests {
                         "html":html,"mount":mount,
                         "handler_source": super::super::shell_handlers::handler_source(),
                         "handler_url": super::super::shell_handlers::handler_url(),
+                        "toast_errors": ([7_i64, 8].into_iter().map(|account_id| (
+                            account_id.to_string(),
+                            ToastErrorRequest {
+                                account_id,
+                                message:"Couldn't copy to clipboard".into(),
+                            }.into_surrogate(),
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
                         "module_requests": ([42_i64, 43].into_iter().flat_map(|issue_id| {
                             [None, Some(9_i64)].into_iter().flat_map(move |next| {
                                 [None, Some(9_i64)].into_iter().map(move |previous| {
