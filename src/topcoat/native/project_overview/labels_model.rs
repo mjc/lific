@@ -2,7 +2,7 @@
 use crate::db::models::{Issue, Label, Page};
 use std::collections::BTreeMap;
 
-pub(super) const PALETTE: [(&str, &str); 12] = [
+pub(crate) const PALETTE: [(&str, &str); 12] = [
     ("Red", "#EF4444"),
     ("Orange", "#F97316"),
     ("Amber", "#D97706"),
@@ -35,19 +35,19 @@ pub(crate) fn safe_color(value: &str) -> &str {
         DEFAULT_COLOR
     }
 }
-pub(super) fn color_name(value: &str) -> &'static str {
+pub(crate) fn color_name(value: &str) -> &'static str {
     PALETTE
         .iter()
         .find(|(_, color)| color.eq_ignore_ascii_case(value))
         .map_or("Custom", |(name, _)| *name)
 }
-pub(super) fn color_for_name(value: &str) -> &'static str {
+pub(crate) fn color_for_name(value: &str) -> &'static str {
     let hash = value.encode_utf16().fold(0_u32, |hash, unit| {
         hash.wrapping_mul(31).wrapping_add(u32::from(unit))
     });
     PALETTE[(hash % 11) as usize].1
 }
-pub(super) fn normalize_hex(value: &str) -> Option<String> {
+pub(crate) fn normalize_hex(value: &str) -> Option<String> {
     let value = value
         .trim_matches(js_whitespace)
         .strip_prefix('#')

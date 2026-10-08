@@ -9,7 +9,7 @@ mod import;
 mod import_model;
 mod labels;
 mod labels_actions;
-mod labels_model;
+pub(crate) mod labels_model;
 mod management;
 mod management_controls;
 mod management_model;

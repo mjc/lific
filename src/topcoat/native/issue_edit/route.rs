@@ -20,6 +20,7 @@ pub(crate) struct DocumentMetadata {
     pub(crate) module: String,
     pub(crate) modules: Vec<crate::db::models::Module>,
     pub(crate) labels: Vec<(String, Option<String>)>,
+    pub(crate) label_catalog: Vec<crate::db::models::Label>,
     pub(crate) waits: Vec<crate::db::models::IssueWait>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
@@ -45,27 +46,28 @@ pub(crate) fn metadata(
         let conn = context::db(cx).read()?;
         queries::get_project(&conn, issue.project_id)?.identifier
     };
-    let labels = {
+    let label_catalog = {
         let conn = context::db(cx).read()?;
-        let project_labels = queries::list_labels(&conn, issue.project_id)?;
-        issue
-            .labels
-            .iter()
-            .map(|name| {
-                let color = project_labels
-                    .iter()
-                    .find(|label| label.name == *name)
-                    .map(|label| label.color.clone());
-                (name.clone(), color)
-            })
-            .collect()
+        queries::list_labels(&conn, issue.project_id)?
     };
+    let labels = issue
+        .labels
+        .iter()
+        .map(|name| {
+            let color = label_catalog
+                .iter()
+                .find(|label| label.name == *name)
+                .map(|label| label.color.clone());
+            (name.clone(), color)
+        })
+        .collect();
     Ok(DocumentMetadata {
         project_identifier,
         module_id: issue.module_id,
         module,
         modules,
         labels,
+        label_catalog,
         waits: issue.waits.clone(),
         created_at: issue.created_at.clone(),
         updated_at: issue.updated_at.clone(),

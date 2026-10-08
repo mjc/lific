@@ -22,6 +22,7 @@ pub(crate) struct Snapshot {
     pub(crate) relates_to: Vec<String>,
     pub(crate) duplicates: Vec<String>,
     pub(crate) duplicated_by: Vec<String>,
+    pub(crate) labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +114,7 @@ pub(crate) fn snapshot(issue: Issue) -> Snapshot {
         relates_to: issue.relates_to,
         duplicates: issue.duplicates,
         duplicated_by: issue.duplicated_by,
+        labels: issue.labels,
     }
 }
 

@@ -9,7 +9,7 @@ use crate::{
 };
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, Signal, expr, procedure, record, signal},
+    runtime::{Event, Signal, expr, procedure, record},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -18,7 +18,8 @@ pub(crate) fn field<'a>(
     metadata: &super::route::DocumentMetadata,
     request: ModuleRequest,
     can_edit: bool,
-    menus: (Signal<bool>, Signal<bool>, Signal<bool>),
+    menus: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+    open: Signal<bool>,
 ) -> BoxView<'a> {
     let module_id = request.previous_module_id;
     let module_label = metadata.module.clone();
@@ -73,7 +74,7 @@ pub(crate) fn field<'a>(
         .boxed();
     }
 
-    let open = signal(cx, || false);
+    let labels_open = menus.3;
     let status_open = menus.0;
     let header_status_open = menus.1;
     let priority_open = menus.2;
@@ -87,6 +88,7 @@ pub(crate) fn field<'a>(
                 status_open.set(false);
                 header_status_open.set(false);
                 priority_open.set(false);
+                labels_open.set(false);
             }
             toggle_open.set(!toggle_open.get());
         }
@@ -280,10 +282,11 @@ pub(crate) struct ModuleAssignmentSnapshot {
     pub relates_to: Vec<String>,
     pub duplicates: Vec<String>,
     pub duplicated_by: Vec<String>,
+    pub labels: Vec<String>,
 }
 
 impl ModuleAssignmentSnapshot {
-    fn from_issue(issue: &Issue) -> Self {
+    pub(crate) fn from_issue(issue: &Issue) -> Self {
         Self {
             title: issue.title.clone(),
             description: issue.description.clone(),
@@ -294,6 +297,7 @@ impl ModuleAssignmentSnapshot {
             relates_to: issue.relates_to.clone(),
             duplicates: issue.duplicates.clone(),
             duplicated_by: issue.duplicated_by.clone(),
+            labels: issue.labels.clone(),
         }
     }
 }

@@ -10,6 +10,7 @@ pub(crate) mod controls;
 pub(crate) mod delete;
 pub(crate) mod delete_menu;
 pub(crate) mod export;
+pub(crate) mod labels;
 pub(crate) mod list_return;
 mod model;
 pub(crate) mod module_assignment;

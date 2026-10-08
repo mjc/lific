@@ -28,9 +28,12 @@ type WireOutcome = (
     Vec<String>,
     Vec<String>,
     Vec<String>,
+    Vec<String>,
 );
 type ModuleAssignmentReplyValue =
     <super::module_assignment::ModuleAssignmentReply as Surrogated>::Surrogate;
+type SavedSnapshotValue =
+    <super::module_assignment::ModuleAssignmentSnapshot as Surrogated>::Surrogate;
 
 fn wire(outcome: SaveOutcome) -> WireOutcome {
     let (result, snapshot) = match outcome {
@@ -54,6 +57,7 @@ fn wire(outcome: SaveOutcome) -> WireOutcome {
             snapshot.relates_to,
             snapshot.duplicates,
             snapshot.duplicated_by,
+            snapshot.labels,
         ),
         None => (
             result,
@@ -62,6 +66,7 @@ fn wire(outcome: SaveOutcome) -> WireOutcome {
             None,
             None,
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -134,6 +139,17 @@ struct Controls {
     relates_to: Signal<Vec<String>>,
     duplicates: Signal<Vec<String>>,
     duplicated_by: Signal<Vec<String>>,
+    labels: Signal<Vec<String>>,
+    catalog_revision: Signal<i64>,
+    label_picker_open: Signal<bool>,
+    module_picker_open: Signal<bool>,
+    label_query: Signal<String>,
+    label_color: Signal<String>,
+    label_error: Signal<String>,
+    label_color_open: Signal<bool>,
+    label_hex_draft: Signal<String>,
+    label_hex_bad: Signal<bool>,
+    label_creating: Signal<bool>,
     title_draft: Signal<String>,
     description_draft: Signal<String>,
     title_revision: Signal<i64>,
@@ -165,6 +181,17 @@ impl Controls {
             relates_to: signal(cx, || snapshot.relates_to.clone()),
             duplicates: signal(cx, || snapshot.duplicates.clone()),
             duplicated_by: signal(cx, || snapshot.duplicated_by.clone()),
+            labels: signal(cx, || snapshot.labels.clone()),
+            catalog_revision: signal(cx, || 0i64),
+            label_picker_open: signal(cx, || false),
+            module_picker_open: signal(cx, || false),
+            label_query: signal(cx, String::new),
+            label_color: signal(cx, String::new),
+            label_error: signal(cx, String::new),
+            label_color_open: signal(cx, || false),
+            label_hex_draft: signal(cx, String::new),
+            label_hex_bad: signal(cx, || false),
+            label_creating: signal(cx, || false),
             title_draft: signal(cx, || snapshot.title.clone()),
             description_draft: signal(cx, || snapshot.description.clone()),
             title_revision: signal(cx, || 0i64),
@@ -209,6 +236,7 @@ fn save_attributes(
     let relates_to = controls.relates_to.clone();
     let duplicates = controls.duplicates.clone();
     let duplicated_by = controls.duplicated_by.clone();
+    let labels = controls.labels.clone();
     let title_draft = controls.title_draft.clone();
     let description_draft = controls.description_draft.clone();
     let title_revision = controls.title_revision.clone();
@@ -390,6 +418,7 @@ fn save_attributes(
                                     relates_to.set(outcome.8);
                                     duplicates.set(outcome.9);
                                     duplicated_by.set(outcome.10);
+                                    labels.set(outcome.11);
                                 }
                                 if outcome.0.is_ok() {
                                     if field == "title" {
@@ -559,7 +588,7 @@ async fn document_region_component(
         cx,
         content,
         Some(topbar),
-        String::new(),
+        "".to_owned(),
     ))
 }
 
@@ -625,8 +654,20 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
     let module_relates_to = controls.relates_to.clone();
     let module_duplicates = controls.duplicates.clone();
     let module_duplicated_by = controls.duplicated_by.clone();
+    let module_labels = controls.labels.clone();
     let module_title_draft = controls.title_draft.clone();
     let module_description_draft = controls.description_draft.clone();
+    let module_catalog_revision = controls.catalog_revision.clone();
+    let module_label_query = controls.label_query.clone();
+    let module_label_color = controls.label_color.clone();
+    let module_label_color_open = controls.label_color_open.clone();
+    let module_label_hex_draft = controls.label_hex_draft.clone();
+    let module_label_hex_bad = controls.label_hex_bad.clone();
+    let module_label_creating = controls.label_creating.clone();
+    let label_open = controls.label_picker_open.clone();
+    let label_color_open = controls.label_color_open.clone();
+    let label_focus_open = controls.label_picker_open.clone();
+    let label_input = format!("native-issue-label-filter-{}", controls.identifier);
     let input = format!("native-issue-body-input-{}", controls.identifier);
     let handler = expr!(|_mount: Event| {
         let _dispose = || {
@@ -666,31 +707,52 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
             "window.addEventListener('click', event => ${_dismiss}(cx.hydrate(Boolean(event.target?.closest?.('.native-issue-detail__picker')))), {signal:cx.abortSignal})",
             ()
         );
+        let _dismiss_label =
+            |inside_picker: topcoat::runtime::BoolSurrogate,
+             inside_color: topcoat::runtime::BoolSurrogate| {
+                if !inside_picker {
+                    label_open.set(false);
+                    label_color_open.set(false);
+                } else if !inside_color {
+                    label_color_open.set(false);
+                }
+            };
+        raw!(
+            "window.addEventListener('click',event=>${_dismiss_label}(cx.hydrate(Boolean(event.target?.closest?.('[data-native-issue-labels]'))),cx.hydrate(Boolean(event.target?.closest?.('[data-native-label-color-area]')))),{signal:cx.abortSignal})",
+            ()
+        );
+        let _apply_saved = |next_seq: topcoat::runtime::I64Surrogate,
+                            canonical: SavedSnapshotValue| {
+            if next_seq >= module_seq.get() {
+                let was_clean_title = module_title_draft.get() == module_title.get();
+                let was_clean_description =
+                    module_description_draft.get() == module_description.get();
+                module_seq.set(next_seq);
+                module_title.set(canonical.title.clone());
+                module_description.set(canonical.description.clone());
+                module_status.set(canonical.status);
+                module_priority.set(canonical.priority);
+                module_blocks.set(canonical.blocks);
+                module_blocked_by.set(canonical.blocked_by);
+                module_relates_to.set(canonical.relates_to);
+                module_duplicates.set(canonical.duplicates);
+                module_duplicated_by.set(canonical.duplicated_by);
+                module_labels.set(canonical.labels);
+                if was_clean_title {
+                    module_title_draft.set(canonical.title);
+                }
+                if was_clean_description {
+                    module_description_draft.set(canonical.description);
+                }
+            }
+        };
         let _module_applied = |reply: ModuleAssignmentReplyValue| {
             if reply.account_id == module_account {
                 if reply.issue_id == module_issue {
-                    if reply.seq >= module_seq.get() {
-                        let was_clean_title = module_title_draft.get() == module_title.get();
-                        let was_clean_description =
-                            module_description_draft.get() == module_description.get();
-                        module_seq.set(reply.seq);
+                    if reply.status.is_ok() {
                         if reply.canonical.is_some() {
-                            let canonical = reply.canonical.unwrap();
-                            module_title.set(canonical.title.clone());
-                            module_description.set(canonical.description.clone());
-                            module_status.set(canonical.status);
-                            module_priority.set(canonical.priority);
-                            module_blocks.set(canonical.blocks);
-                            module_blocked_by.set(canonical.blocked_by);
-                            module_relates_to.set(canonical.relates_to);
-                            module_duplicates.set(canonical.duplicates);
-                            module_duplicated_by.set(canonical.duplicated_by);
-                            if was_clean_title {
-                                module_title_draft.set(canonical.title);
-                            }
-                            if was_clean_description {
-                                module_description_draft.set(canonical.description);
-                            }
+                            let _canonical = reply.canonical.unwrap();
+                            raw!("${_apply_saved}(${reply}.seq,${_canonical});", ());
                         }
                     }
                 }
@@ -698,6 +760,42 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
         };
         raw!(
             "window.addEventListener('lific:native-issue-module-applied', event => ${_module_applied}(event.detail), {signal:cx.abortSignal})",
+            ()
+        );
+        let _label_applied = |reply: super::labels::LabelReplyValue| {
+            if reply.account_id == module_account {
+                if reply.issue_id == module_issue {
+                    if reply.catalog_item.is_some() {
+                        module_catalog_revision.increment();
+                        module_label_query.set("".to_owned());
+                        module_label_color.set("".to_owned());
+                        module_label_color_open.set(false);
+                        module_label_hex_draft.set("".to_owned());
+                        module_label_hex_bad.set(false);
+                        let _focus_label = || {
+                            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                                if label_focus_open.get() {
+                                    raw!(
+                                        "document.getElementById(${label_input}.toString())?.focus()",
+                                        ()
+                                    );
+                                }
+                            }
+                        };
+                        raw!("requestAnimationFrame(()=>${_focus_label}());", ());
+                    }
+                    module_label_creating.set(false);
+                    if reply.status.is_ok() {
+                        if reply.canonical.is_some() {
+                            let _canonical = reply.canonical.unwrap();
+                            raw!("${_apply_saved}(${reply}.seq,${_canonical});", ());
+                        }
+                    }
+                }
+            }
+        };
+        raw!(
+            "window.addEventListener('lific:native-issue-label-applied',event=>${_label_applied}(event.detail),{signal:cx.abortSignal})",
             ()
         );
     });
@@ -805,6 +903,8 @@ fn document_topbar<'a>(
     let header_status_open = controls.header_status_open.clone();
     let status_open = controls.status_open.clone();
     let priority_open = controls.priority_open.clone();
+    let module_open = controls.module_picker_open.clone();
+    let labels_open = controls.label_picker_open.clone();
     let description = controls.description.clone();
     let editing = controls.description_editing.clone();
     let busy = controls.busy.clone();
@@ -907,6 +1007,8 @@ fn document_topbar<'a>(
                                 header_status_open.set(!header_status_open.get());
                                 status_open.set(false);
                                 priority_open.set(false);
+                                module_open.set(false);
+                                labels_open.set(false);
                             })
                         >
                             (status_decoration(cx, status.clone(), 13))
@@ -1029,11 +1131,13 @@ async fn native_issue_metadata(
     cx: &Cx,
     identifier: String,
     revision: i64,
+    catalog_revision: i64,
     dates: bool,
-    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>),
+    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+    picker_state: super::labels::PickerState,
 ) -> topcoat::Result<impl View> {
     // The saved cursor invalidates this read; it never supplies authority.
-    let _ = revision;
+    let _ = (revision, catalog_revision);
     let caller = super::super::session::read(cx, super::super::context::caller(cx))?;
     let user = super::super::session::read(cx, crate::api::require_user(&caller.identity))?;
     let db = super::super::context::db(cx);
@@ -1066,6 +1170,7 @@ async fn native_issue_metadata(
         can_edit,
         module_request,
         menu_signals,
+        picker_state,
     ))
 }
 
@@ -1075,7 +1180,8 @@ fn metadata_view<'a>(
     dates: bool,
     can_edit: bool,
     module_request: super::module_assignment::ModuleRequest,
-    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>),
+    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+    picker_state: super::labels::PickerState,
 ) -> BoxView<'a> {
     let waits = metadata
         .waits
@@ -1097,6 +1203,33 @@ fn metadata_view<'a>(
             (label, wait.note)
         })
         .collect::<Vec<_>>();
+    let attached_labels = metadata
+        .labels
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<_>>();
+    let issue_identifier = module_request.identifier.clone();
+    let label_open = picker_state.0.clone();
+    let module_open = menu_signals.3.clone();
+    let module_menus = (
+        menu_signals.0.clone(),
+        menu_signals.1.clone(),
+        menu_signals.2.clone(),
+        label_open,
+    );
+    let label_picker = super::labels::picker(
+        cx,
+        super::labels::PickerProps {
+            account_id: module_request.account_id,
+            issue_id: module_request.issue_id,
+            identifier: &issue_identifier,
+            catalog: &metadata.label_catalog,
+            attached: &attached_labels,
+            can_edit,
+            menus: menu_signals.clone(),
+            state: picker_state,
+        },
+    );
     view! {
         cx =>
         <div class="native-issue-detail__metadata-read" style="display: contents;">
@@ -1122,24 +1255,13 @@ fn metadata_view<'a>(
                         &metadata,
                         module_request,
                         can_edit,
-                        menu_signals,
+                        module_menus,
+                        module_open,
                     ))
                 </section>
                 <section>
                     <h2>"Labels"</h2>
-                    if metadata.labels.is_empty() {
-                        <span class="native-issue-detail__empty-value">"None"</span>
-                    } else {
-                        <div class="flex flex-wrap gap-1.5">
-                            for (label, color) in metadata.labels {
-                                (super::super::label_chip::render(
-                                    cx,
-                                    label,
-                                    color.as_deref(),
-                                ))
-                            }
-                        </div>
-                    }
+                    (label_picker)
                 </section>
                 <div class="native-issue-detail__divider" aria-hidden="true"></div>
                 if can_edit || !waits.is_empty() {
@@ -1172,7 +1294,7 @@ fn date_text<'a>(cx: &'a Cx, timestamp: String) -> BoxView<'a> {
                 // the displayed value remains a Rust-owned framework signal.
                 let local = raw!(
                     "cx.hydrate(new Date(${timestamp}.toString() + 'Z').toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}))",
-                    String::new(),
+                    "".to_owned(),
                 );
                 date.set(local);
             })
@@ -1536,7 +1658,21 @@ fn editor_fields<'a>(
         status_open.clone(),
         header_status_open.clone(),
         priority_open.clone(),
+        controls.module_picker_open.clone(),
     );
+    let catalog_revision = controls.catalog_revision.clone();
+    let label_picker_open = controls.label_picker_open.clone();
+    let status_module_open = controls.module_picker_open.clone();
+    let status_labels_open = controls.label_picker_open.clone();
+    let priority_module_open = controls.module_picker_open.clone();
+    let priority_labels_open = controls.label_picker_open.clone();
+    let label_query = controls.label_query.clone();
+    let label_color = controls.label_color.clone();
+    let label_error = controls.label_error.clone();
+    let label_color_open = controls.label_color_open.clone();
+    let label_hex_draft = controls.label_hex_draft.clone();
+    let label_hex_bad = controls.label_hex_bad.clone();
+    let label_creating = controls.label_creating.clone();
     let properties_open = controls.properties_open.clone();
     let busy = controls.busy.clone();
     let editable_priority_label = priority_label(priority.clone());
@@ -1586,6 +1722,8 @@ fn editor_fields<'a>(
                                 status_open.set(!status_open.get());
                                 priority_open.set(false);
                                 header_status_open.set(false);
+                                status_module_open.set(false);
+                                status_labels_open.set(false);
                             })
                         >
                             (status_decoration(cx, status.clone(), 14))
@@ -1651,6 +1789,8 @@ fn editor_fields<'a>(
                                 priority_open.set(!priority_open.get());
                                 status_open.set(false);
                                 header_status_open.set(false);
+                                priority_module_open.set(false);
+                                priority_labels_open.set(false);
                             })
                         >
                             (priority_decoration(cx, priority.clone(), 14))
@@ -1739,8 +1879,19 @@ fn editor_fields<'a>(
                 native_issue_metadata(
                     identifier: metadata_identifier,
                     revision: $(seq.get()),
+                    catalog_revision: $(catalog_revision.get()),
                     dates: false,
-                    menu_signals: module_menu_signals.clone()
+                    menu_signals: module_menu_signals.clone(),
+                    picker_state: (
+                        label_picker_open.clone(),
+                        label_query.clone(),
+                        label_color.clone(),
+                        label_error.clone(),
+                        label_color_open.clone(),
+                        label_hex_draft.clone(),
+                        label_hex_bad.clone(),
+                        label_creating.clone(),
+                    )
                 )
             }
             if document {
@@ -1755,8 +1906,19 @@ fn editor_fields<'a>(
                 native_issue_metadata(
                     identifier: dates_identifier,
                     revision: $(seq.get()),
+                    catalog_revision: 0,
                     dates: true,
-                    menu_signals: module_menu_signals
+                    menu_signals: module_menu_signals,
+                    picker_state: (
+                        label_picker_open.clone(),
+                        label_query.clone(),
+                        label_color.clone(),
+                        label_error.clone(),
+                        label_color_open.clone(),
+                        label_hex_draft.clone(),
+                        label_hex_bad.clone(),
+                        label_creating.clone(),
+                    )
                 )
             }
         </aside>

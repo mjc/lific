@@ -32,6 +32,7 @@ mod tests {
             relates_to: vec!["ACC-2".into()],
             duplicates: Vec::new(),
             duplicated_by: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
