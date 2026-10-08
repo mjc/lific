@@ -1,4 +1,4 @@
-//! Shared account-level issue writes and notifications across native navigation.
+//! Shared account-level writes and notifications across native navigation.
 //! Four slots retain deadlines and one-shot Undo across native navigation.
 use super::super::runtime::{
     procedure::ProcedureKeepaliveExt,
