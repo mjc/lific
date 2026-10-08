@@ -38,6 +38,8 @@ async fn save_fixture() -> SaveFixture {
     let body_handler = body.value().attr("data-topcoat-on:input").unwrap();
     let save_handler = save.value().attr("data-topcoat-on:click").unwrap();
     let busy_binding = pin.value().attr("data-topcoat-bind:disabled").unwrap();
+    let title_binding = title.value().attr("data-topcoat-bind:value").unwrap();
+    let body_binding = body.value().attr("data-topcoat-bind:value").unwrap();
     let expected_arguments = (
         account,
         page_id,
@@ -45,7 +47,7 @@ async fn save_fixture() -> SaveFixture {
         "Retired body".to_owned(),
         expected_seq,
     )
-    .into_surrogate();
+        .into_surrogate();
     let reply = home_fixture::procedure(
         &fixture,
         "/__native_pages/save",
@@ -62,6 +64,8 @@ async fn save_fixture() -> SaveFixture {
             "body_handler": body_handler,
             "save_handler": save_handler,
             "busy_binding": busy_binding,
+            "title_binding": title_binding,
+            "body_binding": body_binding,
             "shard_marker": super::production::shard_marker(
                 &html,
                 "/__native_pages/activity",
@@ -80,7 +84,10 @@ async fn native_page_save_does_not_queue_a_procedure_after_disposal() {
         &with_scenario(&setup.input, "dispose_before_queue"),
     );
     assert_eq!(output["passed"], true);
-    assert_eq!(output["requests"], 0, "a retired Save handler sends no request");
+    assert_eq!(
+        output["requests"], 0,
+        "a retired Save handler sends no request"
+    );
 }
 
 #[tokio::test]
@@ -130,6 +137,35 @@ async fn native_page_save_success_refreshes_the_real_activity_shard_from_committ
     assert_eq!(status, StatusCode::OK);
     assert!(feed_html.contains("Retired title"));
     assert!(feed_html.contains("Retired body"));
+}
+
+#[tokio::test]
+async fn native_page_save_keeps_newer_drafts_and_refreshes_activity_from_committed_sequence() {
+    let setup = save_fixture().await;
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/save_lifecycle_handler.test.cjs",
+        &with_scenario(&setup.input, "pending_edit_success"),
+    );
+    assert_eq!(output["passed"], true);
+    assert_eq!(
+        output["drafts"],
+        serde_json::json!(["Newer title draft", "Newer body draft"]),
+        "the later input events remain in the editor while the committed version refreshes history",
+    );
+    assert_eq!(output["arguments"], setup.input["expected_arguments"]);
+    let shard = &output["activity_shard"];
+    assert_eq!(shard["args"][1], setup.input["reply"]["v"]["seq"]);
+    let (status, feed_html) = super::production::replay_activity_shard(
+        &setup.fixture,
+        shard["identity"].as_str().unwrap(),
+        shard["args"].clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(feed_html.contains("Retired title"));
+    assert!(feed_html.contains("Retired body"));
+    assert!(!feed_html.contains("Newer title draft"));
+    assert!(!feed_html.contains("Newer body draft"));
 }
 
 fn with_scenario(input: &serde_json::Value, scenario: &str) -> serde_json::Value {
