@@ -45,6 +45,15 @@ fn named_section<'a>(document: &'a Html, title: &str) -> scraper::ElementRef<'a>
         .unwrap_or_else(|| panic!("IssueDetail renders the {title} metadata section"))
 }
 
+fn chip_label_text(chip: scraper::ElementRef<'_>) -> String {
+    chip.children()
+        .filter_map(|child| match child.value() {
+            scraper::Node::Text(text) => Some(text.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn fixture() -> Fixture {
     let fixture = home_fixture::fixture();
     {
@@ -842,16 +851,13 @@ async fn native_issue_label_picker_matches_main_for_both_roles() {
             );
             let chip = section
                 .select(&chips)
-                .find(|chip| chip.text().collect::<String>().starts_with(&attached.name))
+                .find(|chip| chip_label_text(*chip) == attached.name)
                 .unwrap_or_else(|| panic!("the current label renders as a chip for {role:?}"));
-            let label_text = chip
-                .children()
-                .filter_map(|child| match child.value() {
-                    scraper::Node::Text(text) => Some(text.to_string()),
-                    _ => None,
-                })
-                .collect::<String>();
-            assert_eq!(label_text, attached.name, "chip label text remains distinct");
+            assert_eq!(
+                chip_label_text(chip),
+                attached.name,
+                "chip label text remains distinct"
+            );
             if editable {
                 assert!(
                     chip.select(&remove_label).next().is_some(),
@@ -955,8 +961,6 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                     "query_binding": query_binding,
                     "open_handler": open_handler,
                     "query_handler": query_handler,
-                    "option_handler": option_handler,
-                    "option_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
                 }, {
                     "name": "filter_enter",
                     "signals": home_fixture::page_signals(&source),
@@ -984,7 +988,8 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 }],
             }),
         );
-        assert_eq!(output["query_id"].as_str().is_some(), true);
+        assert!(output["query_id"].as_str().is_some());
+        assert_eq!(output["query_value"], "New runtime label");
         assert_eq!(
             output["enter_request"],
             serde_json::to_value(request.clone().into_surrogate()).unwrap(),
@@ -1005,6 +1010,15 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
             assert_eq!(status, StatusCode::OK);
             let filtered = Html::parse_document(&filtered_html);
             let filtered_section = named_section(&filtered, "Labels");
+            let filtered_query = filtered_section
+                .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
+                .next()
+                .unwrap();
+            assert_eq!(
+                filtered_query.value().attr("value"),
+                Some("New runtime label"),
+                "the authenticated SSR replay receives the real query signal value"
+            );
             let create_button = filtered_section
                 .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
                 .next()
@@ -1013,12 +1027,6 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 create_button.text().collect::<String>(),
                 "Create “New runtime label”"
             );
-            let create_handler = create_button.value().attr("data-topcoat-on:click").unwrap();
-            let filtered_query = filtered_section
-                .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
-                .next()
-                .unwrap();
-            let filtered_query_binding = filtered_query.value().attr("data-topcoat-bind:value").unwrap();
             let open_binding = filtered_section
                 .select(&Selector::parse("[data-native-issue-label-picker]").unwrap())
                 .next()
@@ -1034,9 +1042,10 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 .select(&Selector::parse("button[aria-label^='Color: ']").unwrap())
                 .next()
                 .unwrap();
-            let color_trigger_handler = color_trigger.value().attr("data-topcoat-on:click").unwrap();
+            let color_trigger_handler =
+                color_trigger.value().attr("data-topcoat-on:click").unwrap();
             let color_open_binding = color_area
-                .select(&Selector::parse("[data-topcoat-bind:hidden]").unwrap())
+                .select(&Selector::parse("[data-topcoat-bind\\:hidden]").unwrap())
                 .next()
                 .unwrap()
                 .value()
@@ -1108,7 +1117,7 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 .attr("data-topcoat-on:click")
                 .unwrap();
             let color_open_binding = hex_area
-                .select(&Selector::parse("[data-topcoat-bind:hidden]").unwrap())
+                .select(&Selector::parse("[data-topcoat-bind\\:hidden]").unwrap())
                 .next()
                 .unwrap()
                 .value()
@@ -1145,7 +1154,10 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
                 .next()
                 .unwrap();
-            let creating_binding = create_button.value().attr("data-topcoat-bind:disabled").unwrap();
+            let creating_binding = create_button
+                .value()
+                .attr("data-topcoat-bind:disabled")
+                .unwrap();
             let create_request = super::labels::LabelRequest {
                 mode: "create".into(),
                 account_id: account,
@@ -1209,8 +1221,10 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
         }
         let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
         canonical.relates_to = vec!["ACC-2".into()];
-        assert!(saved.relates_to.contains(&"HIDE-1".to_owned()),
-            "the database retains the hidden relation while the reply filters it");
+        assert!(
+            saved.relates_to.contains(&"HIDE-1".to_owned()),
+            "the database retains the hidden relation while the reply filters it"
+        );
         let expected = super::labels::LabelReply {
             status: Ok("saved".into()),
             account_id: account,
@@ -1315,15 +1329,7 @@ async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_b
         for (name, expected_color) in [("MiXeD API", "#aBc123"), ("Malformed color", "#6B7280")] {
             let chip = labels_section
                 .select(&spans_selector)
-                .find(|span| {
-                    span.children()
-                        .filter_map(|child| match child.value() {
-                            scraper::Node::Text(text) => Some(text.to_string()),
-                            _ => None,
-                        })
-                        .collect::<String>()
-                        == name
-                })
+                .find(|span| chip_label_text(*span) == name)
                 .unwrap_or_else(|| panic!("rendered chip for {name}"));
             let classes = chip.value().attr("class").unwrap_or_default();
             for class in [
@@ -1362,7 +1368,7 @@ async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_b
 
         let detached = labels_section
             .select(&spans_selector)
-            .find(|span| span.text().collect::<String>() == "Detached label")
+            .find(|span| chip_label_text(*span) == "Detached label")
             .expect("rendered chip for label outside the project catalog");
         let classes = detached.value().attr("class").unwrap_or_default();
         assert!(
@@ -1439,15 +1445,15 @@ async fn native_issue_label_procedures_create_attach_and_recheck_current_authori
         .into_iter()
         .find(|label| label.name == "Picker-created label")
         .unwrap();
-        let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
-        canonical.relates_to = vec!["ACC-2".into()];
-        let expected = super::labels::LabelReply {
+    let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
+    canonical.relates_to = vec!["ACC-2".into()];
+    let expected = super::labels::LabelReply {
         status: Ok("saved".into()),
         account_id: account,
         issue_id: saved.id,
         seq: saved.seq,
         labels: saved.labels.clone(),
-            canonical: Some(canonical),
+        canonical: Some(canonical),
         catalog_item: Some(super::labels::LabelCatalogItem {
             name: created.name.clone(),
             color: created.color.clone(),

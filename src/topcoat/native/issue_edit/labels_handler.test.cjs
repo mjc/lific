@@ -45,7 +45,7 @@ function run(phase) {
   };
   const read = id => unbox(cx.signal(id).dehydrate());
   const signalValues = () => Object.fromEntries(Object.keys(phase.signals)
-    .map(id => [id, cx.signal(id).dehydrate()]));
+    .map(id => [id, cx.signal(id).dehydrate().v]));
   const click = () => cx.event({type: 'click', target: {}, cancelable: true,
     preventDefault() {}, stopPropagation() {}});
   const key = (key, target = {}) => cx.event({type: 'keydown', key, target, cancelable: true,
@@ -74,6 +74,7 @@ function run(phase) {
     assert.equal(events.length, 0, 'filter editing does not dispatch a label mutation');
     assert.equal(read(openId), true, 'typing keeps the picker open');
     output.query_id = queryId;
+    output.query_value = read(queryId);
     output.query_signals = signalValues();
   } else if (phase.name === 'palette') {
     fixture.handler(phase.color_trigger_handler)(click());
