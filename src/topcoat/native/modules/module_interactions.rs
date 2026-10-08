@@ -181,3 +181,348 @@ async fn module_tabs_persist_per_project_and_run_through_emitted_browser_handler
         ["active", "backlog", "done"]
     );
 }
+
+#[tokio::test]
+async fn native_module_list_picker_keeps_icon_local_until_authenticated_create() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (account, project_id) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
+        (account, project_id)
+    };
+    let (status, html) = home_fixture::document(&fixture, "/app", "/ACC/modules", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&html);
+    let main = document
+        .select(&Selector::parse("main[data-native-modules]").unwrap())
+        .next()
+        .expect("the module list is rendered");
+    let create_form = main
+        .select(&Selector::parse("form").unwrap())
+        .find(|form| form.value().attr("data-topcoat-on:submit").is_some())
+        .expect("Maintainers can open the inline create form");
+    let picker = create_form
+        .select(&Selector::parse("[data-native-project-picker]").unwrap())
+        .next()
+        .expect("Main's inline create row uses the shared icon picker");
+    let create = main
+        .select(&Selector::parse("button").unwrap())
+        .find(|button| button.text().collect::<String>().trim() == "Module")
+        .expect("the module creation action is emitted")
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let trigger = picker
+        .select(&Selector::parse("#native-project-icon-trigger").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let choice = picker
+        .select(&Selector::parse(".native-project-picker-choice").unwrap())
+        .next()
+        .expect("the real shared picker emits its icon choices");
+    let icon_name = choice.value().attr("title").unwrap();
+    let icon_value = format!("lucide:{icon_name}");
+    let choice_handler = choice.value().attr("data-topcoat-on:click").unwrap();
+    let name_input = create_form
+        .select(
+            &Selector::parse(
+                "input[placeholder='Module name (e.g. Q1 Launch, Auth, Search rework)']",
+            )
+            .unwrap(),
+        )
+        .next()
+        .expect("the native form keeps Main's module name placeholder")
+        .value()
+        .attr("data-topcoat-on:input")
+        .unwrap();
+    let submit = create_form.value().attr("data-topcoat-on:submit").unwrap();
+    let expected_arguments = serde_json::to_value(
+        (
+            account,
+            project_id,
+            "ACC".to_owned(),
+            "Icon-selected module".to_owned(),
+            icon_value.clone(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/module_icon_picker.test.cjs",
+        &serde_json::json!({
+            "phase":"create",
+            "mount":"/app",
+            "signals":home_fixture::page_signals(&html),
+            "create":create,
+            "trigger":trigger,
+            "choice":choice_handler,
+            "name_input":name_input,
+            "submit":submit,
+            "expected_arguments":expected_arguments,
+        }),
+    );
+    assert_eq!(emitted["requests"].as_array().unwrap().len(), 1);
+
+    let (status, _) =
+        home_fixture::procedure(&fixture, "/__native_modules/create", expected_arguments).await;
+    assert_eq!(status, StatusCode::OK);
+    let created = queries::list_modules(&fixture.db.read().unwrap(), project_id)
+        .unwrap()
+        .into_iter()
+        .find(|module| module.name == "Icon-selected module")
+        .expect("the production create procedure persists the new module");
+    assert_eq!(created.emoji.as_deref(), Some(icon_value.as_str()));
+}
+
+#[tokio::test]
+async fn native_module_detail_picker_saves_immediately_clears_and_respects_viewer_role() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (account, project_id, module_id, viewer_module_id) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
+        let module = |name: &str, emoji: Option<&str>| {
+            queries::create_module(
+                &conn,
+                &CreateModule {
+                    project_id,
+                    name: name.to_owned(),
+                    description: String::new(),
+                    status: "active".into(),
+                    emoji: emoji.map(str::to_owned),
+                },
+            )
+            .unwrap()
+            .id
+        };
+        (
+            account,
+            project_id,
+            module("Editable icon", Some("lucide:Folder")),
+            module("Viewer icon", Some("lucide:Folder")),
+        )
+    };
+    let path = format!("/ACC/modules/{module_id}");
+    let (status, html) = home_fixture::document(&fixture, "/app", &path, true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&html);
+    let picker = document
+        .select(
+            &Selector::parse("[data-native-module-detail] [data-native-project-picker]").unwrap(),
+        )
+        .next()
+        .expect("Main's editable module icon uses the shared icon picker");
+    let trigger = picker
+        .select(&Selector::parse("#native-project-icon-trigger").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let choice = picker
+        .select(&Selector::parse(".native-project-picker-choice").unwrap())
+        .find(|choice| choice.value().attr("title") != Some("Folder"))
+        .expect("the picker offers an icon other than the current selection");
+    let icon_value = format!("lucide:{}", choice.value().attr("title").unwrap());
+    let change = picker
+        .value()
+        .attr("data-topcoat-on:native-project-icon-change")
+        .expect("choosing and removing an icon immediately dispatches the save action");
+    let remove = picker
+        .select(&Selector::parse(".native-project-picker__remove").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let choice_handler = choice.value().attr("data-topcoat-on:click").unwrap();
+    let expected_arguments = serde_json::to_value(
+        (
+            account,
+            project_id,
+            module_id,
+            "emoji".to_owned(),
+            icon_value.clone(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let remove_arguments = serde_json::to_value(
+        (
+            account,
+            project_id,
+            module_id,
+            "emoji".to_owned(),
+            String::new(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let failure_arguments = expected_arguments.clone();
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/module_icon_picker.test.cjs",
+        &serde_json::json!({
+            "phase":"detail",
+            "mount":"/app",
+            "signals":home_fixture::page_signals(&html),
+            "trigger":trigger,
+            "choice":choice_handler,
+            "change":change,
+            "remove":remove,
+            "expected_arguments":expected_arguments,
+            "failure_arguments":failure_arguments,
+            "remove_arguments":remove_arguments,
+        }),
+    );
+    assert_eq!(emitted["requests"].as_array().unwrap().len(), 2);
+    assert_eq!(emitted["failed"]["requests"].as_array().unwrap().len(), 1);
+    let (status, failed_html) = home_fixture::document(
+        &fixture,
+        "/app",
+        &path,
+        true,
+        Some(emitted["failed"]["signals"].as_object().unwrap().clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let failed_document = Html::parse_document(&failed_html);
+    assert!(
+        failed_document
+            .select(&Selector::parse("[role='alert']").unwrap())
+            .any(|node| node
+                .text()
+                .collect::<String>()
+                .contains("Couldn't save module")),
+        "Main surfaces an icon update failure to the maintainer"
+    );
+    assert!(
+        failed_document
+            .select(&Selector::parse("[data-native-project-picker] [data-icon='Folder']").unwrap())
+            .next()
+            .is_some(),
+        "a failed icon update leaves the canonical icon visible"
+    );
+
+    let (status, _) = home_fixture::procedure(
+        &fixture,
+        "/__native_modules/update",
+        serde_json::to_value(
+            (
+                account,
+                project_id,
+                module_id,
+                "emoji".to_owned(),
+                icon_value.clone(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = home_fixture::procedure(
+        &fixture,
+        "/__native_modules/update",
+        serde_json::to_value(
+            (
+                account,
+                project_id,
+                module_id,
+                "emoji".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        queries::get_module(&fixture.db.read().unwrap(), module_id)
+            .unwrap()
+            .emoji,
+        None
+    );
+
+    let (status, _) = home_fixture::procedure(
+        &fixture,
+        "/__native_modules/update",
+        serde_json::to_value(
+            (
+                account,
+                project_id,
+                module_id,
+                "emoji".to_owned(),
+                icon_value.clone(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, project_id, account, Role::Viewer).unwrap();
+    }
+    let (status, viewer_html) = home_fixture::document(
+        &fixture,
+        "/app",
+        &format!("/ACC/modules/{viewer_module_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let viewer_document = Html::parse_document(&viewer_html);
+    assert!(
+        viewer_document
+            .select(&Selector::parse("[data-native-project-picker]").unwrap())
+            .next()
+            .is_none(),
+        "viewers see a static module icon instead of the picker"
+    );
+    assert!(
+        viewer_document
+            .select(&Selector::parse("svg.native-icon[data-icon='Folder']").unwrap())
+            .next()
+            .is_some(),
+        "viewers still see the semantic saved icon"
+    );
+    let denied = serde_json::to_value(
+        (
+            account,
+            project_id,
+            module_id,
+            "emoji".to_owned(),
+            "lucide:Circle".to_owned(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let (status, _) = home_fixture::procedure(&fixture, "/__native_modules/update", denied).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        queries::get_module(&fixture.db.read().unwrap(), module_id)
+            .unwrap()
+            .emoji
+            .as_deref(),
+        Some(icon_value.as_str()),
+        "a stale picker cannot save after the maintainer role is revoked"
+    );
+}
