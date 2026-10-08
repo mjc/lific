@@ -80,7 +80,7 @@ mod route_tests {
         ] {
             let route = ParsedRoute::parse(path);
             assert!(
-                matches!(native_route(&route, true), Some(NativeRoute::Workspace)),
+                matches!(native_route(&route), Some(NativeRoute::Workspace)),
                 "Main strips the query before routing {path}"
             );
         }
@@ -115,13 +115,13 @@ mod route_tests {
         ] {
             let route = ParsedRoute::parse(path);
             assert!(
-                native_route(&route, !route.query.is_empty()).is_some(),
+                native_route(&route).is_some(),
                 "{path}"
             );
         }
         for path in ["/public/ACC/files", "/public/ACC/graph"] {
             assert!(
-                native_route(&ParsedRoute::parse(path), false).is_none(),
+                native_route(&ParsedRoute::parse(path)).is_none(),
                 "{path}"
             );
         }
@@ -138,7 +138,7 @@ mod route_tests {
         ] {
             let route = ParsedRoute::parse(path);
             assert!(
-                native_route(&route, !route.query.is_empty()).is_some(),
+                native_route(&route).is_some(),
                 "{path}"
             );
         }
@@ -148,7 +148,7 @@ mod route_tests {
             "/public/ACC/modules/42",
         ] {
             let route = ParsedRoute::parse(path);
-            assert!(native_route(&route, false).is_none(), "{path}");
+            assert!(native_route(&route).is_none(), "{path}");
         }
     }
 
@@ -164,14 +164,14 @@ mod route_tests {
         ] {
             let route = ParsedRoute::parse(path);
             assert!(
-                native_route(&route, !route.query.is_empty()).is_some(),
+                native_route(&route).is_some(),
                 "{path}"
             );
         }
     }
 }
 
-pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<NativeRoute> {
+pub(crate) fn native_route(route: &ParsedRoute<'_>) -> Option<NativeRoute> {
     match (route.layout, route.project, route.page) {
         (Layout::Auth, _, Page::Login) => Some(NativeRoute::Login),
         (Layout::Auth, _, Page::Signup) => Some(NativeRoute::Signup),
@@ -192,7 +192,7 @@ pub(crate) fn native_route(route: &ParsedRoute<'_>, has_query: bool) -> Option<N
             Some(NativeRoute::Modules)
         }
         (Layout::Private, Some(_), Page::IssueDetail(_)) => Some(NativeRoute::Workspace),
-        (Layout::Private, Some(_), Page::Issues | Page::Board) if !has_query => {
+        (Layout::Private, Some(_), Page::Issues | Page::Board) => {
             Some(NativeRoute::Workspace)
         }
         _ => None,
@@ -204,7 +204,7 @@ pub(crate) fn common_screen<'a>(
     cx: &'a Cx,
     route: &ParsedRoute<'_>,
 ) -> topcoat::Result<BoxView<'a>> {
-    let (user, projects, entry) = match native_route(route, !route.query.is_empty()) {
+    let (user, projects, entry) = match native_route(route) {
         Some(NativeRoute::Home) => {
             let snapshot = super::home::authorized_snapshot(cx)?;
             (snapshot.user, snapshot.projects, String::new())
@@ -285,7 +285,7 @@ async fn native_common_page(
         .into());
     }
     let route = ParsedRoute::parse(&path);
-    match native_route(&route, !route.query.is_empty()) {
+    match native_route(&route) {
         Some(NativeRoute::Home) => Ok(super::home::region(cx, account, palette_open)),
         Some(NativeRoute::ProjectOverview) => {
             super::project_overview::region(cx, &route, account, &entry)
