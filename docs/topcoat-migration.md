@@ -19,9 +19,11 @@ upload backed by the shared Rust service. These features still need the
 remaining Main interactions and parity checks recorded in their family tickets.
 
 Pages and Plans have native private list and detail routes. Pages supports
-search, tabs and filters, creation, Markdown editing, explicit save with sequence
-conflicts, and confirmed deletion. Plans supports status tabs, creation, nested
-steps, title and description edits, done toggles, issue links, and deletion.
+search, tabs and filters, creation, Markdown editing, lifecycle status changes,
+explicit save with sequence conflicts, and confirmed deletion. Status changes
+share the editor's sequence and busy state and preserve unsaved title/body drafts.
+Plans supports status tabs, creation, nested steps, title and description edits,
+done toggles, issue links, anchor assignment and clearing, and deletion.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
@@ -57,7 +59,7 @@ The shared Rust issue preview provides hover content and a touch panel with
 authorized edits. Loading/error recovery, close transitions, global undo toasts,
 and full gesture parity remain unfinished. It is not yet wired into graph nodes.
 
-Pages still needs folder management, metadata editing, autosave, comments,
+Pages still needs folder management, other metadata editing, autosave, comments,
 attachments, and realtime recovery. Plans still needs step reordering, activity,
 the full metadata/editor workflow, and realtime recovery. Keep the family
 tickets open until their remaining main assertions and visual parity are met.
