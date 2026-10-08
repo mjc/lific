@@ -2,6 +2,9 @@
 mod detail;
 mod list;
 
+#[cfg(test)]
+mod module_interactions;
+
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, navigation, project_authority, session};
 use crate::{db::queries, error::LificError, services::modules as module_service};
