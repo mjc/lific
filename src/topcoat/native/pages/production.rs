@@ -1,7 +1,10 @@
 //! Production-router tests for native page detail controls.
 
 use super::super::home_fixture;
-use crate::db::{models::CreatePage, queries};
+use crate::db::{
+    models::{CreateLabel, CreatePage, UpdatePage},
+    queries,
+};
 use axum::http::StatusCode;
 
 #[tokio::test]
@@ -506,6 +509,523 @@ async fn native_page_status_is_read_only_for_viewers() {
     assert!(
         html.contains("Draft"),
         "the viewer can still read the status"
+    );
+}
+
+#[tokio::test]
+async fn native_page_detail_renders_project_labels_for_viewers_and_editors() {
+    let fixture = home_fixture::fixture();
+    let (page_id, account, _) = seed_page(&fixture, false);
+    let project_id = {
+        let conn = fixture.db.read().unwrap();
+        queries::resolve_project_identifier(&conn, "ACC").unwrap()
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id,
+                name: "Critical".into(),
+                color: "#e11d48".into(),
+            },
+        )
+        .unwrap();
+        queries::update_page(
+            &conn,
+            page_id,
+            &UpdatePage {
+                labels: Some(vec!["Critical".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+
+    let empty_page_id = seed_page(&fixture, false).0;
+    let detail_selector = scraper::Selector::parse(".native-pages__detail").unwrap();
+    let chip_selector =
+        scraper::Selector::parse(".native-pages__detail .native-label-chip").unwrap();
+    for mount in ["", "/app", "/ACC"] {
+        let (status, viewer_html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let viewer = scraper::Html::parse_document(&viewer_html);
+        let detail = viewer.select(&detail_selector).next().unwrap();
+        let chip = detail
+            .select(&chip_selector)
+            .next()
+            .expect("the authorized page label is rendered as a visible chip");
+        let chip_label = chip
+            .children()
+            .filter_map(|child| child.value().as_text())
+            .collect::<String>();
+        assert_eq!(chip_label.trim(), "Critical");
+        assert!(
+            chip.value()
+                .attr("style")
+                .is_some_and(|style| style.contains("#e11d48")),
+            "the label chip retains its project color",
+        );
+        assert!(
+            detail
+                .select(&scraper::Selector::parse("button[title='Add label']").unwrap())
+                .next()
+                .is_none(),
+            "a viewer cannot open the label editor",
+        );
+
+        let (status, empty_viewer_html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{empty_page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let empty_viewer = scraper::Html::parse_document(&empty_viewer_html);
+        let empty_text = empty_viewer
+            .select(&scraper::Selector::parse(".native-pages__detail span").unwrap())
+            .find(|span| span.text().collect::<String>().trim() == "No labels")
+            .expect("an unlabelled viewer page renders the exact empty state");
+        assert!(
+            empty_text.value().attr("class").unwrap().contains("italic"),
+            "Main styles the viewer empty state in italics",
+        );
+    }
+
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE project_members SET role = 'maintainer' WHERE user_id = ?1 AND project_id = ?2",
+            rusqlite::params![account, project_id],
+        )
+        .unwrap();
+    for mount in ["", "/app", "/ACC"] {
+        let (status, editor_html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let editor = scraper::Html::parse_document(&editor_html);
+        let detail = editor.select(&detail_selector).next().unwrap();
+        let chip = detail
+            .select(&chip_selector)
+            .next()
+            .expect("the maintainer sees the attached label chip");
+        let chip_label = chip
+            .children()
+            .filter_map(|child| child.value().as_text())
+            .collect::<String>();
+        assert_eq!(chip_label.trim(), "Critical");
+        assert!(
+            chip.select(&scraper::Selector::parse("button[aria-label='Remove Critical']").unwrap())
+                .next()
+                .is_some(),
+            "a maintainer can remove the attached label",
+        );
+        assert!(
+            detail
+                .select(&scraper::Selector::parse("button[title='Add label']").unwrap())
+                .next()
+                .is_some(),
+            "a maintainer can open the project label picker",
+        );
+        assert!(
+            !detail
+                .select(&scraper::Selector::parse("span").unwrap())
+                .any(|span| span.text().collect::<String>().trim() == "No labels"),
+            "an editable page with a label does not also show the empty state",
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount() {
+    use topcoat::runtime::Surrogated;
+
+    for (mount, dirty_during_request) in [("", false), ("/app", true), ("/ACC", false)] {
+        let fixture = home_fixture::fixture();
+        let (page_id, account, _) = seed_page(&fixture, true);
+        let identifier = {
+            let conn = fixture.db.write().unwrap();
+            let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            let page = queries::get_page(&conn, page_id).unwrap();
+            let existing_label = queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id,
+                    name: "Critical".into(),
+                    color: "#e11d48".into(),
+                },
+            )
+            .unwrap();
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id,
+                    name: "Available".into(),
+                    color: "#16a34a".into(),
+                },
+            )
+            .unwrap();
+            queries::update_page(
+                &conn,
+                page_id,
+                &UpdatePage {
+                    labels: Some(vec![existing_label.name.clone()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            page.identifier
+        };
+        let (status, html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let labels = document
+            .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
+            .next()
+            .expect("PageDetail mounts an owner-aware label editor");
+        let mount_handler = labels
+            .value()
+            .attr("data-topcoat-on:mount")
+            .expect("the page label editor listens for canonical replies");
+        let picker = labels
+            .select(&scraper::Selector::parse("[data-native-page-label-picker]").unwrap())
+            .next()
+            .expect("the shared label picker is rendered");
+        let hidden_binding = picker.value().attr("data-topcoat-bind:hidden").unwrap();
+        let add_button = labels
+            .select(&scraper::Selector::parse("button[title='Add label']").unwrap())
+            .next()
+            .expect("Main's Add label control is present");
+        let open_handler = add_button.value().attr("data-topcoat-on:click").unwrap();
+        let choice = labels
+            .select(
+                &scraper::Selector::parse("button[role='option'][data-label-name='Available']")
+                    .unwrap(),
+            )
+            .next()
+            .expect("the authorized project catalog is in the picker");
+        let choice_handler = choice.value().attr("data-topcoat-on:click").unwrap();
+        let title_input = document
+            .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+            .next()
+            .unwrap();
+        let body_input = document
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
+            .next()
+            .unwrap();
+        let status_select = document
+            .select(&scraper::Selector::parse("select[data-native-page-status]").unwrap())
+            .next()
+            .unwrap();
+        let pin_button = document
+            .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
+            .next()
+            .unwrap();
+        let save_button = document
+            .select(&scraper::Selector::parse("button").unwrap())
+            .find(|button| button.text().collect::<String>().trim() == "Save changes")
+            .unwrap();
+        let request = super::labels_action::Request {
+            account_id: account,
+            page_id,
+            identifier: identifier.clone(),
+            label: "Available".into(),
+            attach: true,
+        };
+        let signals = home_fixture::page_signals(&html);
+        let pending = home_fixture::evaluate_handler(
+            "src/topcoat/native/pages/labels_handler.test.cjs",
+            &serde_json::json!({
+                "phases": [{
+                    "mode": "request",
+                    "signals": signals,
+                    "mount_handler": mount_handler,
+                    "hidden_binding": hidden_binding,
+                    "open_handler": open_handler,
+                    "choice_handler": choice_handler,
+                    "event_type": "lific:native-page-label-request",
+                    "expected_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+                    "busy_bindings": [
+                        status_select.value().attr("data-topcoat-bind:disabled").unwrap(),
+                        pin_button.value().attr("data-topcoat-bind:disabled").unwrap(),
+                        save_button.value().attr("data-topcoat-bind:disabled").unwrap(),
+                    ],
+                    "draft_bindings": [
+                        title_input.value().attr("data-topcoat-bind:disabled").unwrap(),
+                        body_input.value().attr("data-topcoat-bind:disabled").unwrap(),
+                    ],
+                    "title_input_handler": title_input.value().attr("data-topcoat-on:input").unwrap(),
+                    "body_input_handler": body_input.value().attr("data-topcoat-on:input").unwrap(),
+                    "title_draft_binding": title_input.value().attr("data-topcoat-bind:value").unwrap(),
+                    "body_draft_binding": body_input.value().attr("data-topcoat-bind:value").unwrap(),
+                    "dirty_title": dirty_during_request.then_some("Draft title during label save"),
+                    "dirty_body": dirty_during_request.then_some("Draft body during label save"),
+                }],
+            }),
+        );
+        assert_eq!(
+            pending["request"],
+            serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+            "the actual option handler sends the typed PageLabelRequest",
+        );
+
+        // Simulate a concurrent canonical metadata update after the option
+        // action but before its owner reply; the label write must preserve and
+        // reconcile that complete Page snapshot.
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::update_page(
+                &conn,
+                page_id,
+                &UpdatePage {
+                    title: Some("Canonical title".into()),
+                    content: Some("Canonical body".into()),
+                    status: Some("active".into()),
+                    pinned: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let (status, reply) = home_fixture::procedure(
+            &fixture,
+            "/__native_pages/labels",
+            serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let saved = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+        let canonical = super::labels_action::Snapshot {
+            identifier: saved.identifier.clone(),
+            title: saved.title.clone(),
+            content: saved.content.clone(),
+            seq: saved.seq,
+            page_status: saved.status.clone(),
+            pinned: saved.pinned,
+            labels: saved.labels.clone(),
+        };
+        let make_reply = |account_id, page_id| {
+            serde_json::to_value(
+                super::labels_action::Reply {
+                    status: Ok("saved".into()),
+                    account_id,
+                    page_id,
+                    canonical: Some(canonical.clone()),
+                }
+                .into_surrogate(),
+            )
+            .unwrap()
+        };
+        assert_eq!(reply, make_reply(account, page_id));
+        let request_signals: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(pending["signals"].clone()).expect("request signal snapshot");
+        let applied = home_fixture::evaluate_handler(
+            "src/topcoat/native/pages/labels_handler.test.cjs",
+            &serde_json::json!({
+                "phases": [{
+                    "mode": "applied",
+                    "signals": request_signals,
+                    "mount_handler": mount_handler,
+                    "hidden_binding": hidden_binding,
+                    "stale_choice_handler": choice_handler,
+                    "wrong_account_reply": make_reply(account + 1, page_id),
+                    "wrong_page_reply": make_reply(account, page_id + 1),
+                    "reply": reply,
+                }],
+            }),
+        );
+        let applied_signals: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(applied["signals"].clone()).expect("applied page signals");
+        let (status, refreshed_html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            Some(applied_signals),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let refreshed = scraper::Html::parse_document(&refreshed_html);
+        let labels = refreshed
+            .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
+            .next()
+            .unwrap();
+        let mut chip_names = labels
+            .select(&scraper::Selector::parse(".native-label-chip").unwrap())
+            .map(|chip| {
+                chip.children()
+                    .filter_map(|child| child.value().as_text())
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        chip_names.sort();
+        assert_eq!(chip_names, ["Available", "Critical"]);
+        let selected_status = refreshed
+            .select(
+                &scraper::Selector::parse("select[data-native-page-status] option[selected]")
+                    .unwrap(),
+            )
+            .next()
+            .and_then(|option| option.value().attr("value"));
+        assert_eq!(selected_status, Some("active"));
+        assert_eq!(
+            refreshed
+                .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
+                .next()
+                .and_then(|button| button.value().attr("aria-pressed")),
+            Some("true"),
+        );
+        assert!(
+            refreshed
+                .select(&scraper::Selector::parse("article").unwrap())
+                .any(|article| article
+                    .text()
+                    .collect::<String>()
+                    .contains("Canonical body"))
+        );
+        if dirty_during_request {
+            assert_eq!(
+                refreshed
+                    .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+                    .next()
+                    .and_then(|input| input.value().attr("value")),
+                Some("Draft title during label save"),
+                "dirty title edits survive the canonical label reply",
+            );
+            assert_eq!(
+                refreshed
+                    .select(
+                        &scraper::Selector::parse(
+                            "textarea[aria-label='Page content in Markdown']"
+                        )
+                        .unwrap()
+                    )
+                    .next()
+                    .and_then(|input| input.value().attr("value")),
+                Some("Draft body during label save"),
+                "dirty body edits survive the canonical label reply",
+            );
+        } else {
+            assert!(
+                refreshed
+                    .select(&scraper::Selector::parse("h1").unwrap())
+                    .any(|heading| heading
+                        .text()
+                        .collect::<String>()
+                        .contains("Canonical title"))
+            );
+            assert_eq!(
+                refreshed
+                    .select(
+                        &scraper::Selector::parse(
+                            "textarea[aria-label='Page content in Markdown']"
+                        )
+                        .unwrap()
+                    )
+                    .next()
+                    .and_then(|input| input.value().attr("value")),
+                Some("Canonical body"),
+                "clean editor drafts adopt the canonical response",
+            );
+        }
+
+        let detach_request = super::labels_action::Request {
+            label: "Available".into(),
+            attach: false,
+            ..request
+        };
+        let refreshed_labels = refreshed
+            .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
+            .next()
+            .unwrap();
+        let remove = refreshed_labels
+            .select(&scraper::Selector::parse("button[aria-label='Remove Available']").unwrap())
+            .next()
+            .expect("the applied canonical label has a real remove handler");
+        let remove_output = home_fixture::evaluate_handler(
+            "src/topcoat/native/pages/labels_handler.test.cjs",
+            &serde_json::json!({
+                "phases": [{
+                    "mode": "request",
+                    "signals": home_fixture::page_signals(&refreshed_html),
+                    "mount_handler": refreshed_labels.value().attr("data-topcoat-on:mount").unwrap(),
+                    "hidden_binding": refreshed_labels.select(&scraper::Selector::parse("[data-native-page-label-picker]").unwrap()).next().unwrap().value().attr("data-topcoat-bind:hidden").unwrap(),
+                    "choice_handler": remove.value().attr("data-topcoat-on:click").unwrap(),
+                    "event_type": "lific:native-page-label-request",
+                    "expected_request": serde_json::to_value(detach_request.clone().into_surrogate()).unwrap(),
+                }],
+            }),
+        );
+        assert_eq!(
+            remove_output["request"],
+            serde_json::to_value(detach_request.clone().into_surrogate()).unwrap(),
+            "the actual remove handler sends a sparse detach request",
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_page_label_picker_matches_main_empty_catalog_without_search_or_creation() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, true);
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let labels = document
+        .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
+        .next()
+        .expect("PageDetail renders the project label editor");
+    let picker = labels
+        .select(&scraper::Selector::parse("[data-native-page-label-picker]").unwrap())
+        .next()
+        .expect("the label picker remains in the projection while closed");
+    assert_eq!(
+        picker.text().collect::<String>().trim(),
+        "No labels defined in this project.",
+        "the empty picker uses Main's exact project-scoped copy",
+    );
+    assert!(
+        picker
+            .select(&scraper::Selector::parse("input").unwrap())
+            .next()
+            .is_none(),
+        "PageDetail's picker has no search or inline-create field",
+    );
+    assert!(
+        !labels
+            .select(&scraper::Selector::parse("span").unwrap())
+            .any(|span| span.text().collect::<String>().trim() == "No labels"),
+        "an editable empty label strip hides its empty-state text",
     );
 }
 
@@ -2543,7 +3063,7 @@ fn seed_nested_folder_page(
     )
 }
 
-fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
+pub(super) fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
     let conn = fixture.db.write().unwrap();
     let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
     let account = conn
