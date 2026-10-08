@@ -6,7 +6,12 @@ use super::super::{
 };
 use crate::db::{models::AttachmentEntity, queries};
 use axum::http::StatusCode;
-use std::{io::Write, process::Stdio};
+use std::process::Stdio;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+    time::{Duration, timeout},
+};
 use topcoat::runtime::Surrogated;
 
 #[tokio::test]
@@ -147,7 +152,7 @@ async fn native_files_load_more_marks_busy_and_blocks_overlapping_focus_refresh(
         "initialComplete": initial_complete,
         "signals": super::super::home_fixture::page_signals(&html),
     });
-    let output = run_lifecycle(&input);
+    let output = run_lifecycle(&input).await;
     let result: serde_json::Value = serde_json::from_str(&output).unwrap();
     let signals = result["signals"].as_object().unwrap().clone();
 
@@ -166,9 +171,9 @@ async fn native_files_load_more_marks_busy_and_blocks_overlapping_focus_refresh(
         .expect("the append response completes its request on mount");
     input["phase"] = serde_json::json!("finish");
     input["completion"] = serde_json::json!(complete);
-    run_lifecycle(&input);
+    run_lifecycle(&input).await;
     input["phase"] = serde_json::json!("query");
-    run_lifecycle(&input);
+    run_lifecycle(&input).await;
 }
 
 #[tokio::test]
@@ -430,6 +435,31 @@ async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at
 }
 
 #[tokio::test]
+async fn native_files_delete_database_failure_returns_safe_error_and_preserves_row() {
+    let fixture = super::super::home_fixture::fixture();
+    let (account, _, id) = seed(&fixture);
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER reject_native_file_delete BEFORE DELETE ON attachments
+             BEGIN SELECT RAISE(ABORT, 'private attachment delete diagnostic'); END;",
+        )
+        .unwrap();
+    }
+
+    let arguments = serde_json::to_value((account, id).into_surrogate()).unwrap();
+    let (status, reply) = procedure(&fixture, "/__native_files/delete", arguments).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reply.to_string().contains("internal server error"));
+    assert!(
+        !reply
+            .to_string()
+            .contains("private attachment delete diagnostic")
+    );
+    assert!(queries::attachments::get_attachment(&fixture.db.read().unwrap(), id).is_ok());
+}
+
+#[tokio::test]
 async fn native_files_delete_transport_failures_are_distinct_and_preserve_revisions() {
     for mount in ["", "/app", "/ACC"] {
         for orphan in [false, true] {
@@ -540,7 +570,7 @@ async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
 }
 
 #[tokio::test]
-async fn native_files_delete_completion_survives_actual_busy_body_shard_replacement() {
+async fn native_files_delete_completion_returns_canonical_outcome_while_body_is_busy() {
     let mount = "/app";
     let fixture = super::super::home_fixture::fixture();
     let (account, id, signals, root_handler, button_id, success_text) =
@@ -566,21 +596,29 @@ async fn native_files_delete_completion_survives_actual_busy_body_shard_replacem
             "browser", super::super::browser::factory(),
         ),
     });
-    let mut child = std::process::Command::new("node")
+    let mut child = Command::new("node")
         .arg("src/topcoat/native/files/delete_busy_rerender.test.cjs")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()
         .unwrap();
     let mut child_input = child.stdin.take().unwrap();
-    use std::io::{BufRead, BufReader, Write};
-    let mut child_output = BufReader::new(child.stdout.take().unwrap());
-    writeln!(child_input, "{input}").unwrap();
-    child_input.flush().unwrap();
-    let mut line = String::new();
-    child_output.read_line(&mut line).unwrap();
+    let mut child_output = BufReader::new(child.stdout.take().unwrap()).lines();
+    timeout(
+        Duration::from_secs(10),
+        child_input.write_all(format!("{input}\n").as_bytes()),
+    )
+    .await
+    .expect("busy-body fixture accepts bounded input")
+    .unwrap();
+    let line = timeout(Duration::from_secs(10), child_output.next_line())
+        .await
+        .expect("busy-body fixture reports pending state before timeout")
+        .unwrap()
+        .expect("busy-body fixture emits its pending state");
     let pending: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(pending["stage"], "pending");
     let (status, busy_html) = document(
@@ -594,7 +632,7 @@ async fn native_files_delete_completion_survives_actual_busy_body_shard_replacem
     assert_eq!(status, StatusCode::OK);
     assert!(
         busy_html.contains("Deleting…"),
-        "the real mounted runtime POST rerenders the body shard with the confirmation busy"
+        "the server-rendered Files body reflects the pending confirmation state"
     );
     let conn = fixture.db.write().unwrap();
     queries::attachments::delete_attachment(&conn, id).unwrap();
@@ -605,15 +643,29 @@ async fn native_files_delete_completion_survives_actual_busy_body_shard_replacem
         StatusCode::OK,
         "same captured request receives its canonical service outcome"
     );
-    writeln!(child_input, "{}", serde_json::json!({"reply":reply})).unwrap();
-    child_input.flush().unwrap();
-    line.clear();
-    child_output.read_line(&mut line).unwrap();
+    timeout(
+        Duration::from_secs(10),
+        child_input.write_all(format!("{}\n", serde_json::json!({"reply":reply})).as_bytes()),
+    )
+    .await
+    .expect("busy-body fixture accepts bounded completion")
+    .unwrap();
+    let line = timeout(Duration::from_secs(10), child_output.next_line())
+        .await
+        .expect("busy-body fixture reports bounded completion")
+        .unwrap()
+        .expect("busy-body fixture emits its completion state");
     let completed: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(completed["stage"], "complete");
     drop(child_input);
     drop(child_output);
-    assert!(child.wait().unwrap().success());
+    assert!(
+        timeout(Duration::from_secs(10), child.wait())
+            .await
+            .expect("busy-body fixture exits within its bound")
+            .unwrap()
+            .success()
+    );
 }
 #[tokio::test]
 async fn native_files_delete_rechecks_account_and_current_project_authority() {
@@ -679,22 +731,31 @@ async fn native_files_delete_rechecks_account_and_current_project_authority() {
     );
 }
 
-fn run_lifecycle(input: &serde_json::Value) -> String {
-    let mut child = std::process::Command::new("node")
+async fn run_lifecycle(input: &serde_json::Value) -> String {
+    let mut command = Command::new("node");
+    command
         .arg("src/topcoat/native/files/lifecycle.test.cjs")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .kill_on_drop(true);
+    let mut child = command.spawn().unwrap();
+    timeout(
+        Duration::from_secs(30),
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes()),
+    )
+    .await
+    .expect("Files lifecycle fixture accepts bounded input")
+    .unwrap();
+    let output = timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("Files lifecycle fixture exits within its bound")
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.to_string().as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "Files Load more lifecycle:\n{}\n{}",
