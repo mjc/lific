@@ -38,6 +38,12 @@ pub(super) struct MetadataOutcome {
     pub seq: Option<i64>,
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct MoveOutcome {
+    pub status: Result<String, String>,
+}
+
 #[procedure("/__native_pages/create")]
 pub(super) async fn create(
     cx: &Cx,
@@ -158,6 +164,58 @@ pub(super) async fn set_pinned(
         PageMetadata::Pinned(pinned),
     )
     .await
+}
+
+#[procedure("/__native_pages/move")]
+pub(super) async fn move_to_folder(
+    cx: &Cx,
+    account: i64,
+    page_id: i64,
+    folder_value: String,
+) -> topcoat::Result<MoveOutcome> {
+    let caller = session::read(cx, context::caller(cx))?;
+    match crate::api::require_user(&caller.identity) {
+        Ok(user) if user.id == account => {}
+        Ok(_) => return Ok(failed_move("forbidden")),
+        Err(LificError::Forbidden(message)) if message == "authentication required" => {
+            return Ok(failed_move("reauth"));
+        }
+        Err(error) => return Ok(failed_move(&classify(error).status.unwrap_err())),
+    }
+    let folder_id = if folder_value.is_empty() {
+        None
+    } else {
+        match folder_value.parse::<i64>() {
+            Ok(folder_id) if folder_id > 0 => Some(folder_id),
+            _ => return Ok(failed_move("Invalid folder selection.")),
+        }
+    };
+    let result = caller
+        .scope(async {
+            crate::services::pages::commit_update(
+                context::db(cx),
+                app_context::<RealtimeHub>(cx),
+                &caller.identity,
+                page_id,
+                UpdatePage {
+                    folder_id: Some(folder_id),
+                    ..Default::default()
+                },
+            )
+        })
+        .await;
+    Ok(result.map_or_else(
+        |error| failed_move(&classify(error).status.unwrap_err()),
+        |_| MoveOutcome {
+            status: Ok("saved".to_owned()),
+        },
+    ))
+}
+
+fn failed_move(message: &str) -> MoveOutcome {
+    MoveOutcome {
+        status: Err(message.to_owned()),
+    }
 }
 
 enum PageMetadata {
