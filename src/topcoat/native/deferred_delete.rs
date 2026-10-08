@@ -9,6 +9,10 @@ use super::issue_edit::labels::{
     LabelReply, LabelReplyValue, LabelRequestValue, create_label, update_labels,
 };
 use super::issue_edit::module_assignment::{ModuleAssignmentReply, ModuleRequest, assign_module};
+use super::pages::labels_action::{
+    Reply as PageLabelReply, ReplyValue as PageLabelReplyValue,
+    RequestValue as PageLabelRequestValue, update_labels as update_page_labels,
+};
 use super::{issue_edit::delete::commit_delete, transport};
 use topcoat::{
     context::Cx,
@@ -60,6 +64,7 @@ struct OwnerHandles {
     pending_issues: Signal<Vec<i64>>,
     module_pending: Signal<Vec<i64>>,
     label_pending: Signal<Vec<i64>>,
+    page_label_pending: Signal<Vec<i64>>,
     mount: String,
 }
 
@@ -148,6 +153,7 @@ pub(crate) fn owner<'a>(
     let module_request = slots.each_ref().map(|slot| slot.module_request.clone());
     let module_pending = signal(state_cx, Vec::<i64>::new);
     let label_pending = signal(state_cx, Vec::<i64>::new);
+    let page_label_pending = signal(state_cx, Vec::<i64>::new);
     let handles = OwnerHandles {
         activated,
         id,
@@ -172,6 +178,7 @@ pub(crate) fn owner<'a>(
         pending_issues,
         module_pending,
         label_pending,
+        page_label_pending,
         mount,
     };
     let captured_handles = serde_json::to_string(&handles.into_surrogate())
@@ -274,6 +281,7 @@ pub(crate) fn handler_factory() -> Js {
         let pending_issues = handles.pending_issues;
         let module_pending = handles.module_pending;
         let label_pending = handles.label_pending;
+        let page_label_pending = handles.page_label_pending;
         let _mount_path = handles.mount;
         let _module_finish_request = module_request.clone();
         let _module_finish_message = message.clone();
@@ -286,6 +294,9 @@ pub(crate) fn handler_factory() -> Js {
         let _label_failure_message = message.clone();
         let _label_failure_kind = kind.clone();
         let _label_failure_remaining = remaining.clone();
+        let _page_label_failure_message = message.clone();
+        let _page_label_failure_kind = kind.clone();
+        let _page_label_failure_remaining = remaining.clone();
         let _error_message = message.clone();
         let _error_kind = kind.clone();
         let _error_remaining = remaining.clone();
@@ -674,6 +685,82 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
+        let _page_label_release = |target: I64Surrogate| {
+            let position = page_label_pending.get().position(target);
+            if position.is_some() {
+                page_label_pending.remove(position.unwrap());
+            }
+        };
+        let _page_label_finish = |request: PageLabelRequestValue, reply: PageLabelReplyValue| {
+            raw!("${_page_label_release}(${request}.page_id);", ());
+            raw!(
+                "window.dispatchEvent(new CustomEvent('lific:native-page-label-applied',{detail:${reply}}));",
+                ()
+            );
+            if reply.status.is_err() {
+                let index = raw!("${_allocate}()", 0_usize);
+                _page_label_failure_message
+                    .index(index)
+                    .set("Couldn't save ".to_owned());
+                _page_label_failure_message
+                    .index(index)
+                    .push_str(request.identifier);
+                _page_label_failure_message.index(index).push_str(": ");
+                _page_label_failure_message
+                    .index(index)
+                    .push_str(reply.status.unwrap_err());
+                _page_label_failure_kind
+                    .index(index)
+                    .set("error".to_owned());
+                _page_label_failure_remaining.index(index).set(8_000.0_f64);
+                raw!("${_timer}(${index});", ());
+            }
+        };
+        let _page_label_network_failure = |request: PageLabelRequestValue| {
+            let _reply = PageLabelReply {
+                status: Err(
+                    "Couldn't reach the server. Check your connection and try again.".to_owned(),
+                ),
+                account_id: request.account_id.clone(),
+                page_id: request.page_id.clone(),
+                canonical: None,
+            };
+            raw!("${_page_label_finish}(${request},${_reply});", ());
+        };
+        let _page_label_run = |request: PageLabelRequestValue| {
+            let _success = |_reply: PageLabelReplyValue| {
+                raw!(
+                    "if(nativeOwnerToken.active)nativeOwnerToken.host.nativePageLabelFinish(${request},${_reply});",
+                    ()
+                );
+            };
+            let _failure = || {
+                raw!(
+                    "if(nativeOwnerToken.active)nativeOwnerToken.host.nativePageLabelNetworkFailure(${request});",
+                    ()
+                );
+            };
+            let _keepalive = update_page_labels.with_keepalive();
+            let _future = _keepalive(request.clone());
+            raw!("${_future}.then(${_success},${_failure});", ());
+        };
+        let _page_label_accept = |request: PageLabelRequestValue| {
+            if request.account_id != account_id {
+                false
+            } else if request.page_id <= 0_i64 {
+                false
+            } else if page_label_pending
+                .get()
+                .position(request.page_id.clone())
+                .is_some()
+            {
+                false
+            } else {
+                page_label_pending.push(request.page_id.clone());
+                raw!("${_page_label_run}(${request});", ());
+                true
+            }
+        };
         let _error_accept = |request: ToastErrorRequestSurrogate| {
             if request.account_id != account_id {
                 false
@@ -853,11 +940,16 @@ pub(crate) fn handler_factory() -> Js {
             owner.nativeModuleFailure = ${_module_failure};
             owner.nativeLabelFinish = ${_label_finish};
             owner.nativeLabelNetworkFailure = ${_label_network_failure};
+            owner.nativePageLabelFinish = ${_page_label_finish};
+            owner.nativePageLabelNetworkFailure = ${_page_label_network_failure};
             window.addEventListener('lific:native-toast-error',event=>{
                 if (${_error_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-label-request',event=>{
                 if (${_label_accept}(event.detail).toString()==='true') event.preventDefault();
+            },{signal:cx.abortSignal});
+            window.addEventListener('lific:native-page-label-request',event=>{
+                if (${_page_label_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-module-request',event=>{
                 if (${_module_accept}(event.detail).toString()==='true') event.preventDefault();
@@ -902,6 +994,8 @@ pub(crate) fn handler_factory() -> Js {
                     delete owner.nativeModuleFailure;
                     delete owner.nativeLabelFinish;
                     delete owner.nativeLabelNetworkFailure;
+                    delete owner.nativePageLabelFinish;
+                    delete owner.nativePageLabelNetworkFailure;
                 }
             },{once:true});
         "#,
