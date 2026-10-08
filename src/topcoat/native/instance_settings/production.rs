@@ -49,9 +49,9 @@ async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
             .unwrap();
         let own_display_name = if viewer.display_name.trim().is_empty() {
-            viewer.username.clone()
+            viewer.username
         } else {
-            viewer.display_name.clone()
+            viewer.display_name
         };
         crate::db::queries::users::create_user(
             &conn,
