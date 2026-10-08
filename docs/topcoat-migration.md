@@ -32,16 +32,19 @@ title/body drafts.
 Plans supports status tabs, creation, nested steps, title and description edits,
 done toggles, step issue linking and detaching, anchor assignment and clearing,
 and deletion. Nested steps have independent collapse controls for viewers and
-editors. Shared plan actions ignore retired owners and late replies.
+editors. Plan detail reuses the shared activity timeline for the latest 100 entries,
+with six initially visible and expandable description changes. Shared plan actions
+ignore retired owners and late replies.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
 Issue creation and Modules have native private routes. Issue creation supports
 title, description, status, priority, module assignment, labels, and inline label
 creation. Modules supports lifecycle tabs, unbounded issue counts, progress,
-creation, detail, scalar edits, and inline-confirmed deletion. Lifecycle tabs
-persist under Main's project-identifier storage key. Both use shared Rust services
-and the workspace/sidebar. Viewers receive read-only content. Cached navigation
+creation, detail, scalar edits, and inline-confirmed deletion. Descriptions start
+in Markdown read mode, with Main's Edit/Preview, Save, and Cancel transitions.
+Lifecycle tabs persist under Main's project-identifier storage key. Both use shared
+Rust services and the workspace/sidebar. Viewers receive read-only content. Cached navigation
 checks the destination's rendered project permissions against current records.
 
 The intermediate JavaScript frontend is deleted, including controllers,
@@ -82,8 +85,8 @@ authorized edits. Loading/error recovery, close transitions, global undo toasts,
 and full gesture parity remain unfinished. It is not yet wired into graph nodes.
 
 Pages still needs folder management, other metadata editing, autosave, comments,
-attachments, and realtime recovery. Plans still needs activity,
-the full metadata/editor workflow, and realtime recovery. Keep the family
+attachments, and realtime recovery. Plans still needs the full metadata/editor
+workflow and realtime recovery. Keep the family
 tickets open until their remaining main assertions and visual parity are met.
 
 Issue creation still needs the attachment composer and Main's picker and input
@@ -131,3 +134,9 @@ their signals also drive authenticated render requests. Module tests cover
 stored tabs and inline deletion success, cancellation, failure, and disposal.
 Plan regressions cover independent folds, retained descendant fold state,
 and collapse attempts during pending mutations.
+
+Plan activity integration tests cover the 100-entry limit, newest-first ordering,
+scope isolation, six initially visible entries, emitted expansion handlers and
+revoked route access. Module description tests exercise initial read and empty
+states, Viewer access, emitted Edit/Cancel/Preview/Save handlers, canonical content
+after failure, and a real database write through the emitted procedure payload.
