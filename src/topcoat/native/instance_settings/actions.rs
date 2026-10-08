@@ -69,13 +69,12 @@ async fn save_name(
         .to_owned())
 }
 
-async fn rotate_and_save(
+async fn reauthenticate(
     cx: &Cx,
     caller: &Caller,
     account: i64,
-    value: String,
     password: Option<String>,
-) -> Result<String, LificError> {
+) -> Result<Caller, LificError> {
     account_admin(caller, account)?;
     let Some(peer) = remote_addr(cx) else {
         return Err(LificError::Unavailable(
@@ -117,6 +116,17 @@ async fn rotate_and_save(
         )),
         session_token: Some(refreshed.session.token),
     };
+    Ok(fresh)
+}
+
+async fn rotate_and_save(
+    cx: &Cx,
+    caller: &Caller,
+    account: i64,
+    value: String,
+    password: Option<String>,
+) -> Result<String, LificError> {
+    let fresh = reauthenticate(cx, caller, account, password).await?;
     save_name(cx, &fresh, account, value).await
 }
 
@@ -191,4 +201,143 @@ pub(super) async fn confirm_name(
         Ok(name) => Ok((true, name)),
         Err(error) => Ok((false, message(error))),
     }
+}
+
+async fn member_action(
+    cx: &Cx,
+    caller: &Caller,
+    account: i64,
+    user_id: i64,
+    action: crate::services::instance_admin::Action,
+) -> Result<crate::db::models::User, LificError> {
+    account_admin(caller, account)?;
+    let db = context::db(cx).clone();
+    let realtime = app_context::<crate::realtime::RealtimeHub>(cx).clone();
+    let identity = caller.identity.clone();
+    let session_token = caller.session_token.clone();
+    caller
+        .scope(async move {
+            crate::services::instance_admin::mutate(
+                &db,
+                Some(&realtime),
+                &identity,
+                user_id,
+                action,
+                session_token.as_deref(),
+            )
+        })
+        .await
+}
+
+fn parse_member_action(value: &str) -> Result<crate::services::instance_admin::Action, LificError> {
+    use crate::services::instance_admin::Action;
+    match value {
+        "promote" => Ok(Action::Promote),
+        "demote" => Ok(Action::Demote),
+        "deactivate" => Ok(Action::Deactivate),
+        "reactivate" => Ok(Action::Reactivate),
+        _ => Err(LificError::BadRequest("unknown member action".into())),
+    }
+}
+
+async fn attempt_member_action(
+    cx: &Cx,
+    caller: &Caller,
+    account: i64,
+    user_id: i64,
+    action: crate::services::instance_admin::Action,
+) -> Result<crate::db::models::User, LificError> {
+    match member_action(cx, caller, account, user_id, action).await {
+        Err(LificError::Forbidden(ref error))
+            if error == crate::auth::RECENT_AUTH_REQUIRED_MESSAGE =>
+        {
+            let settings = crate::db::queries::settings::get(&*context::db(cx).read()?)?;
+            let auth = app_context::<crate::auth::AuthState>(cx);
+            if settings.web_auto_login || !auth.required {
+                match reauthenticate(cx, caller, account, None).await {
+                    Ok(fresh) => member_action(cx, &fresh, account, user_id, action).await,
+                    Err(LificError::BadRequest(ref error))
+                        if error == "your password is required to confirm this" =>
+                    {
+                        Err(LificError::Forbidden(
+                            crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.into(),
+                        ))
+                    }
+                    // Main falls through to the password prompt when its
+                    // passwordless refresh cannot recover the stale session.
+                    Err(_) => Err(LificError::Forbidden(
+                        crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.into(),
+                    )),
+                }
+            } else {
+                Err(LificError::Forbidden(
+                    crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.into(),
+                ))
+            }
+        }
+        result => result,
+    }
+}
+
+fn member_reply(result: Result<crate::db::models::User, LificError>) -> (bool, bool, bool, String) {
+    match result {
+        Ok(user) => (true, user.is_admin, user.is_active, String::new()),
+        Err(error) => (false, false, false, member_message(error)),
+    }
+}
+
+fn member_message(error: LificError) -> String {
+    match error {
+        LificError::BadRequest(message)
+        | LificError::Forbidden(message)
+        | LificError::Conflict(message)
+        | LificError::Unavailable(message) => message,
+        error => {
+            tracing::error!(error=%error, "native instance member update failed");
+            "Couldn't update this member. Try again.".into()
+        }
+    }
+}
+
+#[procedure("/__native_instance_settings/member_action")]
+pub(super) async fn mutate_member(
+    cx: &Cx,
+    account: i64,
+    user_id: i64,
+    action: String,
+) -> topcoat::Result<(bool, bool, bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok(member_reply(Err(error))),
+    };
+    let action = match parse_member_action(&action) {
+        Ok(action) => action,
+        Err(error) => return Ok(member_reply(Err(error))),
+    };
+    Ok(member_reply(
+        attempt_member_action(cx, &caller, account, user_id, action).await,
+    ))
+}
+
+#[procedure("/__native_instance_settings/confirm_member_action")]
+pub(super) async fn confirm_member_action(
+    cx: &Cx,
+    account: i64,
+    user_id: i64,
+    action: String,
+    password: String,
+) -> topcoat::Result<(bool, bool, bool, String)> {
+    let caller = match same_account(cx, account) {
+        Ok(caller) => caller,
+        Err(error) => return Ok(member_reply(Err(error))),
+    };
+    let action = match parse_member_action(&action) {
+        Ok(action) => action,
+        Err(error) => return Ok(member_reply(Err(error))),
+    };
+    let result = match reauthenticate(cx, &caller, account, Some(password)).await {
+        Ok(fresh) => member_action(cx, &fresh, account, user_id, action).await,
+        Err(error) => Err(error),
+    };
+    Ok(member_reply(result))
 }

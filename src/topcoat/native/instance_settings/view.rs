@@ -9,7 +9,7 @@ use topcoat::{
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 
 use super::super::{context, session};
-use super::actions::{confirm_name, save_text};
+use super::actions::{confirm_member_action, confirm_name, mutate_member, save_text};
 
 #[derive(Clone)]
 struct NameState {
@@ -27,14 +27,33 @@ struct NameState {
     confirmation_error: Signal<String>,
 }
 
+#[derive(Clone)]
+struct RosterState {
+    admin_count: Signal<usize>,
+    settings_saving: Signal<bool>,
+    settings_confirmation: Signal<bool>,
+    pending_id: Signal<i64>,
+    pending_action: Signal<String>,
+    busy_id: Signal<i64>,
+    row_error_id: Signal<i64>,
+    row_error: Signal<String>,
+    reauth_id: Signal<i64>,
+    reauth_action: Signal<String>,
+    reauth_password: Signal<String>,
+    reauth_busy: Signal<bool>,
+    reauth_error: Signal<String>,
+}
+
 #[record]
 #[derive(Clone)]
 struct RosterEntry {
+    id: i64,
     username: String,
     display_name: String,
     initials: String,
     is_admin: bool,
     is_active: bool,
+    created_at: String,
 }
 
 pub(super) fn content(cx: &Cx, account: i64, is_admin: bool) -> BoxView<'_> {
@@ -369,6 +388,239 @@ fn cancel_confirmation_attrs(cx: &Cx, state: NameState) -> Attributes {
     attrs
 }
 
+fn roster_action_attrs(
+    cx: &Cx,
+    account: i64,
+    user_id: i64,
+    action: &str,
+    is_admin: Signal<bool>,
+    is_active: Signal<bool>,
+    state: &RosterState,
+) -> Attributes {
+    let admin_count = state.admin_count.clone();
+    let settings_saving = state.settings_saving.clone();
+    let settings_confirmation = state.settings_confirmation.clone();
+    let pending_id = state.pending_id.clone();
+    let pending_action = state.pending_action.clone();
+    let busy_id = state.busy_id.clone();
+    let row_error_id = state.row_error_id.clone();
+    let row_error = state.row_error.clone();
+    let reauth_id = state.reauth_id.clone();
+    let reauth_action = state.reauth_action.clone();
+    let reauth_password = state.reauth_password.clone();
+    let reauth_error = state.reauth_error.clone();
+    let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let action = action.to_owned();
+    let handler = expr!(|_event: Event| {
+        let operation = if action == "pending" {
+            pending_action.get()
+        } else {
+            action.clone()
+        };
+        let grants_access = operation == "promote" || operation == "reactivate";
+        if busy_id.get() != 0
+            || (grants_access
+                && (reauth_id.get() != 0 || settings_saving.get() || settings_confirmation.get()))
+        {
+            return;
+        }
+        busy_id.set(user_id);
+        pending_id.set(0_i64);
+        row_error.set("".to_owned());
+        let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
+        let _failed = || {
+            if raw!("${_live}()", true) {
+                busy_id.set(0_i64);
+                row_error_id.set(user_id);
+                row_error.set("Couldn't update this member. Try again.".to_owned());
+            }
+        };
+        let _save = async || {
+            let result = mutate_member(account, user_id, operation.clone()).await;
+            if !raw!("${_live}()", false) {
+                return;
+            }
+            busy_id.set(0_i64);
+            if result.0 {
+                let was_active_admin = is_admin.get() && is_active.get();
+                let is_active_admin = result.1 && result.2;
+                if was_active_admin != is_active_admin {
+                    admin_count.set(if is_active_admin {
+                        admin_count.get() + 1
+                    } else {
+                        admin_count.get() - 1
+                    });
+                }
+                is_admin.set(result.1);
+                is_active.set(result.2);
+                if grants_access {
+                    reauth_id.set(0_i64);
+                    reauth_password.set("".to_owned());
+                    reauth_error.set("".to_owned());
+                }
+                row_error.set("".to_owned());
+            } else if result.3 == recent_auth_required
+                && (operation == "promote" || operation == "reactivate")
+            {
+                reauth_id.set(user_id);
+                reauth_action.set(operation.clone());
+                reauth_password.set("".to_owned());
+                reauth_error.set("".to_owned());
+            } else {
+                row_error_id.set(user_id);
+                row_error.set(result.3);
+            }
+        };
+        raw!(
+            "Promise.resolve().then(()=>cx.withSessionChange(cx.abortSignal,()=>${_save}())).catch(()=>${_failed}());",
+            ()
+        );
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn request_confirmation_attrs(
+    cx: &Cx,
+    user_id: i64,
+    action: &str,
+    state: &RosterState,
+) -> Attributes {
+    let pending_id = state.pending_id.clone();
+    let pending_action = state.pending_action.clone();
+    let busy_id = state.busy_id.clone();
+    let row_error = state.row_error.clone();
+    let row_error_id = state.row_error_id.clone();
+    let action = action.to_owned();
+    let handler = expr!(|_event: Event| {
+        if busy_id.get() != 0 {
+            return;
+        }
+        pending_id.set(user_id);
+        pending_action.set(action.clone());
+        row_error_id.set(0_i64);
+        row_error.set("".to_owned());
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn confirm_member_reauth_attrs(
+    cx: &Cx,
+    account: i64,
+    user_id: i64,
+    is_admin: Signal<bool>,
+    is_active: Signal<bool>,
+    state: &RosterState,
+) -> Attributes {
+    let admin_count = state.admin_count.clone();
+    let reauth_id = state.reauth_id.clone();
+    let reauth_action = state.reauth_action.clone();
+    let reauth_password = state.reauth_password.clone();
+    let reauth_busy = state.reauth_busy.clone();
+    let reauth_error = state.reauth_error.clone();
+    let row_error = state.row_error.clone();
+    let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let handler = expr!(|_event: Event| {
+        let action_user_id = user_id;
+        let action = reauth_action.get();
+        let password = reauth_password.get();
+        if reauth_id.get() != action_user_id
+            || action_user_id == 0
+            || password.is_empty()
+            || reauth_busy.get()
+        {
+            return;
+        }
+        reauth_busy.set(true);
+        reauth_error.set("".to_owned());
+        let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
+        let _failed = || {
+            if raw!("${_live}()", true) && reauth_id.get() == action_user_id {
+                reauth_busy.set(false);
+                reauth_error.set("Couldn't confirm your password. Try again.".to_owned());
+            }
+        };
+        let _confirm = async || {
+            let result =
+                confirm_member_action(account, action_user_id, action.clone(), password).await;
+            if !raw!("${_live}()", false) {
+                return;
+            }
+            if reauth_id.get() != action_user_id {
+                return;
+            }
+            reauth_busy.set(false);
+            if result.0 {
+                let was_active_admin = is_admin.get() && is_active.get();
+                let is_active_admin = result.1 && result.2;
+                if was_active_admin != is_active_admin {
+                    admin_count.set(if is_active_admin {
+                        admin_count.get() + 1
+                    } else {
+                        admin_count.get() - 1
+                    });
+                }
+                is_admin.set(result.1);
+                is_active.set(result.2);
+                reauth_id.set(0_i64);
+                reauth_password.set("".to_owned());
+                reauth_error.set("".to_owned());
+                row_error.set("".to_owned());
+            } else if result.3 == recent_auth_required {
+                reauth_error.set(
+                    "That still was not accepted. Sign out and sign back in, then try again."
+                        .to_owned(),
+                );
+            } else {
+                reauth_error.set(result.3);
+            }
+        };
+        raw!(
+            "Promise.resolve().then(()=>cx.withSessionChange(cx.abortSignal,()=>${_confirm}())).catch(()=>${_failed}());",
+            ()
+        );
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn cancel_member_reauth_attrs(cx: &Cx, state: &RosterState) -> Attributes {
+    let reauth_id = state.reauth_id.clone();
+    let reauth_password = state.reauth_password.clone();
+    let reauth_error = state.reauth_error.clone();
+    let reauth_busy = state.reauth_busy.clone();
+    let handler = expr!(|_event: Event| {
+        if !reauth_busy.get() {
+            reauth_id.set(0_i64);
+            reauth_password.set("".to_owned());
+            reauth_error.set("".to_owned());
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
 #[shard("/__native_instance_settings/page")]
 async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl View> {
     let caller = session::read(cx, context::caller(cx))?;
@@ -456,19 +708,38 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
                 user.display_name.clone()
             };
             RosterEntry {
+                id: user.id,
                 username: user.username,
                 initials: initials(&display_name),
                 display_name,
                 is_admin: user.is_admin,
                 is_active: user.is_active,
+                created_at: user.created_at,
             }
         })
         .collect::<Vec<_>>();
+    let roster_cx = cx.keyed((account, "instance-roster"));
+    let roster_state = RosterState {
+        admin_count: signal(&roster_cx, || {
+            roster
+                .iter()
+                .filter(|user| user.is_admin && user.is_active)
+                .count()
+        }),
+        settings_saving: saving.clone(),
+        settings_confirmation: needs_confirmation.clone(),
+        pending_id: signal(&roster_cx, || 0_i64),
+        pending_action: signal(&roster_cx, String::new),
+        busy_id: signal(&roster_cx, || 0_i64),
+        row_error_id: signal(&roster_cx, || 0_i64),
+        row_error: signal(&roster_cx, String::new),
+        reauth_id: signal(&roster_cx, || 0_i64),
+        reauth_action: signal(&roster_cx, String::new),
+        reauth_password: signal(&roster_cx, String::new),
+        reauth_busy: signal(&roster_cx, || false),
+        reauth_error: signal(&roster_cx, String::new),
+    };
     let people_count = roster.len();
-    let admin_count = roster
-        .iter()
-        .filter(|user| user.is_admin && user.is_active)
-        .count();
     let singular_people = people_count == 1;
     Ok(view! {
         cx =>
@@ -695,61 +966,14 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
                             "people"
                         }
                         " on this instance · "
-                        (admin_count)
+                        $(roster_state.admin_count.get())
                         " admin."
                     </p>
                     <div
                         class="overflow-hidden rounded-xl bg-[var(--surface)] shadow-sm"
                     >
                         for user in roster.iter() {
-                            <div
-                                class=(if user.is_active {
-                                    "flex items-center gap-3 px-4 py-3"
-                                } else {
-                                    "flex items-center gap-3 px-4 py-3 opacity-60"
-                                })
-                            >
-                                <div
-                                    class="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-micro font-semibold text-[var(--accent-text)]"
-                                >
-                                    (user.initials.clone())
-                                </div>
-                                <div class="min-w-0 flex-1">
-                                    <div
-                                        class="truncate leading-tight text-body text-[var(--text)]"
-                                    >
-                                        (user.display_name.clone())
-                                    </div>
-                                    <div
-                                        class="mt-0.5 truncate font-mono text-caption text-[var(--text-faint)]"
-                                    >
-                                        "@"
-                                        (user.username.clone())
-                                    </div>
-                                </div>
-                                if !user.is_active {
-                                    <span
-                                        class="shrink-0 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--warn-text)]"
-                                    >
-                                        "Deactivated"
-                                    </span>
-                                }
-                                <span
-                                    class=(if user.is_admin {
-                                        "shrink-0 rounded-full bg-[var(--accent-subtle)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--accent)]"
-                                    } else {
-                                        "shrink-0 rounded-full bg-[var(--bg-subtle)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--text-muted)]"
-                                    })
-                                >
-                                    {
-                                        if user.is_admin {
-                                            "Admin"
-                                        } else {
-                                            "Member"
-                                        }
-                                    }
-                                </span>
-                            </div>
+                            (roster_row(cx, account, user, &roster_state))
                         }
                     </div>
                     <p
@@ -761,6 +985,288 @@ async fn native_instance_settings(cx: &Cx, account: i64) -> topcoat::Result<impl
             </div>
         </div>
     })
+}
+
+fn roster_row(cx: &Cx, account: i64, user: &RosterEntry, state: &RosterState) -> BoxView<'_> {
+    let id = user.id;
+    let display_name = user.display_name.clone();
+    let username = user.username.clone();
+    let row_cx = cx.keyed((account, id));
+    let is_admin = signal(&row_cx, || user.is_admin);
+    let is_active = signal(&row_cx, || user.is_active);
+    let settings_saving = state.settings_saving.clone();
+    let settings_confirmation = state.settings_confirmation.clone();
+    let reauth_id = state.reauth_id.clone();
+    let reauth_action = state.reauth_action.clone();
+    let reauth_password = state.reauth_password.clone();
+    let reauth_busy = state.reauth_busy.clone();
+    let reauth_error = state.reauth_error.clone();
+    let demote = request_confirmation_attrs(cx, id, "demote", state);
+    let deactivate = request_confirmation_attrs(cx, id, "deactivate", state);
+    let promote = roster_action_attrs(
+        cx,
+        account,
+        id,
+        "promote",
+        is_admin.clone(),
+        is_active.clone(),
+        state,
+    );
+    let reactivate = roster_action_attrs(
+        cx,
+        account,
+        id,
+        "reactivate",
+        is_admin.clone(),
+        is_active.clone(),
+        state,
+    );
+    let cancel_pending = state.pending_id.clone();
+    let cancel_busy = state.busy_id.clone();
+    let cancel = expr!(|_event: Event| {
+        if cancel_busy.get() == 0 {
+            cancel_pending.set(0_i64);
+        }
+    });
+    let mut cancel_attrs = Attributes::with_capacity(1);
+    cancel_attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        cancel.into_evaluated_and_js().1,
+    );
+    let confirm_pending = roster_action_attrs(
+        cx,
+        account,
+        id,
+        "pending",
+        is_admin.clone(),
+        is_active.clone(),
+        state,
+    );
+    let when_busy = state.busy_id.clone();
+    let when_pending = state.pending_id.clone();
+    let when_action = state.pending_action.clone();
+    let when_reauth = state.reauth_id.clone();
+    let row_error_id = state.row_error_id.clone();
+    let row_error = state.row_error.clone();
+    let row = view! {
+        cx =>
+        <div data-native-instance-member-row=(id.to_string())>
+            <div class="flex items-center gap-3 px-4 py-3">
+                <div
+                    class="grid size-8 shrink-0 place-items-center rounded-full bg-[var(--accent)] text-micro font-semibold text-[var(--accent-text)]"
+                >
+                    (user.initials.clone())
+                </div>
+                <div class="min-w-0 flex-1">
+                    <div class="truncate leading-tight text-body text-[var(--text)]">
+                        (display_name.clone())
+                        if id == account {
+                            <span class="text-caption text-[var(--text-faint)]">
+                                " (you)"
+                            </span>
+                        }
+                    </div>
+                    <div
+                        class="mt-0.5 truncate font-mono text-caption text-[var(--text-faint)]"
+                    >
+                        "@"
+                        (user.username.clone())
+                    </div>
+                </div>
+                <span
+                    class="shrink-0 rounded-full bg-[var(--warn-bg)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--warn-text)]"
+                    :hidden=$(is_active.get())
+                >
+                    "Deactivated"
+                </span>
+                <span
+                    class="shrink-0 rounded-full bg-[var(--accent-subtle)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--accent)]"
+                    :hidden=$(!is_admin.get())
+                >
+                    "Admin"
+                </span>
+                <span
+                    class="shrink-0 rounded-full bg-[var(--bg-subtle)] px-1.5 py-0.5 text-micro font-semibold uppercase text-[var(--text-muted)]"
+                    :hidden=$(is_admin.get())
+                >
+                    "Member"
+                </span>
+                <span
+                    class="hidden w-[5.5rem] shrink-0 text-right text-caption tabular-nums text-[var(--text-faint)] sm:block"
+                >
+                    (super::super::dates::absolute(cx, &user.created_at))
+                </span>
+                if id != account {
+                    <div
+                        class="flex shrink-0 items-center gap-1"
+                        :hidden=$(when_pending.get() == id)
+                    >
+                        <button
+                            type="button"
+                            title="Remove instance admin"
+                            aria-label=(format!(
+                                "Remove instance admin from {display_name}",
+                            ))
+                            class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--warn-text)]"
+                            :hidden=$(!is_admin.get())
+                            :disabled=$(when_busy.get() != 0)
+                            (demote)
+                        >
+                            "Demote"
+                        </button>
+                        <button
+                            type="button"
+                            title="Make instance admin"
+                            aria-label=(format!("Make {display_name} an instance admin"))
+                            class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--accent-subtle)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
+                            :hidden=$(is_admin.get())
+                            :disabled=$(when_busy.get() != 0
+                                || when_reauth.get() != 0
+                                || settings_saving.get()
+                                || settings_confirmation.get())
+                            (promote)
+                        >
+                            "Promote"
+                        </button>
+                        <button
+                            type="button"
+                            title="Deactivate account"
+                            aria-label=(format!("Deactivate {display_name}"))
+                            class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+                            :hidden=$(!is_active.get())
+                            :disabled=$(when_busy.get() != 0)
+                            (deactivate)
+                        >
+                            "Deactivate"
+                        </button>
+                        <button
+                            type="button"
+                            title="Restore account"
+                            aria-label=(format!("Restore {display_name}"))
+                            class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--success-bg)] hover:text-[var(--success)] disabled:cursor-not-allowed disabled:opacity-40"
+                            :hidden=$(is_active.get())
+                            :disabled=$(when_busy.get() != 0
+                                || when_reauth.get() != 0
+                                || settings_saving.get()
+                                || settings_confirmation.get())
+                            (reactivate)
+                        >
+                            "Restore"
+                        </button>
+                    </div>
+                    if id != account {
+                        <div
+                            class="flex shrink-0 items-center gap-1.5"
+                            :hidden=$(when_pending.get() != id)
+                        >
+                            <button
+                                type="button"
+                                data-native-instance-member-confirm=""
+                                class="rounded-md bg-[var(--error)] px-2 py-1 text-caption font-medium text-[var(--error-text)] hover:opacity-90 disabled:opacity-40"
+                                :disabled=$(when_busy.get() != 0)
+                                (confirm_pending)
+                            >
+                                $(if when_busy.get() == id {
+                                    "…"
+                                } else if when_action.get() == "demote" {
+                                    "Demote"
+                                } else {
+                                    "Deactivate"
+                                })
+                            </button>
+                            <button
+                                type="button"
+                                class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
+                                :disabled=$(when_busy.get() != 0)
+                                (cancel_attrs)
+                            >
+                                "Cancel"
+                            </button>
+                        </div>
+                    }
+                }
+            </div>
+            <p
+                class="px-4 pb-2.5 -mt-1 text-caption text-[var(--error)]"
+                role="alert"
+                :hidden=$(row_error.get().is_empty() || row_error_id.get() != id)
+            >
+                $(row_error.get())
+            </p>
+            if id != account {
+                <div
+                    class="mx-4 mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-subtle)] p-4"
+                    data-native-instance-member-reauth=""
+                    :hidden=$(reauth_id.get() != id)
+                >
+                    <p class="text-body-sm text-[var(--text)]">
+                        "Verify it's you to "
+                        $(if reauth_action.get() == "promote" {
+                            format!("make @{username} an admin.")
+                        } else {
+                            format!("restore @{username}.")
+                        })
+                        " Expanding access needs a recent sign-in, and you have been signed in for a while."
+                    </p>
+                    <label class="mt-3 block">
+                        <span class="sr-only">"Your current password"</span>
+                        <input
+                            class=(super::super::settings::INPUT)
+                            data-native-instance-member-reauth-password=""
+                            type="password"
+                            placeholder="your current password"
+                            autocomplete="current-password"
+                            :value=$(reauth_password.get())
+                            :disabled=$(reauth_busy.get())
+                            @input=$(|event: Event| {
+                                reauth_password.set(event.target.value.to_owned());
+                                reauth_error.set("".to_owned());
+                            })
+                        />
+                    </label>
+                    <p
+                        class="mt-2 text-caption text-[var(--error)]"
+                        role="alert"
+                        aria-live="polite"
+                    >
+                        $(reauth_error.get())
+                    </p>
+                    <div class="mt-3 flex items-center gap-2">
+                        <button
+                            type="button"
+                            class="rounded-md bg-[var(--btn-success)] px-3 py-1.5 text-body-sm font-medium text-[var(--btn-success-text)] hover:bg-[var(--btn-success-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                            :disabled=$(reauth_busy.get()
+                                || reauth_password.get().is_empty())
+                            (confirm_member_reauth_attrs(
+                                cx,
+                                account,
+                                id,
+                                is_admin.clone(),
+                                is_active.clone(),
+                                state,
+                            ))
+                        >
+                            $(if reauth_busy.get() {
+                                "Verifying…"
+                            } else {
+                                "Confirm and continue"
+                            })
+                        </button>
+                        <button
+                            type="button"
+                            class="rounded-md px-3 py-1.5 text-body-sm text-[var(--text-muted)] hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-50"
+                            :disabled=$(reauth_busy.get())
+                            (cancel_member_reauth_attrs(cx, state))
+                        >
+                            "Cancel"
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+    };
+    row.boxed()
 }
 
 fn initials(name: &str) -> String {
