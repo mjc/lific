@@ -1312,8 +1312,8 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
                     .unwrap(),
             )
             .next()
-            .is_none(),
-        "a page stays hidden while its own folder is collapsed",
+            .is_some(),
+        "newly loaded descendants start expanded",
     );
     let child_click = opened_document
         .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
@@ -1322,7 +1322,7 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         .value()
         .attr("data-topcoat-on:click")
         .unwrap();
-    let child_open = run_folder_tree_handler(&serde_json::json!({
+    let child_close = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&opened_html),
         "toggle_handler": child_click,
         "target_kind": "toggle",
@@ -1332,20 +1332,46 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             .attr("data-topcoat-bind:aria-expanded")
             .unwrap(),
     }));
-    let child_signals = serde_json::from_value(child_open["signals"].clone()).unwrap();
-    let (status, nested_html) =
+    assert_eq!(child_close["expanded_after"], false);
+    let child_signals = serde_json::from_value(child_close["signals"].clone()).unwrap();
+    let (status, child_closed_html) =
         home_fixture::document(&fixture, "", "/ACC/pages", true, Some(child_signals)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        scraper::Html::parse_document(&nested_html)
+        scraper::Html::parse_document(&child_closed_html)
             .select(
                 &scraper::Selector::parse(&format!("[data-native-folder-page='{page_id}']"))
                     .unwrap(),
             )
             .next()
-            .is_some(),
-        "expanding the child renders its page row",
+            .is_none(),
+        "collapsing the child hides its page row",
     );
+    let child_closed_document = scraper::Html::parse_document(&child_closed_html);
+    let child_reopened = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&child_closed_html),
+        "toggle_handler": child_closed_document
+            .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap(),
+        "target_kind": "toggle",
+        "folder_id": child_folder,
+    }));
+    assert_eq!(child_reopened["expanded_after"], true);
+    let child_reopened_signals = serde_json::from_value(child_reopened["signals"].clone()).unwrap();
+    let (status, nested_html) = home_fixture::document(
+        &fixture,
+        "",
+        "/ACC/pages",
+        true,
+        Some(child_reopened_signals),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(nested_html.contains(&format!("data-native-folder-page=\"{page_id}\"")));
     let nested_document = scraper::Html::parse_document(&nested_html);
     let _grandchild = nested_document
         .select(
@@ -1363,15 +1389,44 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         .value()
         .attr("data-topcoat-on:click")
         .unwrap();
-    let grandchild_open = run_folder_tree_handler(&serde_json::json!({
+    let grandchild_close = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&nested_html),
         "toggle_handler": grandchild_click,
         "target_kind": "toggle",
         "folder_id": grandchild_folder,
     }));
-    let grandchild_signals = serde_json::from_value(grandchild_open["signals"].clone()).unwrap();
-    let (status, deep_html) =
+    assert_eq!(grandchild_close["expanded_after"], false);
+    let grandchild_signals = serde_json::from_value(grandchild_close["signals"].clone()).unwrap();
+    let (status, grandchild_closed_html) =
         home_fixture::document(&fixture, "", "/ACC/pages", true, Some(grandchild_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!grandchild_closed_html.contains(&format!(
+        "data-native-page-folder-toggle=\"{great_grandchild_folder}\""
+    )));
+    let grandchild_closed_document = scraper::Html::parse_document(&grandchild_closed_html);
+    let grandchild_reopened = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&grandchild_closed_html),
+        "toggle_handler": grandchild_closed_document
+            .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap(),
+        "target_kind": "toggle",
+        "folder_id": grandchild_folder,
+    }));
+    assert_eq!(grandchild_reopened["expanded_after"], true);
+    let grandchild_reopened_signals =
+        serde_json::from_value(grandchild_reopened["signals"].clone()).unwrap();
+    let (status, deep_html) = home_fixture::document(
+        &fixture,
+        "",
+        "/ACC/pages",
+        true,
+        Some(grandchild_reopened_signals),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(deep_html.contains(&format!(
         "data-native-page-folder-toggle=\"{great_grandchild_folder}\""
@@ -1452,6 +1507,38 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             "data-native-page-folder-toggle=\"{great_grandchild_folder}\""
         )),
         "expansion state is retained through four nested folder levels",
+    );
+}
+
+#[tokio::test]
+async fn native_pages_folder_tree_preserves_large_i64_dom_ids() {
+    let fixture = home_fixture::fixture();
+    seed_nested_folder_page(&fixture, true);
+    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let handler = document
+        .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let large_folder_id = 9_007_199_254_740_993_i64;
+    let emitted = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "toggle_handler": handler,
+        "target_kind": "toggle",
+        "folder_id": large_folder_id.to_string(),
+    }));
+    let serialized_signals = emitted["signals"].to_string();
+    assert!(
+        serialized_signals.contains(&format!("\"v\":\"{large_folder_id}\"")),
+        "the emitted handler preserves the folder's exact i64 decimal value",
+    );
+    assert!(
+        !serialized_signals.contains("9007199254740992"),
+        "the DOM boundary must not round folder IDs through JavaScript Number",
     );
 }
 
@@ -1601,7 +1688,7 @@ async fn native_pages_folder_filter_renders_focused_subtree_and_valid_tree_order
         "direct child folders remain in the focused subtree",
     );
     assert!(filtered_html.contains(&format!("data-native-folder-page=\"{direct_page_id}\"")));
-    assert!(!filtered_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")));
+    assert!(filtered_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")));
     assert!(!filtered_html.contains(&format!("data-native-folder-page=\"{unrelated_page_id}\"")));
 
     let list = filtered_document
@@ -1618,20 +1705,43 @@ async fn native_pages_folder_filter_renders_focused_subtree_and_valid_tree_order
         )
         .next()
         .unwrap();
-    let expanded = run_folder_tree_handler(&serde_json::json!({
+    let collapsed = run_folder_tree_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&filtered_html),
         "toggle_handler": click,
         "target_kind": "toggle",
         "folder_id": child_folder,
         "expanded_binding": child_row.value().attr("data-topcoat-bind:aria-expanded").unwrap(),
     }));
-    let expanded_signals = serde_json::from_value(expanded["signals"].clone()).unwrap();
+    assert_eq!(collapsed["expanded_after"], false);
+    let collapsed_signals = serde_json::from_value(collapsed["signals"].clone()).unwrap();
+    let (status, child_closed_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(collapsed_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !child_closed_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")),
+        "collapsing a child hides pages in the selected folder's descendants",
+    );
+    let child_closed_document = scraper::Html::parse_document(&child_closed_html);
+    let child_reopened = run_folder_tree_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&child_closed_html),
+        "toggle_handler": child_closed_document
+            .select(&scraper::Selector::parse("[data-native-pages-list]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap(),
+        "target_kind": "toggle",
+        "folder_id": child_folder,
+    }));
+    assert_eq!(child_reopened["expanded_after"], true);
+    let reopened_signals = serde_json::from_value(child_reopened["signals"].clone()).unwrap();
     let (status, expanded_html) =
-        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(expanded_signals)).await;
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(reopened_signals)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         expanded_html.contains(&format!("data-native-folder-page=\"{nested_page_id}\"")),
-        "expanding a child retains pages in the selected folder's descendants",
+        "re-expanding a child restores pages in the selected folder's descendants",
     );
 }
 

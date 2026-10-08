@@ -1,6 +1,8 @@
 //! Typed browser bindings shared by native shell handler factories.
 
-use topcoat::runtime::{BoolSurrogate, Event, Expr, Js, StringSurrogate, Surrogate, Surrogated};
+use topcoat::runtime::{
+    BoolSurrogate, Event, Expr, I64Surrogate, Js, StringSurrogate, Surrogate, Surrogated,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct Browser;
@@ -68,6 +70,15 @@ impl Browser {
     ) -> BoolSurrogate {
         let values: Vec<String> = serde_json::from_str(&wire.into_real()).unwrap_or_default();
         values.contains(&value.into_real()).into_surrogate()
+    }
+
+    /// Parse a positive i64 copied from a DOM string without a lossy JS Number round trip.
+    pub(crate) fn positive_i64(
+        &self,
+        _value: StringSurrogate,
+        _fallback: I64Surrogate,
+    ) -> I64Surrogate {
+        panic!("browser bindings are only callable in client expressions")
     }
 
     pub(crate) fn json_array_set_string(
@@ -243,6 +254,12 @@ pub(crate) fn factory() -> Js {
                     try { const items = JSON.parse(wire.toString());
                         return cx.hydrate(Array.isArray(items) && items.every(item => typeof item === 'string') && items.includes(value.toString()));
                     } catch { return cx.hydrate(false); }
+                },
+                positive_i64: (value, fallback) => {
+                    const decimal = value.toString();
+                    if (!/^[1-9][0-9]{0,18}$/.test(decimal) ||
+                        (decimal.length === 19 && decimal > '9223372036854775807')) return fallback;
+                    return cx.hydrate({...fallback.dehydrate(), v:decimal});
                 },
                 json_array_set_string: (wire, value, included) => {
                     let items = [];

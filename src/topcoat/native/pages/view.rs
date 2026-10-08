@@ -66,7 +66,13 @@ async fn pages_list(
     let error = signal(cx, || "".to_owned());
     let revision = signal(cx, || 0_usize);
     let folder_revision = signal(cx, || 0_usize);
-    let folder_tree_state = folder_tree::state(cx, folder_revision.clone());
+    let initial_expanded_folders = structure
+        .folders
+        .iter()
+        .map(|folder| folder.id)
+        .collect::<Vec<_>>();
+    let folder_tree_state =
+        folder_tree::state(cx, folder_revision.clone(), initial_expanded_folders);
     let folder_tree_handlers = folder_tree::handlers(cx, account, project_id, &folder_tree_state);
     let folder_create_state = folder_create::State::new(cx);
     let move_open = signal(cx, || false);
@@ -85,6 +91,7 @@ async fn pages_list(
         error: move_error,
         error_prefix: move_error_prefix,
         revision: revision.clone(),
+        expanded: folder_tree_state.0.clone(),
     };
     let move_signals = move_picker::state_signals(&move_state);
     let move_dialog_signals = move_signals.clone();
@@ -348,7 +355,8 @@ async fn native_pages_move_dialog(
         .into_iter()
         .map(|folder| (folder.id, folder.name))
         .collect::<Vec<_>>();
-    let (open, page_id, page_title, folder, busy, error, error_prefix, move_revision) = state;
+    let (open, page_id, page_title, folder, busy, error, error_prefix, move_revision, expanded) =
+        state;
     Ok(move_picker::dialog(
         cx,
         account,
@@ -361,6 +369,7 @@ async fn native_pages_move_dialog(
             error,
             error_prefix,
             revision: move_revision,
+            expanded,
         },
         &folders,
     ))
@@ -484,6 +493,7 @@ mod row_shards {
             move_error,
             move_error_prefix,
             move_revision,
+            move_expanded,
         ) = move_state;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -568,6 +578,7 @@ mod row_shards {
                         error: move_error.clone(),
                         error_prefix: move_error_prefix.clone(),
                         revision: move_revision.clone(),
+                        expanded: move_expanded.clone(),
                     },
                     can_edit,
                 );

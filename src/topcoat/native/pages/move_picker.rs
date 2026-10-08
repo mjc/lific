@@ -1,4 +1,5 @@
 //! Shared Pages list folder picker and its owner-scoped handlers.
+use super::super::super::runtime::signal_vec::VecPositionExt;
 use super::super::{browser, icons};
 use super::actions::move_to_folder as commit_move_page;
 use topcoat::{
@@ -16,6 +17,7 @@ pub(super) type Signals = (
     Signal<String>,
     Signal<String>,
     Signal<usize>,
+    Signal<Vec<i64>>,
 );
 
 #[derive(Clone)]
@@ -28,6 +30,7 @@ pub(super) struct State {
     pub(super) error: Signal<String>,
     pub(super) error_prefix: Signal<String>,
     pub(super) revision: Signal<usize>,
+    pub(super) expanded: Signal<Vec<i64>>,
 }
 
 pub(super) fn state_signals(state: &State) -> Signals {
@@ -40,6 +43,7 @@ pub(super) fn state_signals(state: &State) -> Signals {
         state.error.clone(),
         state.error_prefix.clone(),
         state.revision.clone(),
+        state.expanded.clone(),
     )
 }
 
@@ -56,6 +60,7 @@ pub(super) fn dialog<'a>(
         busy,
         error,
         error_prefix,
+        expanded: _,
         ..
     } = state.clone();
     let browser = browser::bindings();
@@ -188,8 +193,10 @@ fn change(cx: &Cx, account: i64, state: State) -> Attributes {
         error,
         error_prefix: _,
         revision,
+        expanded,
     } = state;
     let browser = browser::bindings();
+    let id_zero = 0_i64;
     let failed_page_id = page_id.clone();
     let failed_folder = folder.clone();
     let failed_busy = busy.clone();
@@ -198,6 +205,7 @@ fn change(cx: &Cx, account: i64, state: State) -> Attributes {
         if !browser.is_disposed() {
             if !busy.get() {
                 let next_folder = event.target.value.to_owned();
+                let destination_id = browser.positive_i64(next_folder.clone(), id_zero);
                 let previous_folder = folder.get();
                 if next_folder == previous_folder {
                     open.set(false);
@@ -238,6 +246,11 @@ fn change(cx: &Cx, account: i64, state: State) -> Attributes {
                                     if outcome.status.is_ok() {
                                         error.set("".to_owned());
                                         open.set(false);
+                                        if destination_id > 0_i64 {
+                                            if expanded.get().position(destination_id).is_none() {
+                                                expanded.push(destination_id);
+                                            }
+                                        }
                                         revision.increment();
                                     } else {
                                         folder.set(saved_previous_folder.clone());
