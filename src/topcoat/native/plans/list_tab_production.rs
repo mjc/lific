@@ -1,5 +1,8 @@
 use super::super::home_fixture;
-use crate::db::{models::{CreatePlan, UpdatePlan}, queries};
+use crate::db::{
+    models::{CreatePlan, UpdatePlan},
+    queries,
+};
 use axum::http::StatusCode;
 use scraper::{Html, Selector};
 
@@ -93,9 +96,15 @@ async fn native_plan_subtabs_restore_by_project_and_filter_real_rows_at_every_mo
         let (status, filtered_html) =
             home_fixture::document(&fixture, mount, path, true, Some(recovered)).await;
         assert_eq!(status, StatusCode::OK, "{mount} after selection");
-        assert!(filtered_html.contains("Plan archived"), "{mount}");
-        assert!(!filtered_html.contains("Plan completed"), "{mount}");
-        assert!(!filtered_html.contains("Plan still active"), "{mount}");
+        let filtered_document = Html::parse_document(&filtered_html);
+        let plan_main = filtered_document
+            .select(&Selector::parse("main[data-native-plans]").unwrap())
+            .next()
+            .expect("the filtered results are scoped to the actual Plans page");
+        let plan_rows = plan_main.text().collect::<String>();
+        assert!(plan_rows.contains("Plan archived"), "{mount}");
+        assert!(!plan_rows.contains("Plan completed"), "{mount}");
+        assert!(!plan_rows.contains("Plan still active"), "{mount}");
     }
 }
 
@@ -104,7 +113,10 @@ async fn native_plan_tabs_choose_all_when_no_saved_tab_and_no_active_plans() {
     let fixture = home_fixture::fixture();
     let project_id = seed_plans(
         &fixture,
-        &[("Completed without an active plan", "done"), ("Archived plan", "archived")],
+        &[
+            ("Completed without an active plan", "done"),
+            ("Archived plan", "archived"),
+        ],
     );
     let (status, html) = home_fixture::document(&fixture, "", "/ACC/plans", true, None).await;
     assert_eq!(status, StatusCode::OK);
@@ -121,13 +133,8 @@ async fn native_plan_tabs_choose_all_when_no_saved_tab_and_no_active_plans() {
     );
     assert_eq!(result["initial_fallback"], "all");
     let recovered = serde_json::from_value(result["signals"].clone()).unwrap();
-    let (status, filtered_html) = home_fixture::document(
-        &fixture,
-        "",
-        "/ACC/plans",
-        true,
-        Some(recovered),
-    ).await;
+    let (status, filtered_html) =
+        home_fixture::document(&fixture, "", "/ACC/plans", true, Some(recovered)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(filtered_html.contains("Completed without an active plan"));
     assert!(filtered_html.contains("Archived plan"));
