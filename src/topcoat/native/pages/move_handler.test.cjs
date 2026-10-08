@@ -14,10 +14,10 @@ const fixture = handlerFixture(input.signals, async (url, options) => {
   if (input.scenario === 'failure') return Promise.reject(new Error('offline'));
   if (input.scenario === 'retired' || input.scenario === 'pending') {
     return new Promise(resolve => {
-      finishRequest = () => resolve({ok: true, json: async () => ({t: 'Record', v: {status: {t: 'Result', ok: 'saved'}}})});
+      finishRequest = () => resolve({ok: true, json: async () => input.reply});
     });
   }
-  return {ok: true, json: async () => ({t: 'Record', v: {status: {t: 'Result', ok: 'saved'}}})};
+  return {ok: true, json: async () => input.reply};
 }, input.browser_source);
 const {cx, context} = fixture;
 context.document.documentElement.getAttribute = () => input.mount || '';
