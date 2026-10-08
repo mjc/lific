@@ -971,6 +971,14 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                     "query": "",
                     "expected_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
                 }, {
+                    "name": "stale_query_enter",
+                    "signals": home_fixture::page_signals(&source),
+                    "query_handler": query_handler,
+                    "filter_keydown_handler": filter_keydown_handler,
+                    "old_enter_action_handler": enter_action.value().attr("data-topcoat-on:click").unwrap(),
+                    "query_binding": query_binding,
+                    "next_query": "new query before rerender",
+                }, {
                     "name": "focus",
                     "signals": home_fixture::page_signals(&source),
                     "open_handler": open_handler,
@@ -1154,6 +1162,16 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                 .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
                 .next()
                 .unwrap();
+            let create_palette_handler = create_section
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .unwrap()
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
             let creating_binding = create_button
                 .value()
                 .attr("data-topcoat-bind:disabled")
@@ -1180,6 +1198,12 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
                         "open_binding": create_section.select(&Selector::parse("[data-native-issue-label-picker]").unwrap()).next().unwrap().value().attr("data-topcoat-bind:hidden").unwrap(),
                         "query_binding": create_section.select(&Selector::parse("input[placeholder='Filter or create…']").unwrap()).next().unwrap().value().attr("data-topcoat-bind:value").unwrap(),
                         "query": "New runtime label",
+                    }, {
+                        "name": "stale_color_create",
+                        "signals": home_fixture::page_signals(&create_html),
+                        "palette_handler": create_palette_handler,
+                        "palette_color": "#EF4444",
+                        "create_handler": create_button.value().attr("data-topcoat-on:click").unwrap(),
                     }],
                 }),
             );
@@ -1245,6 +1269,113 @@ async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_e
             .unwrap()
             .labels
             .contains(&label.name)
+    );
+}
+
+#[tokio::test]
+async fn native_issue_label_old_option_after_success_attaches_without_overwriting_prior_label() {
+    let fixture = fixture();
+    let issue = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        for name in ["First stale option", "Second stale option"] {
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id: issue.project_id,
+                    name: name.into(),
+                    color: "#16A34A".into(),
+                },
+            )
+            .unwrap();
+        }
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        queries::get_issue(&conn, issue_id).unwrap()
+    };
+    let (status, stale_html) =
+        home_fixture::document(&fixture, "", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&stale_html);
+    let labels = named_section(&document, "Labels");
+    let option_handler = |name: &str| {
+        labels
+            .select(&Selector::parse("button[role='option']").unwrap())
+            .find(|option| option.value().attr("data-label-name") == Some(name))
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap()
+    };
+    let emit_old_option = |handler: &str| {
+        home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+            &serde_json::json!({
+                "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                "phases": [{
+                    "name": "emit_option",
+                    "signals": home_fixture::page_signals(&stale_html),
+                    "option_handler": handler,
+                }],
+            })
+        )["request"]
+            .clone()
+    };
+
+    let first_request = emit_old_option(option_handler("First stale option"));
+    let (first_status, first_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::json!([first_request]),
+    )
+    .await;
+    assert_eq!(
+        first_status,
+        StatusCode::OK,
+        "first label action: {first_reply}"
+    );
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .labels,
+        ["First stale option"]
+    );
+
+    // The second callback comes from the same SSR document after the first real
+    // write has succeeded; no metadata projection refreshes its captured state.
+    let second_request = emit_old_option(option_handler("Second stale option"));
+    let (second_status, second_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::json!([second_request]),
+    )
+    .await;
+    assert_eq!(
+        second_status,
+        StatusCode::OK,
+        "second stale action: {second_reply}"
+    );
+    let mut saved_labels = queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+        .unwrap()
+        .labels;
+    saved_labels.sort();
+    assert_eq!(
+        saved_labels,
+        ["First stale option", "Second stale option"],
+        "the old option callback attaches its target against current labels instead of replacing the first successful write"
     );
 }
 

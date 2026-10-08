@@ -98,6 +98,31 @@ async function run() {
     'the unchanged selection closes the picker');
   open(cx.event(makeEvent({type: 'click'})));
 
+  const expandedBinding = input.expanded_binding
+    ? vm.runInNewContext(`cx => (${input.expanded_binding})`, context)
+    : null;
+  const readExpanded = () => expandedBinding ? unbox(expandedBinding(cx)) : null;
+  if (input.scenario === 'success' && input.tree_toggle_handler) {
+    const folderTarget = {
+      closest(selector) {
+        return selector === '[data-native-page-folder-toggle]' ? this : null;
+      },
+      getAttribute(name) {
+        if (name === 'data-folder-id') return String(input.tree_folder_id);
+        if (name === 'data-folder-revision') return String(input.tree_revision);
+        return null;
+      },
+    };
+    if (readExpanded()) {
+      fixture.handler(input.tree_toggle_handler)(cx.event(makeEvent({
+        type: 'click',
+        target: folderTarget,
+        currentTarget: {},
+      })));
+    }
+    assert.equal(readExpanded(), false, 'the test collapses the move destination first');
+  }
+
   if (input.scenario === 'overlay') {
     const backdrop = {};
     fixture.handler(input.backdrop_handler)(cx.event(makeEvent({
@@ -162,7 +187,11 @@ async function run() {
   } else {
     assert.equal(readHidden(), true,
       'a successful move closes the picker');
+    if (input.scenario === 'success' && input.tree_toggle_handler) {
+      assert.equal(readExpanded(), true,
+        'a successful move expands its destination folder');
+    }
   }
-  process.stdout.write(JSON.stringify({url: path, arguments: request.arguments}));
+  process.stdout.write(JSON.stringify({url: path, arguments: request.arguments, signals: snapshot()}));
 }
 run().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });
