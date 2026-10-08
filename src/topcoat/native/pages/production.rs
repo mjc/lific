@@ -832,8 +832,8 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
             .next()
             .unwrap();
         let save_button = document
-            .select(&scraper::Selector::parse("button").unwrap())
-            .find(|button| button.text().collect::<String>().trim() == "Save changes")
+            .select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap())
+            .next()
             .unwrap();
         let request = super::labels_action::Request {
             account_id: account,
@@ -3441,8 +3441,8 @@ async fn assert_remounted_label_reply_preserves_current_state(
     let body = element("textarea[aria-label='Page content in Markdown']");
     let page_status = element("select[data-native-page-status]");
     let save = document
-        .select(&scraper::Selector::parse("button").unwrap())
-        .find(|button| button.text().collect::<String>().trim() == "Save changes")
+        .select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap())
+        .next()
         .unwrap();
     let reply = if failed {
         serde_json::to_value(

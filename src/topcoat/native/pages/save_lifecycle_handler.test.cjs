@@ -11,7 +11,7 @@ const requests = [];
 let settleRequest;
 const fixture = handlerFixture(input.signals, (url, options) => {
   const path = new URL(url, 'http://localhost').pathname;
-  assert.ok(path.endsWith('/__native_pages/save'), `unexpected procedure ${path}`);
+  assert.ok(path.endsWith('/__native_pages/save_content'), `unexpected procedure ${path}`);
   assert.equal(options.method, 'POST');
   requests.push(JSON.parse(options.body));
   if (input.scenario === 'dispose_before_queue') {
@@ -26,6 +26,7 @@ const fixture = handlerFixture(input.signals, (url, options) => {
   });
 }, input.browser_source);
 const {cx, context, controller} = fixture;
+context.CustomEvent = class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } };
 const referencedSignals = new Set();
 const originalSignal = cx.signal.bind(cx);
 cx.signal = id => {
@@ -72,6 +73,7 @@ async function flush() {
 }
 
 async function run() {
+  handler(input.mode_handler)(click());
   handler(input.title_handler)(textInput('Retired title'));
   handler(input.body_handler)(textInput('Retired body'));
   if (input.scenario === 'dispose_before_queue') {

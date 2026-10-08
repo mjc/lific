@@ -4,6 +4,26 @@ use super::production::seed_page;
 use crate::db::queries;
 use axum::http::StatusCode;
 
+fn text_expression(element: scraper::ElementRef<'_>) -> String {
+    element
+        .children()
+        .find_map(|node| {
+            let scraper::Node::Comment(comment) = node.value() else {
+                return None;
+            };
+            let encoded = comment
+                .strip_prefix("::topcoat::expr::start(\"")?
+                .strip_suffix("\")")?;
+            Some(
+                scraper::Html::parse_fragment(encoded)
+                    .root_element()
+                    .text()
+                    .collect::<String>(),
+            )
+        })
+        .expect("button emits its reactive label expression")
+}
+
 #[tokio::test]
 async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_write() {
     use topcoat::runtime::Surrogated;
@@ -24,18 +44,40 @@ async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_writ
         let modes = document
             .select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(modes.len(), 2, "Edit and Preview are separate toolbar controls");
-        let mode_edit = document.select(&scraper::Selector::parse("[data-native-page-body-mode='edit']").unwrap()).next().unwrap();
-        let mode_preview = document.select(&scraper::Selector::parse("[data-native-page-body-mode='preview']").unwrap()).next().unwrap();
-        let mode_group = document.select(&scraper::Selector::parse("[data-native-page-body-mode-toggle]").unwrap()).next().unwrap();
-        let empty_cta = document.select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap()).next().unwrap();
-        let preview = document.select(&scraper::Selector::parse("[data-native-page-body-preview]").unwrap()).next().unwrap();
+        assert_eq!(
+            modes.len(),
+            2,
+            "Edit and Preview are separate toolbar controls"
+        );
+        let mode_edit = document
+            .select(&scraper::Selector::parse("[data-native-page-body-mode='edit']").unwrap())
+            .next()
+            .unwrap();
+        let mode_preview = document
+            .select(&scraper::Selector::parse("[data-native-page-body-mode='preview']").unwrap())
+            .next()
+            .unwrap();
+        let mode_group = document
+            .select(&scraper::Selector::parse("[data-native-page-body-mode-toggle]").unwrap())
+            .next()
+            .unwrap();
+        let empty_cta = document
+            .select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap())
+            .next()
+            .unwrap();
+        let preview = document
+            .select(&scraper::Selector::parse("[data-native-page-body-preview]").unwrap())
+            .next()
+            .unwrap();
         let main = document
             .select(&scraper::Selector::parse("main.native-pages__detail").unwrap())
             .next()
             .unwrap();
         let textarea = document
-            .select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap())
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
             .next()
             .unwrap();
         let save = document
@@ -69,7 +111,13 @@ async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_writ
         assert_eq!(second_reply["v"]["status"]["ok"], "saved");
         let saved_again = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
         assert_eq!(saved_again.content, "Preview body");
-        let third_args = (account, page_id, "Saved by shortcut".to_owned(), saved_again.seq).into_surrogate();
+        let third_args = (
+            account,
+            page_id,
+            "Saved by shortcut".to_owned(),
+            saved_again.seq,
+        )
+            .into_surrogate();
         let (third_status, third_reply) = home_fixture::procedure(
             &fixture,
             "/__native_pages/save_content",
@@ -118,7 +166,7 @@ async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_writ
                 "hidden": textarea.value().attr("data-topcoat-bind:hidden").unwrap(),
             },
             "save": save.value().attr("data-topcoat-on:click").unwrap(),
-            "save_label": save.value().attr("data-topcoat-bind:data-native-page-body-save-label").unwrap(),
+            "save_label": text_expression(save),
             "cancel": cancel.value().attr("data-topcoat-on:click").unwrap(),
         });
         let output = home_fixture::evaluate_handler(
@@ -172,7 +220,10 @@ async fn native_page_body_keyboard_e_uses_visible_shell_overlays_and_page_state(
                 })
             })
             .collect::<Vec<_>>();
-        assert!(!overlays.is_empty(), "actual shell SSR exposes overlay candidates at {mount}");
+        assert!(
+            !overlays.is_empty(),
+            "actual shell SSR exposes overlay candidates at {mount}"
+        );
         assert!(
             overlays.iter().any(|overlay| {
                 overlay["selfHidden"] == true || overlay["ancestorHidden"] == true
@@ -184,7 +235,10 @@ async fn native_page_body_keyboard_e_uses_visible_shell_overlays_and_page_state(
             .next()
             .unwrap();
         let body = document
-            .select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap())
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
             .next()
             .unwrap();
         let title = document
@@ -223,14 +277,8 @@ async fn native_page_viewer_has_no_body_edit_controls_or_shortcuts() {
     use topcoat::runtime::Surrogated;
 
     let (page_id, account, seq) = seed_page(&fixture, false);
-    let (status, html) = home_fixture::document(
-        &fixture,
-        "",
-        &format!("/ACC/pages/{page_id}"),
-        true,
-        None,
-    )
-    .await;
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
     let main = document
@@ -247,8 +295,13 @@ async fn native_page_viewer_has_no_body_edit_controls_or_shortcuts() {
         "[data-native-page-body-cancel]",
         "textarea[aria-label='Page content in Markdown']",
     ] {
-        assert!(document.select(&scraper::Selector::parse(selector).unwrap()).next().is_none(),
-            "Viewer SSR omits {selector}");
+        assert!(
+            document
+                .select(&scraper::Selector::parse(selector).unwrap())
+                .next()
+                .is_none(),
+            "Viewer SSR omits {selector}"
+        );
     }
     let args = (account, page_id, "forged content".to_owned(), seq).into_surrogate();
     let (write_status, reply) = home_fixture::procedure(
@@ -263,16 +316,11 @@ async fn native_page_viewer_has_no_body_edit_controls_or_shortcuts() {
     assert_eq!(saved.content, "Original body");
 }
 
-
 #[tokio::test]
 async fn pending_body_cancel_does_not_reopen_after_success_conflict_or_rejection() {
     use topcoat::runtime::Surrogated;
 
-    for (mount, scenario) in [
-        ("", "success"),
-        ("/app", "conflict"),
-        ("/ACC", "rejection"),
-    ] {
+    for (mount, scenario) in [("", "success"), ("/app", "conflict"), ("/ACC", "rejection")] {
         let fixture = home_fixture::fixture();
         let (page_id, account, seq) = seed_page(&fixture, true);
         let (status, html) = home_fixture::document(
@@ -284,7 +332,13 @@ async fn pending_body_cancel_does_not_reopen_after_success_conflict_or_rejection
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{mount}");
-        let args = (account, page_id, "Pending commit".to_owned(), seq).into_surrogate();
+        let args = (
+            account,
+            page_id,
+            "Draft cancelled while pending".to_owned(),
+            seq,
+        )
+            .into_surrogate();
         let (success_status, success_reply) = home_fixture::procedure(
             &fixture,
             "/__native_pages/save_content",
@@ -304,13 +358,26 @@ async fn pending_body_cancel_does_not_reopen_after_success_conflict_or_rejection
         assert_eq!(conflict_reply["v"]["status"]["err"], "conflict");
 
         let document = scraper::Html::parse_document(&html);
-        let mode = document.select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap()).next().unwrap();
-        let textarea = document.select(&scraper::Selector::parse("textarea[aria-label='Page content in Markdown']").unwrap()).next().unwrap();
-        let save = document.select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap()).next().unwrap();
+        let mode = document
+            .select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap())
+            .next()
+            .unwrap();
+        let textarea = document
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
+            .next()
+            .unwrap();
+        let save = document
+            .select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap())
+            .next()
+            .unwrap();
         let input = serde_json::json!({
             "signals": home_fixture::page_signals(&html),
             "mount": mount,
             "scenario": scenario,
+            "expected_args": serde_json::to_value(args).unwrap(),
             "success_reply": success_reply,
             "conflict_reply": conflict_reply,
             "mode": mode.value().attr("data-topcoat-on:click").unwrap(),
@@ -321,7 +388,7 @@ async fn pending_body_cancel_does_not_reopen_after_success_conflict_or_rejection
                 "hidden": textarea.value().attr("data-topcoat-bind:hidden").unwrap(),
             },
             "save": save.value().attr("data-topcoat-on:click").unwrap(),
-            "save_label": save.value().attr("data-topcoat-bind:data-native-page-body-save-label").unwrap(),
+            "save_label": text_expression(save),
         });
         let output = home_fixture::evaluate_handler(
             "src/topcoat/native/pages/body_editor_pending.test.cjs",
@@ -330,7 +397,6 @@ async fn pending_body_cancel_does_not_reopen_after_success_conflict_or_rejection
         assert_eq!(output["passed"], true, "{mount} {scenario}");
     }
 }
-
 
 #[tokio::test]
 async fn empty_page_body_presents_edit_cta_and_viewer_text() {
@@ -352,28 +418,57 @@ async fn empty_page_body_presents_edit_cta_and_viewer_text() {
             )
             .unwrap();
         }
-        let (status, html) = home_fixture::document(
-            &fixture,
-            "",
-            &format!("/ACC/pages/{page_id}"),
-            true,
-            None,
-        )
-        .await;
+        let (status, html) =
+            home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None)
+                .await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
         if editable {
-            let cta = document.select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap()).next()
+            let cta = document
+                .select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap())
+                .next()
                 .expect("editable empty body retains its in-body edit CTA");
-            assert_eq!(cta.text().collect::<String>().trim(), "Click to start writing...");
-            assert!(document.select(&scraper::Selector::parse("[data-native-page-body-mode='edit']").unwrap()).next().is_some());
-            assert!(document.select(&scraper::Selector::parse("[data-native-page-body-mode='preview']").unwrap()).next().is_some());
+            assert_eq!(
+                cta.text().collect::<String>().trim(),
+                "Click to start writing..."
+            );
+            assert!(
+                document
+                    .select(
+                        &scraper::Selector::parse("[data-native-page-body-mode='edit']").unwrap()
+                    )
+                    .next()
+                    .is_some()
+            );
+            assert!(
+                document
+                    .select(
+                        &scraper::Selector::parse("[data-native-page-body-mode='preview']")
+                            .unwrap()
+                    )
+                    .next()
+                    .is_some()
+            );
         } else {
-            let empty = document.select(&scraper::Selector::parse("[data-native-page-body-empty-readonly]").unwrap()).next()
+            let empty = document
+                .select(
+                    &scraper::Selector::parse("[data-native-page-body-empty-readonly]").unwrap(),
+                )
+                .next()
                 .expect("Viewer sees the empty page label");
             assert_eq!(empty.text().collect::<String>(), "Empty page");
-            assert!(document.select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap()).next().is_none());
-            assert!(document.select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap()).next().is_none());
+            assert!(
+                document
+                    .select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap())
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                document
+                    .select(&scraper::Selector::parse("[data-native-page-body-empty-cta]").unwrap())
+                    .next()
+                    .is_none()
+            );
         }
     }
 }
