@@ -140,12 +140,18 @@ pub(crate) fn socket_lifetime(
     account_id: i64,
     is_admin: bool,
 ) -> SocketLifetime {
+    #[cfg(test)]
+    let interval = topcoat::context::try_app_context::<SessionRevalidationInterval>(cx)
+        .map_or(crate::realtime::SESSION_REVALIDATE_INTERVAL, |value| {
+            value.0
+        });
+    #[cfg(not(test))]
+    let interval = crate::realtime::SESSION_REVALIDATE_INTERVAL;
     // Capture the parent before registering the hook on its child, so the
     // retained request context cannot hold a cycle back to this future.
     let context = cx.clone();
     let admitted_at = Instant::now();
     SocketLifetime::new(async move {
-        let interval = crate::realtime::SESSION_REVALIDATE_INTERVAL;
         let mut revalidate = time::interval_at(admitted_at + interval, interval);
         revalidate.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
