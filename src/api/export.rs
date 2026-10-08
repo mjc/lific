@@ -80,11 +80,14 @@ pub(super) async fn export_project(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use axum::body::Bytes;
-    use axum::http::{Request, StatusCode};
+    use axum::{
+        http::{Request, StatusCode},
+        response::IntoResponse,
+    };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -95,6 +98,131 @@ mod tests {
         json_post, parse_json, seed_project, setup_membership_test, test_app,
     };
     use crate::error::LificError;
+
+    async fn held_page_export(
+        db: &crate::db::DbPool,
+        identity: crate::resolve_caller::ResolvedIdentity,
+        identifier: String,
+        change: impl FnOnce(&crate::db::DbPool),
+    ) -> Result<axum::response::Response, LificError> {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let gate = Arc::new(ExportTestGate::new(started_tx, release_rx));
+        let work_db = db.clone();
+        let task = tokio::spawn(EXPORT_TEST_GATE.scope(gate, async move {
+            super::export_page(
+                axum::extract::State(work_db),
+                axum::Extension(Some(identity)),
+                axum::extract::Path(identifier),
+                axum::extract::Query(super::ExportQuery { format: None }),
+            )
+            .await
+            .map(|response| response.into_response())
+        }));
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("page export reaches the queued worker")
+            .expect("page export announces its worker boundary");
+        change(db);
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("released page export completes")
+            .unwrap()
+    }
+
+    fn seed_page_export_pair(
+        db: &crate::db::DbPool,
+        lead_id: i64,
+        allowed_project_id: i64,
+    ) -> (i64, String, String) {
+        let conn = db.write().unwrap();
+        let hidden_project = crate::db::queries::create_project(
+            &conn,
+            &crate::db::models::CreateProject {
+                name: "Private project".into(),
+                identifier: "HID".into(),
+                lead_user_id: Some(lead_id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let allowed = crate::db::queries::create_page(
+            &conn,
+            &crate::db::models::CreatePage {
+                project_id: Some(allowed_project_id),
+                title: "Allowed export page".into(),
+                content: "allowed-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hidden = crate::db::queries::create_page(
+            &conn,
+            &crate::db::models::CreatePage {
+                project_id: Some(hidden_project),
+                title: "Private export page".into(),
+                content: "private-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (hidden_project, allowed.identifier, hidden.identifier)
+    }
+
+    #[tokio::test]
+    async fn page_export_keeps_selected_page_id_when_project_identifiers_are_reassigned() {
+        let (db, _, lead, _, viewer, _, allowed_project_id) = setup_membership_test();
+        let (hidden_project_id, allowed_identifier, _) =
+            seed_page_export_pair(&db, lead.id, allowed_project_id);
+        let identity = crate::auth::fresh_identity(&viewer, crate::actor::Transport::Web);
+        let response = held_page_export(&db, identity, allowed_identifier, |db| {
+            db.transaction(|tx| {
+                tx.execute(
+                    "UPDATE projects SET identifier='REN' WHERE id=?1",
+                    [allowed_project_id],
+                )?;
+                tx.execute(
+                    "UPDATE projects SET identifier='MEM' WHERE id=?1",
+                    [hidden_project_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let markdown = String::from_utf8(body.to_vec()).unwrap();
+        assert!(markdown.contains("allowed-export-body"), "{markdown}");
+        assert!(!markdown.contains("private-export-body"), "{markdown}");
+        assert!(markdown.contains("identifier: REN-DOC-1"), "{markdown}");
+    }
+
+    #[tokio::test]
+    async fn page_export_rechecks_membership_at_the_worker_snapshot() {
+        let (db, _, _, _, viewer, _, project_id) = setup_membership_test();
+        let identifier = crate::db::queries::create_page(
+            &db.write().unwrap(),
+            &crate::db::models::CreatePage {
+                project_id: Some(project_id),
+                title: "Revoked export page".into(),
+                content: "revoked-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .identifier;
+        let identity = crate::auth::fresh_identity(&viewer, crate::actor::Transport::Web);
+        let result = held_page_export(&db, identity, identifier, |db| {
+            crate::db::queries::members::remove_member(&db.write().unwrap(), project_id, viewer.id)
+                .unwrap();
+        })
+        .await;
+        assert!(matches!(result, Err(LificError::Forbidden(_))));
+    }
 
     #[tokio::test]
     async fn export_body_remains_exhausted_when_polled_after_eof() {

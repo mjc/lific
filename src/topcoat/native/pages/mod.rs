@@ -13,6 +13,8 @@ mod status;
 mod view;
 
 #[cfg(test)]
+mod export_production;
+#[cfg(test)]
 mod production;
 #[cfg(test)]
 mod save_lifecycle_production;
