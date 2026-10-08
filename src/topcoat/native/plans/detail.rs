@@ -1819,7 +1819,7 @@ mod tests {
         );
         assert!(!html.contains("Foreign scope sentinel"));
 
-        let button = Selector::parse("button[data-topcoat-on:click]").unwrap();
+        let button = Selector::parse(r"button[data-topcoat-on\:click]").unwrap();
         let mut show_all = None;
         let mut show_change = None;
         for control in timeline.select(&button) {

@@ -41,7 +41,7 @@ function handlerFixture(signals, fetch, browserSource) {
     registry,
     context,
     controller,
-    handler: source => vm.runInNewContext(`cx => (${source})`, context)(cx),
+    handler: (source, owner = cx) => vm.runInNewContext(`cx => (${source})`, context)(owner),
   };
 }
 
