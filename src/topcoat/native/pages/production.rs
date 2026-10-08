@@ -17,11 +17,18 @@ fn serialized_i64(value: &serde_json::Value) -> i64 {
     value
         .as_i64()
         .or_else(|| value.as_str()?.parse().ok())
+        .or_else(|| value["v"].as_str()?.parse().ok())
         .expect("the serialized value is an integer")
 }
 
 fn shard_revision(shard: &serde_json::Value) -> i64 {
     serialized_i64(&shard["args"][1])
+}
+
+fn surrogate_i64(value: i64) -> serde_json::Value {
+    use topcoat::runtime::Surrogated;
+
+    serde_json::to_value(value.into_surrogate()).unwrap()
 }
 
 #[tokio::test]
@@ -81,6 +88,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "status": "active",
     }));
     let arguments = emitted["arguments"].clone();
@@ -137,6 +145,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "status": "complete",
     }));
     let stale_arguments = stale_handler["arguments"].clone();
@@ -153,6 +162,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "status": "complete",
         "shard_marker": activity_marker,
         "reply": conflict,
@@ -166,6 +176,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "status": "archived",
         "shard_marker": activity_marker,
     }));
@@ -914,7 +925,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                     "wrong_page_reply": make_reply(account, page_id + 1),
                     "reply": reply,
                     "shard_marker": activity_marker,
-                    "activity_seq": saved.seq,
+                    "activity_seq_wire": surrogate_i64(saved.seq),
                 }],
             }),
         );
@@ -1150,6 +1161,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "pinned": true,
         "shard_marker": activity_marker,
     }));
@@ -1234,6 +1246,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "shard_marker": activity_marker,
         "reply": conflict,
     }));
@@ -1245,6 +1258,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "title_binding": title_binding,
         "body_binding": body_binding,
         "expected_seq": expected_seq,
+        "expected_seq_wire": surrogate_i64(expected_seq),
         "shard_marker": activity_marker,
     }));
     run_pin_handler(&serde_json::json!({
@@ -3195,7 +3209,7 @@ pub(super) fn shard_marker(html: &str, path: &str) -> String {
             scraper::Node::Comment(comment)
                 if comment.starts_with("::topcoat::shard::start(") && comment.contains(path) =>
             {
-                Some(comment.to_owned())
+                Some(comment.to_string())
             }
             _ => None,
         })
@@ -3207,26 +3221,56 @@ pub(super) async fn replay_activity_shard(
     identity: &str,
     arguments: serde_json::Value,
 ) -> (StatusCode, String) {
+    replay_activity_shard_at(
+        fixture,
+        "",
+        "/__native_pages/activity",
+        identity,
+        arguments,
+        serde_json::json!({}),
+    )
+    .await
+}
+
+async fn replay_activity_shard_at(
+    fixture: &home_fixture::Fixture,
+    mount: &str,
+    route_path: &str,
+    identity: &str,
+    arguments: serde_json::Value,
+    signals: serde_json::Value,
+) -> (StatusCode, String) {
     use axum::{body::Body, http::Request};
     use topcoat::router::request::IDENTITY_HEADER;
     use tower::ServiceExt;
 
+    let uri = if mount.is_empty() || route_path.starts_with(mount) {
+        route_path.to_owned()
+    } else {
+        format!("{mount}{route_path}")
+    };
     let mut request = Request::builder()
         .method("POST")
-        .uri("/__native_pages/activity")
+        .uri(uri)
         .header("host", "localhost")
         .header("origin", "http://localhost")
         .header("content-type", "application/json")
         .header("cookie", format!("lific_token={}", fixture.token))
         .header(IDENTITY_HEADER, identity)
+        .header("x-forwarded-prefix", mount)
         .body(Body::from(
-            serde_json::json!({"args": arguments, "signals": {}}).to_string(),
+            serde_json::json!({"args": arguments, "signals": signals}).to_string(),
         ))
         .unwrap();
     request.extensions_mut().insert(axum::extract::ConnectInfo(
         "127.0.0.1:3000".parse::<std::net::SocketAddr>().unwrap(),
     ));
-    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    let app = if mount.is_empty() {
+        fixture.app.clone()
+    } else {
+        super::super::admission_contract::mounted(fixture.app.clone())
+    };
+    let response = app.oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -3451,11 +3495,8 @@ async fn native_page_detail_renders_latest_100_authorized_activity_before_page_m
         .unwrap();
     }
 
-    for (mount, path) in [
-        ("", format!("/ACC/pages/{page_id}")),
-        ("/app", format!("/app/ACC/pages/{page_id}")),
-        ("/ACC", format!("/ACC/ACC/pages/{page_id}")),
-    ] {
+    for mount in ["", "/app", "/ACC"] {
+        let path = format!("/ACC/pages/{page_id}");
         let (status, html) = home_fixture::document(&fixture, mount, &path, true, None).await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
@@ -3616,10 +3657,15 @@ async fn native_page_activity_shard_rechecks_account_role_and_page_scope() {
     }));
     let shard = &emitted["activity_shard"];
     assert_eq!(shard["path"], "/__native_pages/activity");
-    assert_eq!(shard["args"][0], serde_json::json!([account, page_id]));
+    use topcoat::runtime::Surrogated;
+
     let expected_seq = queries::get_page(&fixture.db.read().unwrap(), page_id)
         .unwrap()
         .seq;
+    assert_eq!(
+        shard["args"],
+        serde_json::to_value(((account, page_id), expected_seq).into_surrogate()).unwrap(),
+    );
     assert_eq!(shard_revision(shard), expected_seq);
 
     // Page activity is available at Viewer role. The same SSR shard marker is
@@ -3643,26 +3689,26 @@ async fn native_page_activity_shard_rechecks_account_role_and_page_scope() {
     assert!(feed.contains("Owner scoped activity marker"));
     assert!(!feed.contains("Foreign page activity sentinel"));
 
-    let mut wrong_account_args = shard["args"].clone();
-    wrong_account_args[0][0] = serde_json::json!(account + 100);
+    let wrong_account_args =
+        serde_json::to_value(((account + 100, page_id), expected_seq).into_surrogate()).unwrap();
     let (status, body) = replay_activity_shard(
         &fixture,
         shard["identity"].as_str().unwrap(),
         wrong_account_args,
     )
     .await;
-    assert_ne!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(!body.contains("Owner scoped activity marker"));
 
-    let mut foreign_page_args = shard["args"].clone();
-    foreign_page_args[0][1] = serde_json::json!(foreign_page_id);
+    let foreign_page_args =
+        serde_json::to_value(((account, foreign_page_id), expected_seq).into_surrogate()).unwrap();
     let (status, body) = replay_activity_shard(
         &fixture,
         shard["identity"].as_str().unwrap(),
         foreign_page_args,
     )
     .await;
-    assert_ne!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(!body.contains("Foreign page activity sentinel"));
 
     {
@@ -3680,36 +3726,32 @@ async fn native_page_activity_shard_rechecks_account_role_and_page_scope() {
         shard["args"].clone(),
     )
     .await;
-    assert_ne!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(!body.contains("Owner scoped activity marker"));
 }
 
 #[tokio::test]
 async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_handlers() {
-    let fixture = home_fixture::fixture();
-    let (page_id, _, _) = seed_page(&fixture, true);
-    {
-        let conn = fixture.db.write().unwrap();
-        conn.execute("DELETE FROM audit_log WHERE page_id=?1", [page_id])
-            .unwrap();
-        for index in 0..7 {
-            queries::update_page(
-                &conn,
-                page_id,
-                &UpdatePage {
-                    content: Some(format!("Distinct page body revision {index}")),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+    for mount in ["", "/app", "/ACC"] {
+        let fixture = home_fixture::fixture();
+        let (page_id, account, _) = seed_page(&fixture, true);
+        {
+            let conn = fixture.db.write().unwrap();
+            conn.execute("DELETE FROM audit_log WHERE page_id=?1", [page_id])
+                .unwrap();
+            for index in 0..7 {
+                queries::update_page(
+                    &conn,
+                    page_id,
+                    &UpdatePage {
+                        content: Some(format!("Distinct page body revision {index}")),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            }
         }
-    }
-
-    for (mount, path) in [
-        ("", format!("/ACC/pages/{page_id}")),
-        ("/app", format!("/app/ACC/pages/{page_id}")),
-        ("/ACC", format!("/ACC/ACC/pages/{page_id}")),
-    ] {
+        let path = format!("/ACC/pages/{page_id}");
         let (status, html) = home_fixture::document(&fixture, mount, &path, true, None).await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
@@ -3732,6 +3774,11 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
             .attr("data-topcoat-on:click")
             .unwrap();
         let content_row = rows.first().unwrap();
+        let retained_activity_id = content_row
+            .value()
+            .attr("data-activity-id")
+            .unwrap()
+            .to_owned();
         let change_handler = content_row
             .select(&scraper::Selector::parse("button").unwrap())
             .next()
@@ -3739,7 +3786,7 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
             .value()
             .attr("data-topcoat-on:click")
             .unwrap();
-        let hidden_rows = [rows[0], rows[6]]
+        let hidden_rows = [rows[6]]
             .iter()
             .map(|row| row.value().attr("data-topcoat-bind:hidden").unwrap())
             .collect::<Vec<_>>();
@@ -3750,6 +3797,7 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
             .value()
             .attr("data-topcoat-bind:hidden")
             .unwrap();
+        let marker = shard_marker(&html, "/__native_pages/activity");
         let result = home_fixture::evaluate_handler(
             "src/topcoat/native/pages/activity_handler.test.cjs",
             &serde_json::json!({
@@ -3758,8 +3806,147 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
                 "hidden_rows": hidden_rows,
                 "change_handler": change_handler,
                 "values_hidden": values_hidden,
+                "shard_marker": marker,
             }),
         );
         assert_eq!(result["ok"], true);
+        let activity_shard = &result["activity_shard"];
+        let (refresh_status, refreshed) = replay_activity_shard_at(
+            &fixture,
+            mount,
+            activity_shard["path"].as_str().unwrap(),
+            activity_shard["identity"].as_str().unwrap(),
+            activity_shard["args"].clone(),
+            result["signals"].clone(),
+        )
+        .await;
+        assert_eq!(refresh_status, StatusCode::OK);
+        let refreshed = scraper::Html::parse_document(&refreshed);
+        let refreshed_activity = refreshed
+            .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .expect("mounted shard replay returns the shared timeline");
+        let refreshed_rows = refreshed_activity
+            .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            refreshed_rows[6].value().attr("hidden").is_none(),
+            "the expanded seventh activity row stays visible across shard refresh at {mount}"
+        );
+        let refreshed_values = refreshed_activity
+            .select(&scraper::Selector::parse(".native-issue-activity__values").unwrap())
+            .next()
+            .unwrap();
+        assert!(
+            refreshed_values.value().attr("hidden").is_none(),
+            "the open old/new diff stays open across shard refresh at {mount}"
+        );
+
+        // Commit a status change through PageDetail's emitted handler, then
+        // replay its actual Activity shard arguments with the opened timeline
+        // signals retained by the runtime fixture.
+        let status_control = document
+            .select(&scraper::Selector::parse("select[data-native-page-status]").unwrap())
+            .next()
+            .unwrap();
+        let title_input = document
+            .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
+            .next()
+            .unwrap();
+        let body_input = document
+            .select(
+                &scraper::Selector::parse("textarea[aria-label='Page content in Markdown']")
+                    .unwrap(),
+            )
+            .next()
+            .unwrap();
+        let mut signals = home_fixture::page_signals(&html);
+        signals.extend(
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+                result["signals"].clone(),
+            )
+            .unwrap(),
+        );
+        let expected_seq = queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .seq;
+        let status_handler = status_control
+            .value()
+            .attr("data-topcoat-on:change")
+            .unwrap();
+        let title_binding = title_input.value().attr("data-topcoat-bind:value").unwrap();
+        let body_binding = body_input.value().attr("data-topcoat-bind:value").unwrap();
+        let capture = run_status_handler(&serde_json::json!({
+            "scenario": "capture",
+            "handler": status_handler,
+            "signals": signals.clone(),
+            "title_binding": title_binding,
+            "body_binding": body_binding,
+            "expected_seq": expected_seq,
+            "status": "active",
+        }));
+        let (status, reply) = home_fixture::procedure(
+            &fixture,
+            "/__native_pages/status",
+            capture["arguments"].clone(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply["v"]["status"]["ok"], "saved");
+        let completion = run_status_handler(&serde_json::json!({
+            "scenario": "success",
+            "handler": status_handler,
+            "signals": signals,
+            "title": "Page metadata test",
+            "body": "Distinct page body revision 6",
+            "title_binding": title_binding,
+            "body_binding": body_binding,
+            "expected_seq": expected_seq,
+            "status": "active",
+            "shard_marker": marker,
+            "reply": reply,
+        }));
+        let refreshed_shard = &completion["activity_shard"];
+        assert_eq!(
+            shard_revision(refreshed_shard),
+            serialized_i64(&reply["v"]["seq"]),
+            "the emitted Activity dependency advances to the committed page sequence"
+        );
+        let (refresh_status, refreshed) = replay_activity_shard_at(
+            &fixture,
+            mount,
+            refreshed_shard["path"].as_str().unwrap(),
+            refreshed_shard["identity"].as_str().unwrap(),
+            refreshed_shard["args"].clone(),
+            completion["signal_snapshot"].clone(),
+        )
+        .await;
+        assert_eq!(refresh_status, StatusCode::OK);
+        let refreshed = scraper::Html::parse_document(&refreshed);
+        let refreshed_activity = refreshed
+            .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .expect("the committed refresh returns the Page Activity timeline");
+        let refreshed_rows = refreshed_activity
+            .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(refreshed_rows.len(), 8);
+        assert!(
+            refreshed_rows[7].value().attr("hidden").is_none(),
+            "the expanded timeline includes its new eighth row after the canonical refresh"
+        );
+        let retained_row = refreshed_rows
+            .iter()
+            .find(|row| row.value().attr("data-activity-id") == Some(retained_activity_id.as_str()))
+            .expect("the existing content activity remains in the refreshed feed");
+        assert!(retained_row.value().attr("hidden").is_none());
+        let retained_values = retained_row
+            .select(&scraper::Selector::parse(".native-issue-activity__values").unwrap())
+            .next()
+            .unwrap();
+        assert!(
+            retained_values.value().attr("hidden").is_none(),
+            "the selected content diff stays open after the canonical revision refresh"
+        );
     }
 }

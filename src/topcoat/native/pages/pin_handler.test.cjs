@@ -88,7 +88,7 @@ async function run() {
     const captured = {arguments: requests[0]};
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(input.expected_seq),
+      assert.deepEqual(activity.args[1], input.expected_seq_wire,
         'an optimistic pin change does not advance the emitted activity shard dependency');
       captured.activity_shard = activity;
     }
@@ -114,7 +114,7 @@ async function run() {
     assert.equal(value(bodySignal), 'Unsaved body draft');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(unbox(input.reply.v.seq)),
+      assert.deepEqual(activity.args[1], input.reply.v.seq,
         'the emitted activity shard dependency reads the committed shared editor sequence');
       process.stdout.write(JSON.stringify({requests: requests.length, activity_shard: activity}));
       return;
@@ -130,7 +130,7 @@ async function run() {
     }), 'the conflict is visible while the editor is closed');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(input.expected_seq),
+      assert.deepEqual(activity.args[1], input.expected_seq_wire,
         'a conflict does not advance the emitted activity shard dependency');
     }
   } else if (input.scenario === 'transport_failure') {
@@ -144,7 +144,7 @@ async function run() {
     }), 'the transport failure remains visible');
     if (input.shard_marker) {
       const activity = emittedShard(input.shard_marker, context, cx, plain);
-      assert.equal(String(activity.args[1]), String(input.expected_seq),
+      assert.deepEqual(activity.args[1], input.expected_seq_wire,
         'a transport failure does not advance the emitted activity shard dependency');
     }
   }
