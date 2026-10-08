@@ -484,6 +484,7 @@ fn step_node<'a>(
     editor: PlanEditor,
 ) -> BoxView<'a> {
     let row_cx = cx.keyed(step.id);
+    let collapsed = signal(&row_cx, || false);
     let project = project.to_owned();
     view! {
         row_cx =>
@@ -496,6 +497,7 @@ fn step_node<'a>(
             depth: depth,
             revision: editor.revision,
             title_draft: editor.title_draft,
+            collapsed: collapsed,
             step_title_target: editor.step_title_target,
             step_title_draft: editor.step_title_draft,
             step_description_target: editor.step_description_target,
@@ -518,6 +520,7 @@ async fn plan_step_component(
     depth: usize,
     revision: Signal<i64>,
     title_draft: Signal<String>,
+    collapsed: Signal<bool>,
     step_title_target: Signal<i64>,
     step_title_draft: Signal<String>,
     step_description_target: Signal<i64>,
@@ -537,7 +540,8 @@ async fn plan_step_component(
     };
     let step_id = step.id;
     let title = step.title.clone();
-    let description = if step.description.trim().is_empty() {
+    let is_collapsed = collapsed.get();
+    let description = if is_collapsed || step.description.trim().is_empty() {
         None
     } else {
         Some(super::super::markdown::render(
@@ -553,22 +557,26 @@ async fn plan_step_component(
         .as_ref()
         .map(|identifier| issue_href(cx, &project, identifier));
     let done = step.done;
-    let children = step
-        .children
-        .into_iter()
-        .map(|child| {
-            step_node(
-                cx,
-                account,
-                &project,
-                plan_id,
-                child,
-                can_edit,
-                depth + 1,
-                editor.clone(),
-            )
-        })
-        .collect::<Vec<_>>();
+    let children = if is_collapsed {
+        Vec::new()
+    } else {
+        step.children
+            .into_iter()
+            .map(|child| {
+                step_node(
+                    cx,
+                    account,
+                    &project,
+                    plan_id,
+                    child,
+                    can_edit,
+                    depth + 1,
+                    editor.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expansion = expansion_button(cx, is_collapsed, collapsed, editor.revision.clone());
     let title_editor = if can_edit {
         Some(step_title_form(
             cx,
@@ -582,7 +590,7 @@ async fn plan_step_component(
     } else {
         None
     };
-    let description_editor = if can_edit {
+    let description_editor = if can_edit && !is_collapsed {
         Some(description_form(
             cx,
             account,
@@ -672,6 +680,7 @@ async fn plan_step_component(
         issue_status,
         issue_href,
         done,
+        expansion,
         children,
         title_editor,
         description_editor,
@@ -690,6 +699,51 @@ fn issue_href(cx: &Cx, fallback_project: &str, identifier: &str) -> Attributes {
     navigation::attrs(cx, &format!("/{project}/issues/{identifier}"))
 }
 
+fn expansion_button<'a>(
+    cx: &'a Cx,
+    collapsed: bool,
+    collapsed_state: Signal<bool>,
+    revision: Signal<i64>,
+) -> BoxView<'a> {
+    let label = if collapsed { "Expand" } else { "Collapse" };
+    let icon_class = if collapsed {
+        "transition-transform"
+    } else {
+        "rotate-90 transition-transform"
+    };
+    let refresh = revision.clone();
+    let browser = super::super::browser::bindings();
+    let handler = expr!(|_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
+        collapsed_state.set(!collapsed_state.get());
+        refresh.set(refresh.get() + 1_i64);
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    view! {
+        cx =>
+        <button
+            type="button"
+            class="mt-0.5 size-4 shrink-0 flex items-center justify-center text-[var(--text-faint)] hover:text-[var(--text)]"
+            aria-label=(label)
+            aria-expanded=(if collapsed { "false" } else { "true" })
+            title=(label)
+            (attributes)
+        >
+            <span class=(icon_class)>
+                (super::super::icons::ui_icon(cx, super::super::icons::UiIcon::Next, 12))
+            </span>
+        </button>
+    }
+    .boxed()
+}
+
 struct OkBox;
 
 impl OkBox {
@@ -703,6 +757,7 @@ impl OkBox {
         issue_status: String,
         issue_href: Option<Attributes>,
         done: bool,
+        expansion: BoxView<'a>,
         children: Vec<BoxView<'a>>,
         title_editor: Option<BoxView<'a>>,
         description_editor: Option<BoxView<'a>>,
@@ -728,6 +783,7 @@ impl OkBox {
                     class="flex items-start gap-2"
                     style=(format!("padding-left: min({}rem, 25%)", padding as f64 * 1.5))
                 >
+                    (expansion)
                     if let Some(toggle) = toggle {
                         (toggle)
                     } else {
@@ -1599,19 +1655,34 @@ mod tests {
                     project_id,
                     title: "Nested checklist".into(),
                     issue_id: None,
-                    steps: vec![crate::db::models::CreatePlanStep {
-                        title: "Parent step".into(),
-                        description: String::new(),
-                        issue_id: None,
-                        done: false,
-                        steps: vec![crate::db::models::CreatePlanStep {
-                            title: "Nested child".into(),
+                    steps: vec![
+                        crate::db::models::CreatePlanStep {
+                            title: "Parent step".into(),
+                            description: "Parent detail body".into(),
+                            issue_id: None,
+                            done: false,
+                            steps: vec![crate::db::models::CreatePlanStep {
+                                title: "Nested child".into(),
+                                description: String::new(),
+                                issue_id: None,
+                                done: false,
+                                steps: vec![],
+                            }],
+                        },
+                        crate::db::models::CreatePlanStep {
+                            title: "Other parent".into(),
                             description: String::new(),
                             issue_id: None,
                             done: false,
-                            steps: vec![],
-                        }],
-                    }],
+                            steps: vec![crate::db::models::CreatePlanStep {
+                                title: "Other nested child".into(),
+                                description: String::new(),
+                                issue_id: None,
+                                done: false,
+                                steps: vec![],
+                            }],
+                        },
+                    ],
                 },
             )
             .unwrap()
@@ -1636,12 +1707,16 @@ mod tests {
             )
             .next()
             .expect("parent step rendered");
+        let collapse = parent
+            .select(&scraper::Selector::parse("button[title='Collapse']").unwrap())
+            .next()
+            .expect("viewers can collapse expanded plan steps");
+        assert_eq!(collapse.value().attr("aria-label"), Some("Collapse"));
         assert!(
-            parent
-                .select(&scraper::Selector::parse("button[title='Collapse']").unwrap())
-                .next()
-                .is_some(),
-            "viewers can collapse expanded plan steps",
+            document
+                .root_element()
+                .text()
+                .any(|text| text == "Parent detail body")
         );
         assert!(
             document
@@ -1655,6 +1730,173 @@ mod tests {
                 .next()
                 .is_some(),
             "nested steps are expanded by default",
+        );
+        assert!(
+            document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[1].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_some(),
+            "other parents start expanded too",
+        );
+
+        let collapse_handler = collapse
+            .value()
+            .attr("data-topcoat-on:click")
+            .expect("collapse is wired to the native runtime");
+        let collapsed = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/step_tree_handler.test.cjs",
+            &serde_json::json!({
+                "handler": collapse_handler,
+                "signals": super::super::super::home_fixture::page_signals(&html),
+            }),
+        );
+        let collapsed_signals =
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+                collapsed["signals"].clone(),
+            )
+            .unwrap();
+        let (status, collapsed_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(collapsed_signals),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let collapsed_document = scraper::Html::parse_document(&collapsed_html);
+        assert!(
+            collapsed_document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[0].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_none(),
+            "collapsing a parent hides its descendants",
+        );
+        assert!(
+            collapsed_document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[1].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_some(),
+            "collapsing one parent leaves other parents expanded",
+        );
+        let other_parent = collapsed_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "article[data-plan-step='{}']",
+                    plan.steps[1].id
+                ))
+                .unwrap(),
+            )
+            .next()
+            .unwrap();
+        assert!(
+            other_parent
+                .select(&scraper::Selector::parse("button[title='Collapse']").unwrap())
+                .next()
+                .is_some()
+        );
+        let parent = collapsed_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "article[data-plan-step='{}']",
+                    plan.steps[0].id
+                ))
+                .unwrap(),
+            )
+            .next()
+            .unwrap();
+        assert!(
+            !parent.text().any(|text| text == "Parent detail body"),
+            "collapsed steps hide their descriptions",
+        );
+        assert!(
+            parent
+                .select(
+                    &scraper::Selector::parse(
+                        "button[title='Expand'][aria-label='Expand'][aria-expanded='false']"
+                    )
+                    .unwrap()
+                )
+                .next()
+                .is_some(),
+            "collapsed steps offer the matching expand action",
+        );
+
+        let expand = parent
+            .select(&scraper::Selector::parse("button[title='Expand']").unwrap())
+            .next()
+            .unwrap();
+        let expanded = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/step_tree_handler.test.cjs",
+            &serde_json::json!({
+                "handler": expand.value().attr("data-topcoat-on:click").unwrap(),
+                "signals": super::super::super::home_fixture::page_signals(&collapsed_html),
+            }),
+        );
+        let expanded_signals =
+            serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+                expanded["signals"].clone(),
+            )
+            .unwrap();
+        let (status, expanded_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(expanded_signals),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let expanded_document = scraper::Html::parse_document(&expanded_html);
+        assert!(
+            expanded_document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[0].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_some(),
+            "expanding the parent restores its descendants",
+        );
+        assert!(
+            expanded_document
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "article[data-plan-step='{}']",
+                        plan.steps[1].children[0].id
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .is_some(),
+            "other parents retain their expanded state",
+        );
+        assert!(
+            expanded_document
+                .root_element()
+                .text()
+                .any(|text| text == "Parent detail body")
         );
     }
 
