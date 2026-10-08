@@ -12,7 +12,7 @@ use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,
     runtime::{Event, Signal, expr, shard, signal},
-    view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
+    view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
 pub(super) fn list<'a>(
@@ -915,15 +915,13 @@ async fn native_page_markdown(
         cx,
         crate::services::pages::get(context::db(cx), &caller.identity, page_id),
     )?;
-    let rendered =
-        super::super::markdown::render(cx, &source, super::super::markdown::Scope::Private, &[]);
     Ok(view! {
         cx =>
         if source.trim().is_empty() {
             <p class="text-body-sm italic text-[var(--text-muted)]">"Empty page"</p>
         } else {
             <article class="markdown-body prose max-w-none">
-                (Unescaped::new_unchecked(rendered))
+                (super::super::markdown::images::private_view(cx, &source, &[]))
             </article>
         }
     })
@@ -1081,6 +1079,15 @@ async fn page_detail(
     );
     let created_at = super::super::dates::absolute_time_view(cx, &page.created_at);
     let updated_at = super::super::dates::absolute_time_view(cx, &page.updated_at);
+    let body_mode_base_class = "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-body-sm border-0 transition-colors hover:bg-[var(--bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]";
+    let body_mode_inactive_class =
+        format!("{body_mode_base_class} bg-transparent text-[var(--text-muted)]");
+    let body_mode_active_class =
+        format!("{body_mode_base_class} bg-[var(--accent)] text-[var(--accent-text)]");
+    let edit_mode_active_class = body_mode_active_class.clone();
+    let edit_mode_inactive_class = body_mode_inactive_class.clone();
+    let preview_mode_active_class = body_mode_active_class;
+    let preview_mode_inactive_class = body_mode_inactive_class;
     Ok(view! {
         cx =>
         <div
@@ -1112,11 +1119,10 @@ async fn page_detail(
                                     type="button"
                                     data-native-page-body-mode="edit"
                                     aria-label="Edit"
-                                    class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-body-sm border-0 bg-transparent text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                                     :class=$(if body_editing.get() {
-                                        "bg-[var(--accent)] text-[var(--accent-text)]"
+                                        edit_mode_active_class.clone()
                                     } else {
-                                        ""
+                                        edit_mode_inactive_class.clone()
                                     })
                                     :aria-pressed=$(if body_editing.get() {
                                         "true"
@@ -1133,11 +1139,10 @@ async fn page_detail(
                                     type="button"
                                     data-native-page-body-mode="preview"
                                     aria-label="Preview"
-                                    class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-body-sm border-0 bg-transparent text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-subtle)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
                                     :class=$(if body_editing.get() {
-                                        ""
+                                        preview_mode_inactive_class.clone()
                                     } else {
-                                        "bg-[var(--accent)] text-[var(--accent-text)]"
+                                        preview_mode_active_class.clone()
                                     })
                                     :aria-pressed=$(if body_editing.get() {
                                         "false"
