@@ -31,10 +31,19 @@ cx.signal = id => {
   return originalSignal(id);
 };
 const evaluate = source => vm.runInNewContext(`cx => (${source})`, context)(cx);
+const bindingSignal = source => {
+  const previous = new Set(referencedSignals);
+  evaluate(source);
+  const ids = [...referencedSignals].filter(id => !previous.has(id));
+  assert.equal(ids.length, 1, 'an emitted editor binding resolves one signal');
+  return ids[0];
+};
 evaluate(input.busy_binding);
 const busyIds = [...referencedSignals];
 assert.equal(busyIds.length, 1, 'the emitted pin control resolves the shared busy signal');
 const busyId = busyIds[0];
+const titleDraftId = bindingSignal(input.title_binding);
+const bodyDraftId = bindingSignal(input.body_binding);
 const unbox = value => {
   while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
   return value;
@@ -45,6 +54,7 @@ const plain = value => {
 };
 const snapshot = () => Object.fromEntries(Object.keys(input.signals)
   .map(id => [id, JSON.parse(JSON.stringify(cx.signal(id).dehydrate()))]));
+const value = id => unbox(cx.signal(id).dehydrate());
 const handler = fixture.handler;
 const textInput = value => cx.event({
   type: 'input', target: {value}, cancelable: true, preventDefault() {},
@@ -76,11 +86,15 @@ async function run() {
   assert.equal(requests.length, 1, 'the actual emitted Save handler started one pending request');
   assert.equal(typeof settleRequest, 'function');
   const request = requests[0];
-  if (input.scenario === 'live_success') {
+  if (input.scenario === 'live_success' || input.scenario === 'pending_edit_success') {
+    if (input.scenario === 'pending_edit_success') {
+      handler(input.title_handler)(textInput('Newer title draft'));
+      handler(input.body_handler)(textInput('Newer body draft'));
+    }
     settleRequest('success');
     await flush();
     const activity = emittedShard(input.shard_marker, context, cx, plain);
-    assert.equal(activity.args[1], unbox(input.reply.v.seq),
+    assert.deepEqual(activity.args[1], input.reply.v.seq,
       'the activity shard reads the sequence adopted from the committed Save reply');
     process.stdout.write(JSON.stringify({
       passed: true,
@@ -88,6 +102,7 @@ async function run() {
       response: 'success',
       arguments: request,
       activity_shard: activity,
+      drafts: [value(titleDraftId), value(bodyDraftId)],
     }));
     return;
   }
