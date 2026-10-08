@@ -11,10 +11,15 @@ use topcoat::{
 };
 
 use crate::error::LificError;
+
 use tokio::{
     sync::broadcast::Receiver,
     time::{self, Instant, MissedTickBehavior},
 };
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct SessionRevalidationInterval(pub(crate) std::time::Duration);
 
 pub(crate) fn read<T>(cx: &Cx, result: Result<T, LificError>) -> topcoat::Result<T> {
     read_with_auth_destination(cx, result, "/login")
