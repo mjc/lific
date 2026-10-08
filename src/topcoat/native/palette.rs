@@ -463,8 +463,7 @@ pub(super) fn view<'a>(cx: &'a Cx, palette: PaletteState, path: Signal<String>) 
                 native_home_palette_results(
                     query: $(searched.get()),
                     open: $(palette_open.get()),
-                    revision: $(revision.get()),
-                    authorized: $(authorized.get()),
+                    authorization: $((revision.get(), authorized.get())),
                     error_signal: palette.error.clone(),
                     state: (
                         palette.revision.clone(),
@@ -511,11 +510,11 @@ pub(super) async fn native_home_palette_results(
     cx: &Cx,
     query: String,
     open: bool,
-    revision: usize,
-    authorized: usize,
+    authorization: (usize, usize),
     state: PaletteSignals,
     error_signal: Signal<String>,
 ) -> topcoat::Result<impl View> {
+    let (revision, authorized) = authorization;
     let (
         live_revision,
         selected,
@@ -628,7 +627,7 @@ pub(super) async fn native_home_palette_results(
         waiting,
         live_open,
         path,
-        (live_query.clone(), pending_focus.clone()),
+        (live_query.clone(), pending_focus),
     );
     let projection_key = format!(
         "{}#palette-projection",
@@ -648,10 +647,11 @@ pub(super) async fn native_home_palette_results(
             .build()
     };
     let keyboard = super::handler_asset::event(cx, &projection_key, arguments("key"), "keydown");
-    let mut result_mount = Attributes::with_capacity(usize::from(allowed));
-    if allowed {
-        result_mount = super::handler_asset::mount(cx, &projection_key, arguments("mount"));
-    }
+    let result_mount = if allowed {
+        super::handler_asset::mount(cx, &projection_key, arguments("mount"))
+    } else {
+        Attributes::with_capacity(0)
+    };
     let input_mount = super::handler_asset::mount(cx, &projection_key, arguments("focus"));
     let error = error_signal;
     let waiting_view = all_signals.8.clone();

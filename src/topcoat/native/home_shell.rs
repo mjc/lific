@@ -293,7 +293,7 @@ fn render_shell<'a>(
     let query = signal(cx, String::new);
     let palette = PaletteState {
         open: palette_open.clone(),
-        query: query.clone(),
+        query,
         searched: signal(cx, String::new),
         revision: signal(cx, || 0usize),
         authorized: signal(cx, || usize::MAX),
@@ -736,8 +736,7 @@ mod tests {
             native_home_palette_results(
                 query: query,
                 open: true,
-                revision: 0,
-                authorized: 0,
+                authorization: (0, 0),
                 state: state,
                 error_signal: signal(cx, String::new)
             )

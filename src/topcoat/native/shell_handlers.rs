@@ -18,7 +18,7 @@ fn mount_factory() -> Js {
         .source(super::palette::handler_factory().to_source())
         .raw(")(event,chrome,palette,status,request);(")
         .source(super::mobile_navigation::handler_factory().to_source())
-        .raw(")(event,chrome,request[0],{call:open});}")
+        .raw(")(event,chrome,request[0],{'call':open});}")
         .build()
 }
 
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn source_exports_mount_and_each_named_factory() {
         let source = source(
-            Js::source("(_event)=>{}").clone(),
+            Js::source("(_event)=>{}"),
             [
                 ("homeRefresh", Js::source("(_event)=>{}")),
                 ("accountFocus", Js::source("(_event)=>{}")),
