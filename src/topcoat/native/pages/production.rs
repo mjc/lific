@@ -404,6 +404,351 @@ async fn native_page_pin_write_checks_account_and_role_and_viewers_have_no_contr
     );
 }
 
+#[tokio::test]
+async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (page_id, account, folder_id, destination_folder, _) =
+        seed_page_with_folders(&fixture, true);
+    for mount in ["", "/app", "/ACC"] {
+        let (status, html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages?move_test={page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let move_button = document
+            .select(&scraper::Selector::parse("button[data-native-page-move]").unwrap())
+            .find(|button| {
+                button
+                    .text()
+                    .collect::<String>()
+                    .contains("Move to folder…")
+            })
+            .expect("maintainers can move a page from its accessible row action");
+        assert_eq!(
+            move_button.value().attr("aria-label"),
+            Some("Move to folder…")
+        );
+        let open_handler = move_button.value().attr("data-topcoat-on:click").unwrap();
+        let signals = home_fixture::page_signals(&html);
+        let opened = run_move_handler(&serde_json::json!({
+            "scenario": "open",
+            "signals": signals,
+            "open_handler": open_handler,
+            "page_id": page_id,
+        }));
+        let opened_signals = serde_json::from_value(opened["signals"].clone()).unwrap();
+        let (status, opened_html) =
+            home_fixture::document(&fixture, mount, "/ACC/pages", true, Some(opened_signals)).await;
+        assert_eq!(status, StatusCode::OK);
+        let opened_document = scraper::Html::parse_document(&opened_html);
+        let initial_dialogs = document
+            .select(
+                &scraper::Selector::parse("[role=dialog][aria-label='Move page to folder']")
+                    .unwrap(),
+            )
+            .collect::<Vec<_>>();
+        assert!(initial_dialogs.len() <= 1, "the page list owns one picker");
+        assert!(
+            initial_dialogs
+                .first()
+                .is_none_or(|dialog| dialog.value().attr("hidden").is_some()),
+            "the global picker starts closed",
+        );
+        let dialogs = opened_document
+            .select(
+                &scraper::Selector::parse("[role=dialog][aria-label='Move page to folder']")
+                    .unwrap(),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(dialogs.len(), 1, "the list owns one shared move dialog");
+        let dialog = dialogs[0];
+        assert!(dialog.text().collect::<String>().contains("No folder"));
+        assert!(dialog.text().collect::<String>().contains("Move to folder"));
+        assert!(
+            dialog
+                .text()
+                .collect::<String>()
+                .contains("Page metadata test")
+        );
+        assert!(
+            dialog
+                .text()
+                .collect::<String>()
+                .contains("Research folder")
+        );
+        assert!(dialog.text().collect::<String>().contains("Archive folder"));
+        let open_binding = dialog.value().attr("data-topcoat-bind:hidden").unwrap();
+        let cancel_handler = dialog
+            .select(&scraper::Selector::parse("button[data-native-page-move-cancel]").unwrap())
+            .next()
+            .expect("the picker has a close action")
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap();
+        let overlay = opened_document
+            .select(&scraper::Selector::parse("[data-native-page-move-backdrop]").unwrap())
+            .next()
+            .expect("the picker has an Escape and backdrop owner");
+        let escape_handler = overlay.value().attr("data-topcoat-on:keydown").unwrap();
+        let backdrop_handler = overlay.value().attr("data-topcoat-on:click").unwrap();
+        let escape_handler = dialog.value().attr("data-topcoat-on:keydown").unwrap();
+        let backdrop_handler = dialog.value().attr("data-topcoat-on:click").unwrap();
+        let picker = dialog
+            .select(&scraper::Selector::parse("select[data-native-page-move-folder]").unwrap())
+            .next()
+            .expect("the picker exposes a native folder selector");
+        assert_eq!(
+            picker
+                .select(&scraper::Selector::parse("option[selected]").unwrap())
+                .next()
+                .and_then(|option| option.value().attr("value")),
+            Some(folder_id.to_string().as_str()),
+            "the current folder is selected before hydration",
+        );
+        let select_handler = picker.value().attr("data-topcoat-on:change").unwrap();
+        let expected_error = format!(
+            "Couldn't move {}: offline",
+            queries::get_page(&fixture.db.read().unwrap(), page_id)
+                .unwrap()
+                .identifier
+        );
+        for scenario in ["success", "failure", "retired", "pending", "disposed"] {
+            let result = run_move_handler(&serde_json::json!({
+                "scenario": scenario,
+                "signals": home_fixture::page_signals(&opened_html),
+                "open_handler": open_handler,
+                "open_binding": open_binding,
+                "cancel_handler": cancel_handler,
+                "escape_handler": escape_handler,
+                "backdrop_handler": backdrop_handler,
+                "select_handler": select_handler,
+                "mount": mount,
+                "folder_id": destination_folder,
+                "current_folder_id": folder_id,
+                "account": account,
+                "page_id": page_id,
+            }));
+            if scenario == "success" {
+                let expected = (account, page_id, Some(destination_folder)).into_surrogate();
+                assert_eq!(result["arguments"], serde_json::to_value(expected).unwrap());
+                assert!(result["url"].as_str().unwrap().starts_with(mount));
+                assert!(
+                    result["url"]
+                        .as_str()
+                        .unwrap()
+                        .ends_with("/__native_pages/move")
+                );
+            }
+            if scenario == "failure" {
+                let error_signals = serde_json::from_value(result["signals"].clone()).unwrap();
+                let (status, failed_html) = home_fixture::document(
+                    &fixture,
+                    mount,
+                    "/ACC/pages",
+                    true,
+                    Some(error_signals),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                let failed = scraper::Html::parse_document(&failed_html);
+                let alert = failed
+                    .select(
+                        &scraper::Selector::parse("[data-native-page-move-error][role=alert]")
+                            .unwrap(),
+                    )
+                    .find(|alert| !alert.text().collect::<String>().trim().is_empty())
+                    .expect("the move failure is rendered in the open picker");
+                assert_eq!(alert.text().collect::<String>(), expected_error);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_page_move_procedure_updates_folder_and_checks_scope() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (page_id, account, folder_id, destination_folder, other_project_folder) =
+        seed_page_with_folders(&fixture, true);
+    let arguments = (account, page_id, Some(destination_folder)).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        serde_json::to_value(arguments).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["ok"], "saved");
+    assert_eq!(
+        queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .folder_id,
+        Some(destination_folder)
+    );
+    let moved = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    assert_eq!(moved.title, "Page metadata test");
+    assert_eq!(moved.content, "Original body");
+    assert_eq!(moved.status, "active");
+    assert!(!moved.pinned);
+
+    let wrong_account = (account + 100, page_id, Some(folder_id)).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        serde_json::to_value(wrong_account).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["err"], "forbidden");
+
+    let cross_project = (account, page_id, Some(other_project_folder)).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        serde_json::to_value(cross_project).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        outcome["v"]["status"]["err"]
+            .as_str()
+            .unwrap()
+            .contains("belongs to project")
+    );
+    assert_eq!(
+        queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .folder_id,
+        Some(destination_folder),
+        "cross-project validation leaves the saved location untouched",
+    );
+    let arguments = (account, page_id, None::<i64>).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        serde_json::to_value(arguments).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["ok"], "saved");
+    assert_eq!(
+        queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .folder_id,
+        None
+    );
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE project_members SET role = 'viewer' WHERE user_id = ?1 AND project_id = (SELECT project_id FROM pages WHERE id = ?2)",
+            rusqlite::params![account, page_id],
+        )
+        .unwrap();
+    let viewer_arguments = (account, page_id, Some(folder_id)).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/move",
+        serde_json::to_value(viewer_arguments).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["err"], "forbidden");
+    assert_eq!(
+        queries::get_page(&fixture.db.read().unwrap(), page_id)
+            .unwrap()
+            .folder_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn native_pages_move_action_is_read_only_for_viewers() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _, _, _) = seed_page_with_folders(&fixture, false);
+    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let row_selector = format!("[data-native-page-row='{}']", page_id);
+    let row = document
+        .select(&scraper::Selector::parse(&row_selector).unwrap())
+        .next()
+        .expect("viewers still see the page row");
+    assert!(
+        row.select(&scraper::Selector::parse("button[data-native-page-move]").unwrap())
+            .next()
+            .is_none(),
+        "viewers have no move action",
+    );
+}
+
+fn seed_page_with_folders(
+    fixture: &home_fixture::Fixture,
+    editable: bool,
+) -> (i64, i64, i64, i64, i64) {
+    use crate::db::models::CreateFolder;
+
+    let (page_id, account, _) = seed_page(fixture, editable);
+    let conn = fixture.db.write().unwrap();
+    let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+    let other_project_id = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+    let folder_id = queries::create_folder(
+        &conn,
+        &CreateFolder {
+            project_id,
+            parent_id: None,
+            name: "Research folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
+    conn.execute(
+        "UPDATE pages SET folder_id = ?1, status = 'active' WHERE id = ?2",
+        rusqlite::params![folder_id, page_id],
+    )
+    .unwrap();
+    let other_project_folder = queries::create_folder(
+        &conn,
+        &CreateFolder {
+            project_id: other_project_id,
+            parent_id: None,
+            name: "Private folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
+    let destination_folder = queries::create_folder(
+        &conn,
+        &CreateFolder {
+            project_id,
+            parent_id: None,
+            name: "Archive folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
+    (
+        page_id,
+        account,
+        folder_id,
+        destination_folder,
+        other_project_folder,
+    )
+}
+
+fn run_move_handler(input: &serde_json::Value) -> serde_json::Value {
+    home_fixture::evaluate_handler("src/topcoat/native/pages/move_handler.test.cjs", input)
+}
+
 fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
     let conn = fixture.db.write().unwrap();
     let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
