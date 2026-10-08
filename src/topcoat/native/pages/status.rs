@@ -14,6 +14,7 @@ pub(super) struct State {
     page_id: i64,
     seq: Signal<i64>,
     busy: Signal<bool>,
+    selected: Signal<String>,
     editable: bool,
 }
 
@@ -23,6 +24,7 @@ impl State {
         page_id: i64,
         seq: Signal<i64>,
         busy: Signal<bool>,
+        selected: Signal<String>,
         editable: bool,
     ) -> Self {
         Self {
@@ -30,22 +32,22 @@ impl State {
             page_id,
             seq,
             busy,
+            selected,
             editable,
         }
     }
 }
 
-pub(super) fn detail<'a>(cx: &'a Cx, initial_status: String, state: State) -> BoxView<'a> {
+pub(super) fn detail<'a>(cx: &'a Cx, state: State) -> BoxView<'a> {
     let State {
         account,
         page_id,
         seq,
         busy,
+        selected,
         editable,
     } = state;
-    let selected = signal(cx, || initial_status.clone());
     let message = signal(cx, || "".to_owned());
-    let read_only_label = super::view::status_label(&initial_status);
     let change = status_attributes(
         cx,
         (account, page_id, seq, busy.clone()),
@@ -79,7 +81,17 @@ pub(super) fn detail<'a>(cx: &'a Cx, initial_status: String, state: State) -> Bo
                 </select>
             } else {
                 <span class="text-body-sm text-[var(--text-muted)]">
-                    $(read_only_label)
+                    $(if selected.get() == "draft" {
+                        "Draft"
+                    } else if selected.get() == "active" {
+                        "Active"
+                    } else if selected.get() == "complete" {
+                        "Complete"
+                    } else if selected.get() == "archived" {
+                        "Archived"
+                    } else {
+                        "Draft"
+                    })
                 </span>
             }
             <span class="text-body-sm text-[var(--text-muted)]" role="status">

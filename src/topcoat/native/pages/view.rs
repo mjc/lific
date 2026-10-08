@@ -4,7 +4,9 @@ use super::super::breadcrumbs::{self, Segment};
 use super::super::fuzzy::score as fuzzy_score;
 use super::super::{context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
-use super::{folder_create, folder_tree, move_picker, pin, status};
+use super::{
+    editor_state::EditorState, folder_create, folder_tree, labels, move_picker, pin, status,
+};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
     context::Cx,
@@ -850,19 +852,21 @@ pub(super) fn detail<'a>(
             return Err(topcoat::router::error::not_found().into());
         }
     }
-    let folder_name = match (page.project_id, page.folder_id) {
-        (Some(project_id), Some(folder_id)) => {
-            let structure = session::read(
-                cx,
-                crate::services::pages::project_structure(context::db(cx), identity, project_id),
-            )?;
+    let folder_name = if let Some(project_id) = page.project_id {
+        let structure = session::read(
+            cx,
+            crate::services::pages::project_structure(context::db(cx), identity, project_id),
+        )?;
+        let folder_name = page.folder_id.and_then(|folder_id| {
             structure
                 .folders
-                .into_iter()
+                .iter()
                 .find(|folder| folder.id == folder_id)
-                .map(|folder| folder.name)
-        }
-        _ => None,
+                .map(|folder| folder.name.clone())
+        });
+        folder_name
+    } else {
+        None
     };
     let can_edit = match crate::services::pages::require_page_role(
         context::db(cx),
@@ -962,14 +966,15 @@ async fn page_detail(
         copy: Some(page.identifier.clone()),
     });
     let breadcrumb = breadcrumbs::render(cx, account, segments);
-    let title = signal(cx, || page.title.clone());
-    let body = signal(cx, || page.content.clone());
-    let title_draft = signal(cx, || page.title.clone());
-    let body_draft = signal(cx, || page.content.clone());
-    let seq = signal(cx, || page.seq);
+    let state = EditorState::new(cx, &page);
+    let title = state.title.clone();
+    let body = state.body.clone();
+    let title_draft = state.title_draft.clone();
+    let body_draft = state.body_draft.clone();
+    let seq = state.seq.clone();
+    let busy = state.busy.clone();
     let title_editing = signal(cx, || false);
     let body_editing = signal(cx, || false);
-    let busy = signal(cx, || false);
     let confirming_delete = signal(cx, || false);
     let message = signal(cx, || "".to_owned());
     let save = save_attributes(
@@ -995,6 +1000,17 @@ async fn page_detail(
         confirming_delete.clone(),
         message.clone(),
     );
+    let labels_view = if page.project_id.is_some() {
+        Some(labels::detail(
+            cx,
+            account,
+            page.id,
+            page.identifier.clone(),
+            &state,
+        ))
+    } else {
+        None
+    };
     let created_at = super::super::dates::absolute_time_view(cx, &page.created_at);
     let updated_at = super::super::dates::absolute_time_view(cx, &page.updated_at);
     Ok(view! {
@@ -1006,7 +1022,7 @@ async fn page_detail(
                 (breadcrumb)
                 <div class="mt-5 mb-6">
                     <div class="font-mono text-caption text-[var(--text-muted)]">
-                        (page.identifier)
+                        (page.identifier.clone())
                     </div>
                     if can_edit {
                         <h1
@@ -1029,7 +1045,6 @@ async fn page_detail(
                             class="text-title font-semibold w-full mt-1 px-0 py-1 border-0 border-b border-solid border-[var(--border)] bg-transparent text-[var(--text)]"
                             :hidden=$(if title_editing.get() { false } else { true })
                             :value=$(title_draft.get())
-                            :disabled=$(busy.get())
                             @input=$(|event: Event| {
                                 title_draft.set(event.target.value.to_owned());
                                 title_editing.set(true);
@@ -1044,7 +1059,7 @@ async fn page_detail(
                 <div class="mb-6 flex flex-wrap items-center gap-4">
                     (pin::detail(
                         cx,
-                        page.pinned,
+                        state.pinned.clone(),
                         account,
                         page.id,
                         seq.clone(),
@@ -1053,15 +1068,18 @@ async fn page_detail(
                     ))
                     (status::detail(
                         cx,
-                        page.status.clone(),
                         status::State::new(
                             account,
                             page.id,
                             seq.clone(),
                             busy.clone(),
+                            state.status.clone(),
                             can_edit,
                         ),
                     ))
+                    if let Some(labels_view) = labels_view {
+                        (labels_view)
+                    }
                 </div>
                 if can_edit {
                     <button
@@ -1091,7 +1109,6 @@ async fn page_detail(
                         placeholder="Start writing... (markdown supported)"
                         :hidden=$(if body_editing.get() { false } else { true })
                         :value=$(body_draft.get())
-                        :disabled=$(busy.get())
                         @input=$(|event: Event| {
                             body_draft.set(event.target.value.to_owned());
                             body_editing.set(true);

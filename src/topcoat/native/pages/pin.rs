@@ -10,14 +10,13 @@ use topcoat::{
 
 pub(super) fn detail<'a>(
     cx: &'a Cx,
-    initial_pinned: bool,
+    pinned: Signal<bool>,
     account: i64,
     page_id: i64,
     seq: Signal<i64>,
     busy: Signal<bool>,
     editable: bool,
 ) -> BoxView<'a> {
-    let pinned = signal(cx, || initial_pinned);
     let message = signal(cx, || "".to_owned());
     let click = pin_attributes(
         cx,
