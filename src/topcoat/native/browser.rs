@@ -146,6 +146,20 @@ impl Browser {
         panic!("browser bindings are only callable in client expressions")
     }
 
+    /// Download a response body using browser APIs, returning an empty string
+    /// on success or a displayable error when the request or download fails.
+    pub(crate) fn download<F>(&self, _url: StringSurrogate, _completed: F)
+    where
+        F: FnOnce(StringSurrogate),
+    {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    /// Read the user's local time using the browser's locale and timezone.
+    pub(crate) fn local_time_now(&self) -> StringSurrogate {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
     pub(crate) fn set_timeout<F>(&self, _delay: UsizeSurrogate, _callback: F) -> UsizeSurrogate
     where
         F: FnOnce(),
@@ -352,6 +366,47 @@ pub(crate) fn factory() -> Js {
                     };
                     void write();
                 },
+                download: (url, completed) => {
+                    const download = async () => {
+                        if (cx.abortSignal.aborted) return '';
+                        try {
+                            const response = await fetch(url.toString(), {
+                                signal: cx.abortSignal,
+                                redirect: 'error'
+                            });
+                            if (cx.abortSignal.aborted) return '';
+                            if (!response.ok) return 'HTTP ' + response.status;
+                            const filename = response.headers.get('content-disposition')
+                                ?.match(/filename="([^"]+)"/)?.[1] || 'download';
+                            const blob = await response.blob();
+                            if (cx.abortSignal.aborted) return '';
+                            const objectUrl = URL.createObjectURL(blob);
+                            let anchor;
+                            try {
+                                anchor = document.createElement('a');
+                                anchor.href = objectUrl;
+                                anchor.download = filename;
+                                document.body.appendChild(anchor);
+                                anchor.click();
+                            } finally {
+                                try {
+                                    anchor?.remove();
+                                } finally {
+                                    URL.revokeObjectURL(objectUrl);
+                                }
+                            }
+                            return '';
+                        } catch (failure) {
+                            return failure instanceof Error ? failure.message : String(failure);
+                        }
+                    };
+                    void download().then(failure => {
+                        if (!cx.abortSignal.aborted) completed(cx.hydrate(failure));
+                    });
+                },
+                local_time_now: () => cx.hydrate(new Date().toLocaleTimeString([], {
+                    hour: '2-digit', minute: '2-digit'
+                })),
                 set_timeout: (delay, callback) => {
                     if (cx.abortSignal.aborted) return cx.hydrate({...delay.dehydrate(),v:'0'});
                     const timers = cx.nativeTimeouts ??= new Map();
