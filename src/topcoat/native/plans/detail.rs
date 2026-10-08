@@ -205,12 +205,25 @@ mod shards {
             Err(LificError::Forbidden(_)) => false,
             Err(error) => return session::read(cx, Err(error)),
         };
+        let activity = session::read(
+            cx,
+            crate::services::activity::list_activity(
+                context::db(cx),
+                &caller.identity,
+                crate::db::queries::activity::ActivityScope::Plan(plan.id),
+                None,
+                Some(100),
+                None,
+            ),
+        )?
+        .items;
         Ok(render_detail(
             cx,
             account,
             &project,
             plan,
             can_edit,
+            activity,
             PlanEditor {
                 revision: revision_owner,
                 title_draft,
@@ -231,6 +244,7 @@ fn render_detail<'a>(
     project: &str,
     plan: Plan,
     can_edit: bool,
+    activity: Vec<crate::db::models::Activity>,
     editor: PlanEditor,
 ) -> BoxView<'a> {
     prepare_step_expansion_state(cx, &plan.steps);
@@ -398,6 +412,7 @@ fn render_detail<'a>(
                     if let Some(add) = add_root {
                         (add)
                     }
+                    (super::super::issue_edit::activity::timeline(cx, activity))
                 </section>
                 <aside class="text-body-sm text-[var(--text-muted)]">
                     <div class="issue-meta-field py-3 border-b border-[var(--border)]">
