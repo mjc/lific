@@ -47,6 +47,7 @@ pub(crate) fn handler_source() -> &'static str {
                     "archiveImport",
                     super::project_import::transport::handler_factory(),
                 ),
+                ("durableActions", super::deferred_delete::handler_factory()),
                 (
                     "chromeThemeToggle",
                     super::chrome_controls::theme_toggle_factory(),
