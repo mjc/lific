@@ -357,7 +357,49 @@ async fn native_module_detail_description_matches_main_read_edit_empty_and_viewe
             button.text().collect::<String>().trim() == "Click to describe this module..."
         })
         .expect("the empty editable description is an edit CTA");
-    assert!(empty_cta.value().attr("data-topcoat-on:click").is_some());
+    assert_eq!(
+        empty_cta
+            .value()
+            .attr("data-native-module-description-action"),
+        Some("edit")
+    );
+    let empty_owner = empty_document
+        .select(&scraper::Selector::parse("[data-native-module-description-owner]").unwrap())
+        .next()
+        .expect("the empty CTA bubbles to the durable description owner")
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("the durable owner handles empty-description Edit");
+    let empty_edit = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &serde_json::json!({
+            "phase": "enter_edit",
+            "mount": "/app",
+            "signals": home_fixture::page_signals(&empty_html),
+            "owner": empty_owner,
+        }),
+    );
+    assert_eq!(
+        empty_edit["requests"], 0,
+        "the empty CTA does not mutate module data"
+    );
+    let (status, empty_edit_html) = home_fixture::document(
+        &fixture,
+        "/app",
+        &format!("/ACC/modules/{empty_id}"),
+        true,
+        Some(empty_edit["signals"].as_object().unwrap().clone()),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let empty_edit_document = scraper::Html::parse_document(&empty_edit_html);
+    assert!(
+        empty_edit_document
+            .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+            .next()
+            .is_some(),
+        "the empty CTA opens Main's edit pane"
+    );
     assert!(
         empty_document
             .select(&scraper::Selector::parse("[aria-label='Content view mode']").unwrap())
