@@ -364,12 +364,22 @@ pub(super) fn content<'a>(
                 </div>
                 <button
                     class="md:hidden fixed bottom-4 right-4 z-30 rounded-full bg-[var(--surface)] shadow-lg p-3 text-[var(--text)]"
+                    type="button"
                     aria-label="Show details"
+                    data-native-module-details-toggle=""
                     :aria-expanded=$(if props_open.get() { "true" } else { "false" })
                     @click=$(|_event: Event| props_open.set(!props_open.get()))
                 >
                     "Details"
                 </button>
+                <button
+                    type="button"
+                    class="md:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
+                    aria-label="Close details"
+                    data-native-module-details-backdrop=""
+                    :hidden=$(!props_open.get())
+                    @click=$(|_event: Event| props_open.set(false))
+                ></button>
                 <aside
                     :class=$(if props_open.get() {
                         "w-[280px] sm:w-[300px] md:w-[236px] shrink-0 self-start overflow-y-auto bg-[var(--bg-subtle)] py-5 px-5 fixed inset-y-0 right-0 z-50 translate-x-0 shadow-2xl md:static md:translate-x-0 md:shadow-none md:rounded-xl md:my-6 md:mr-2"
