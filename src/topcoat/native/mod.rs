@@ -10,6 +10,7 @@ mod auth_shell;
 pub(crate) mod avatar;
 pub(crate) mod board;
 pub(crate) mod bookmark;
+pub(crate) mod breadcrumbs;
 pub(crate) mod browser;
 pub(crate) mod browser_inputs;
 pub(crate) mod chrome_controls;

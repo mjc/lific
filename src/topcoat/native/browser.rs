@@ -2,6 +2,7 @@
 
 use topcoat::runtime::{
     BoolSurrogate, Event, Expr, I64Surrogate, Js, StringSurrogate, Surrogate, Surrogated,
+    UsizeSurrogate,
 };
 
 #[derive(Clone, Copy)]
@@ -135,6 +136,24 @@ impl Browser {
     }
 
     pub(crate) fn is_disposed(&self) -> BoolSurrogate {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn write_clipboard<F>(&self, _text: StringSurrogate, _completed: F)
+    where
+        F: FnOnce(BoolSurrogate),
+    {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn set_timeout<F>(&self, _delay: UsizeSurrogate, _callback: F) -> UsizeSurrogate
+    where
+        F: FnOnce(),
+    {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn clear_timeout(&self, _handle: UsizeSurrogate) {
         panic!("browser bindings are only callable in client expressions")
     }
 
@@ -303,6 +322,56 @@ pub(crate) fn factory() -> Js {
                     }));
                 },
                 is_disposed: () => cx.hydrate(cx.abortSignal.aborted),
+                write_clipboard: (text, completed) => {
+                    const write = async () => {
+                        if (cx.abortSignal.aborted) return;
+                        let copied = false;
+                        try {
+                            if (navigator.clipboard?.writeText) {
+                                await navigator.clipboard.writeText(text.toString());
+                                copied = true;
+                            }
+                        } catch {}
+                        if (cx.abortSignal.aborted) return;
+                        if (!copied) {
+                            let field;
+                            try {
+                                field = document.createElement('textarea');
+                                field.value = text.toString();
+                                field.setAttribute('readonly', '');
+                                field.style.position = 'absolute';
+                                field.style.left = '-9999px';
+                                document.body.appendChild(field);
+                                field.select();
+                                copied = document.execCommand('copy');
+                            } catch {} finally {
+                                if (field) field.remove();
+                            }
+                        }
+                        if (!cx.abortSignal.aborted) completed(cx.hydrate(Boolean(copied)));
+                    };
+                    void write();
+                },
+                set_timeout: (delay, callback) => {
+                    if (cx.abortSignal.aborted) return cx.hydrate({...delay.dehydrate(),v:'0'});
+                    const timers = cx.nativeTimeouts ??= new Map();
+                    const cancel = () => {
+                        clearTimeout(id);timers.delete(id);
+                        cx.abortSignal.removeEventListener('abort',cancel);
+                    };
+                    const id = setTimeout(() => {
+                        cancel();
+                        if (!cx.abortSignal.aborted) callback();
+                    }, Number(delay.toString()));
+                    timers.set(id,cancel);
+                    cx.abortSignal.addEventListener('abort',cancel,{once:true});
+                    return cx.hydrate({...delay.dehydrate(),v:String(id)});
+                },
+                clear_timeout: handle => {
+                    const id = Number(handle.toString());
+                    const cancel = cx.nativeTimeouts?.get(id);
+                    if (cancel) cancel(); else clearTimeout(id);
+                },
                 window_listener: (name, listener) => window.addEventListener(
                     name.toString(), event => listener(cx.event(event)), {signal:cx.abortSignal}
                 ),

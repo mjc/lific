@@ -71,10 +71,17 @@ async function integration(checkEvents) {
 async function mainParity() {
   assert.ok(input.copy_hidden_binding,'Copy icon exposes its real reactive visibility');
   assert.ok(input.check_hidden_binding,'Confirmed copy exposes its real reactive checkmark visibility');
-  const check=(f,copied)=>{
-    assert.equal(f.read(input.copy_hidden_binding),copied,'copy icon visibility follows confirmed completion');
-    assert.equal(f.read(input.check_hidden_binding),!copied,'checkmark visibility follows confirmed completion');
+  assert.ok(input.project_copy_hidden_binding);assert.ok(input.project_check_hidden_binding);
+  const check=(f,copied,project=false)=>{
+    assert.equal(f.read(project?input.project_copy_hidden_binding:input.copy_hidden_binding),copied,'copy icon visibility follows confirmed completion');
+    assert.equal(f.read(project?input.project_check_hidden_binding:input.check_hidden_binding),!copied,'checkmark visibility follows confirmed completion');
   };
+  const independent=makeFixture();
+  await independent.click(input.project_handler);check(independent,true,true);check(independent,false);
+  await independent.advance(1000);await independent.click(input.identifier_handler);
+  check(independent,true,true);check(independent,true);
+  await independent.advance(500);check(independent,false,true);check(independent,true);
+  await independent.advance(1000);check(independent,false,true);check(independent,false);
   const success=makeFixture();check(success,false);
   assert.deepEqual(await success.click(input.identifier_handler),{stopped:true,prevented:true});
   check(success,true);assert.equal(success.legacyCalls,0);assert.equal(success.notifications.length,0);
@@ -97,8 +104,8 @@ async function mainParity() {
     assert.equal(failure.timers.size,0);
     assert.equal(failure.notifications.length,1);
     const event=failure.notifications[0];assert.equal(event.type,'lific:native-toast-error');
-    const detail=event.detail.dehydrate();
-    assert.equal(unbox(detail.account_id),input.account_id);
+    const detail=unbox(event.detail);
+    assert.equal(String(unbox(detail.account_id)),String(input.account_id));
     assert.equal(unbox(detail.message),"Couldn't copy to clipboard");
   }
 
