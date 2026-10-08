@@ -41,12 +41,11 @@ async fn native_page_body_editor_emits_modes_commit_cancel_and_content_only_writ
         .await;
         assert_eq!(status, StatusCode::OK, "{mount}");
         let document = scraper::Html::parse_document(&html);
-        let modes = document
+        let mode_count = document
             .select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap())
-            .collect::<Vec<_>>();
+            .count();
         assert_eq!(
-            modes.len(),
-            2,
+            mode_count, 2,
             "Edit and Preview are separate toolbar controls"
         );
         let mode_edit = document
