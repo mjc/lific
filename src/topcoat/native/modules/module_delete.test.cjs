@@ -11,7 +11,7 @@ const fixture = handlerFixture(input.signals, async (url, options) => {
 }, input.browser_source);
 const navigations = [];
 fixture.cx.navigate = destination => navigations.push(String(destination));
-const [toggle, openConfirm, confirm, cancel] = input.handlers.map(fixture.handler);
+const [toggle, openConfirm, confirm, cancel] = input.handlers.map(source => fixture.handler(source));
 const click = handler => handler(fixture.cx.event({
   type: 'click', target: {}, currentTarget: {},
   preventDefault() {}, stopPropagation() {},
@@ -40,7 +40,7 @@ const flush = async () => { for (let attempt = 0; attempt < 60; attempt += 1) aw
   }, input.browser_source);
   const failedNavigations = [];
   failed.cx.navigate = destination => failedNavigations.push(String(destination));
-  const [failedToggle, failedOpen, failedConfirm] = input.handlers.map(failed.handler);
+  const [failedToggle, failedOpen, failedConfirm] = input.handlers.map(source => failed.handler(source));
   const failedClick = handler => handler(failed.cx.event({
     type: 'click', target: {}, currentTarget: {}, stopPropagation() {},
   }));
