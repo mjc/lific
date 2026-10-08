@@ -9,10 +9,15 @@ const {handlerFixture} = require('../handler_fixture.cjs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const output = {};
 
-function run(phase) {
+async function run(phase) {
   const requests = [];
   const listeners = new Map();
-  const fixture = handlerFixture(phase.signals, () => {
+  const pendingWrites = [];
+  const fixture = handlerFixture(phase.signals, (url, options) => {
+    if (phase.mode === 'remounted_late_reply') {
+      pendingWrites.push({url, arguments: JSON.parse(options.body)});
+      return new Promise(() => {});
+    }
     assert.fail('page-label requests are delivered through the durable account owner');
   }, input.browser_source);
   const {cx, context, controller} = fixture;
@@ -63,10 +68,40 @@ function run(phase) {
     new context.CustomEvent('lific:native-page-label-applied', {detail: cx.hydrate(reply)}));
 
   handler(phase.mount_handler)(click());
-  if (phase.mode === 'request') {
+  if (phase.mode === 'remounted_late_reply') {
+    const startPin = phase.start_pin ?? true;
+    handler(phase.title_input_handler)(textInput('Remounted dirty title'));
+    handler(phase.body_input_handler)(textInput('Remounted dirty body'));
+    if (startPin) {
+      handler(phase.pin_handler)(click());
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      assert.equal(pendingWrites.length, 1, 'the actual remounted pin handler starts one pending write');
+      assert.ok(pendingWrites[0].url.endsWith('/__native_pages/pin'));
+      assert.deepEqual(pendingWrites[0].arguments, phase.expected_pin_arguments,
+        'the pin request uses the newer canonical sequence');
+    } else {
+      assert.equal(pendingWrites.length, 0, 'an idle remount has no pending metadata request');
+    }
+    for (const binding of phase.busy_bindings) assert.equal(readBinding(binding), startPin);
+    const before = signalValues();
+    dispatchReply(phase.reply);
+    for (const binding of phase.busy_bindings) {
+      assert.equal(readBinding(binding), startPin,
+        'a delayed label completion preserves ownership of the current write state');
+    }
+    assert.deepEqual(signalValues(), before,
+      'a delayed label completion preserves all newer canonical fields, drafts, sequence and local operation state');
+    output.passed = true;
+  } else if (phase.mode === 'request') {
     if (phase.open_handler) {
       handler(phase.open_handler)(click());
       assert.equal(readBinding(phase.hidden_binding), false, 'Add opens the page label picker');
+      handler(phase.open_handler)(click());
+      assert.equal(readBinding(phase.hidden_binding), true, 'Add also closes an open picker');
+      handler(phase.open_handler)(click());
+      context.window.dispatchEvent(new Event('click'));
+      assert.equal(readBinding(phase.hidden_binding), true, 'an outside click closes the picker');
+      handler(phase.open_handler)(click());
     } else {
       assert.equal(readBinding(phase.hidden_binding), false,
         'the PageDetail owner keeps the picker open for a remove action');
@@ -85,8 +120,10 @@ function run(phase) {
         'pending label writes disable other page write controls');
     }
     for (const source of phase.draft_bindings || []) {
-      assert.equal(readBinding(source), false,
-        'draft fields remain editable while a label write is pending');
+      if (source !== null) {
+        assert.equal(readBinding(source), false,
+          'draft fields remain editable while a label write is pending');
+      }
     }
 
     if (phase.dirty_title != null) {
@@ -127,5 +164,8 @@ function run(phase) {
   }
 }
 
-for (const phase of input.phases) run(phase);
-process.stdout.write(JSON.stringify(output));
+async function main() {
+  for (const phase of input.phases) await run(phase);
+  process.stdout.write(JSON.stringify(output));
+}
+main().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });

@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 
 fn label_text(chip: scraper::ElementRef<'_>) -> String {
     chip.children()
-        .filter_map(|child| child.value().as_text().map(ToString::to_string))
+        .filter_map(|child| child.value().as_text().map(|text| text.to_string()))
         .collect()
 }
 
@@ -650,6 +650,17 @@ async fn native_page_detail_renders_project_labels_for_viewers_and_editors() {
                 .is_some(),
             "a maintainer can open the project label picker",
         );
+        for (selector, size) in [
+            ("button[title='Add label'] svg", "12"),
+            ("button[aria-label='Remove Critical'] svg", "10"),
+        ] {
+            let icon = detail
+                .select(&scraper::Selector::parse(selector).unwrap())
+                .next()
+                .expect("label actions use Main's inline icon geometry");
+            assert_eq!(icon.value().attr("width"), Some(size));
+            assert_eq!(icon.value().attr("height"), Some(size));
+        }
         assert!(
             !detail
                 .select(&scraper::Selector::parse("span").unwrap())
@@ -746,6 +757,8 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
             )
             .next()
             .unwrap();
+        assert!(title_input.value().attr("disabled").is_none());
+        assert!(body_input.value().attr("disabled").is_none());
         let status_select = document
             .select(&scraper::Selector::parse("select[data-native-page-status]").unwrap())
             .next()
@@ -784,8 +797,8 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                         save_button.value().attr("data-topcoat-bind:disabled").unwrap(),
                     ],
                     "draft_bindings": [
-                        title_input.value().attr("data-topcoat-bind:disabled").unwrap(),
-                        body_input.value().attr("data-topcoat-bind:disabled").unwrap(),
+                        title_input.value().attr("data-topcoat-bind:disabled"),
+                        body_input.value().attr("data-topcoat-bind:disabled"),
                     ],
                     "title_input_handler": title_input.value().attr("data-topcoat-on:input").unwrap(),
                     "body_input_handler": body_input.value().attr("data-topcoat-on:input").unwrap(),
@@ -3121,4 +3134,157 @@ fn run_pin_handler(input: &serde_json::Value) -> serde_json::Value {
 fn seed_page_sequence(fixture: &home_fixture::Fixture, page_id: i64) -> (i64, i64) {
     let page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
     (page.id, page.seq)
+}
+
+#[tokio::test]
+async fn native_page_labels_remounted_old_success_preserves_newer_pending_pin() {
+    assert_remounted_label_reply_preserves_current_state(false, false, true).await;
+    assert_remounted_label_reply_preserves_current_state(false, true, true).await;
+}
+
+#[tokio::test]
+async fn native_page_labels_remounted_old_failure_preserves_newer_pending_pin() {
+    assert_remounted_label_reply_preserves_current_state(true, false, true).await;
+    assert_remounted_label_reply_preserves_current_state(true, true, true).await;
+}
+
+#[tokio::test]
+async fn native_page_labels_idle_remount_ignores_older_success() {
+    assert_remounted_label_reply_preserves_current_state(false, true, false).await;
+}
+
+async fn assert_remounted_label_reply_preserves_current_state(
+    failed: bool,
+    advanced: bool,
+    start_pin: bool,
+) {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (page_id, account, _) = seed_page(&fixture, true);
+    let initial = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: initial.project_id.unwrap(),
+                name: "Delayed label".into(),
+                color: "#16a34a".into(),
+            },
+        )
+        .unwrap();
+    }
+    let request = super::labels_action::Request {
+        account_id: account,
+        page_id,
+        identifier: initial.identifier,
+        label: "Delayed label".into(),
+        attach: true,
+    };
+    let (status, old_success) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/labels",
+        serde_json::to_value((request,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(old_success["v"]["status"]["ok"], "saved");
+    let old_page = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    if advanced {
+        let conn = fixture.db.write().unwrap();
+        queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: old_page.project_id.unwrap(),
+                name: "Newer label".into(),
+                color: "#2563eb".into(),
+            },
+        )
+        .unwrap();
+        queries::update_page(
+            &conn,
+            page_id,
+            &UpdatePage {
+                title: Some("Newer canonical title".into()),
+                content: Some("Newer canonical body".into()),
+                status: Some("complete".into()),
+                pinned: Some(true),
+                labels: Some(vec!["Newer label".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let newer = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    if advanced {
+        assert!(newer.seq > old_page.seq);
+    } else {
+        assert_eq!(newer.seq, old_page.seq);
+    }
+    // A fresh document represents returning to this page while the durable
+    // account owner still holds the earlier response in flight.
+    let (status, html) = home_fixture::document(
+        &fixture,
+        "/app",
+        &format!("/ACC/pages/{page_id}"),
+        true,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let element = |selector: &str| {
+        document
+            .select(&scraper::Selector::parse(selector).unwrap())
+            .next()
+            .unwrap()
+    };
+    let labels = element("[data-native-page-labels]");
+    let pin = element("button[data-native-page-pin]");
+    let title = element("input[aria-label='Page title']");
+    let body = element("textarea[aria-label='Page content in Markdown']");
+    let page_status = element("select[data-native-page-status]");
+    let save = document
+        .select(&scraper::Selector::parse("button").unwrap())
+        .find(|button| button.text().collect::<String>().trim() == "Save changes")
+        .unwrap();
+    let reply = if failed {
+        serde_json::to_value(
+            super::labels_action::Reply {
+                status: Err(
+                    "Couldn't reach the server. Check your connection and try again.".into(),
+                ),
+                account_id: account,
+                page_id,
+                canonical: None,
+            }
+            .into_surrogate(),
+        )
+        .unwrap()
+    } else {
+        old_success
+    };
+    let output = home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/labels_handler.test.cjs",
+        &serde_json::json!({
+            "phases": [{
+                "mode": "remounted_late_reply",
+                "start_pin": start_pin,
+                "signals": home_fixture::page_signals(&html),
+                "mount_handler": labels.value().attr("data-topcoat-on:mount").unwrap(),
+                "title_input_handler": title.value().attr("data-topcoat-on:input").unwrap(),
+                "body_input_handler": body.value().attr("data-topcoat-on:input").unwrap(),
+                "pin_handler": pin.value().attr("data-topcoat-on:click").unwrap(),
+                "expected_pin_arguments": serde_json::to_value((account, page_id, !newer.pinned, newer.seq).into_surrogate()).unwrap(),
+                "busy_bindings": [
+                    pin.value().attr("data-topcoat-bind:disabled").unwrap(),
+                    page_status.value().attr("data-topcoat-bind:disabled").unwrap(),
+                    save.value().attr("data-topcoat-bind:disabled").unwrap(),
+                ],
+                "reply": reply,
+            }],
+        }),
+    );
+    assert_eq!(output["passed"], true);
 }
