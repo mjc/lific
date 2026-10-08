@@ -17,7 +17,12 @@ fixture.context.CustomEvent = class extends Event {
   constructor(type, options={}) {super(type, options);this.detail=options.detail;}
 };
 fixture.context.window.dispatchEvent = event => {
-  notifications.push({type:event.type, detail:event.detail.dehydrate()});
+  if (event.type === 'lific:native-toast-success') {
+    notifications.push({
+      type: event.type,
+      detail: JSON.parse(JSON.stringify(event.detail.dehydrate())),
+    });
+  }
   return true;
 };
 
