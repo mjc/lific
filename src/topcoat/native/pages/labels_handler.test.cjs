@@ -143,12 +143,6 @@ async function run(phase) {
     }
     output.request = plain(requests[0].detail);
     output.signals = signalValues();
-    if (phase.shard_marker) {
-      const activity = emittedShard(phase.shard_marker, context, cx, plain);
-      assert.deepEqual(activity.args[1], phase.activity_seq_wire,
-        'the emitted activity shard dependency reads the canonical sequence after label success');
-      output.activity_shard = activity;
-    }
   } else if (phase.mode === 'applied') {
     const before = signalValues();
     dispatchReply(phase.wrong_account_reply);
@@ -166,6 +160,12 @@ async function run(phase) {
     output.bound = Object.fromEntries(Object.entries(phase.bindings || {})
       .map(([name, source]) => [name, plain(evaluate(source))]));
     assert.equal(readBinding(phase.hidden_binding), false, 'applying a label keeps the picker open');
+    if (phase.shard_marker) {
+      const activity = emittedShard(phase.shard_marker, context, cx, plain);
+      assert.deepEqual(activity.args[1], phase.activity_seq_wire,
+        'the emitted activity shard dependency reads the canonical sequence after label success');
+      output.activity_shard = activity;
+    }
 
     const applied = signalValues();
     controller.abort();
