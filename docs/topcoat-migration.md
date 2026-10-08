@@ -1,7 +1,7 @@
 # Native Topcoat migration
 
-Upstream master is the behavior and visual reference. The Pages and Plans batch
-uses `1be6617aa21f70ee4e6ad355efc147f3e537085b`; earlier ports used
+Upstream master is the behavior and visual reference. The recent native batches
+use `1be6617aa21f70ee4e6ad355efc147f3e537085b`; earlier ports used
 `9683d38af8e1e6f9b076439fe90d9519109b2218`. Application state, rendering,
 validation, and workflows belong
 in Rust. Native components use shared services and Topcoat procedures rather
@@ -9,7 +9,7 @@ than frontend REST calls.
 
 ## Current implementation
 
-Login, Signup, Home, the shared workspace/sidebar, query-free issue lists and
+Login, Signup, Home, the shared workspace/sidebar, issue lists and
 boards, issue editing, project creation, Project Overview, Project Insights, and
 Project Activity have native implementations.
 
@@ -31,15 +31,17 @@ changes share the editor's sequence and busy state and preserve unsaved
 title/body drafts.
 Plans supports status tabs, creation, nested steps, title and description edits,
 done toggles, step issue linking and detaching, anchor assignment and clearing,
-and deletion. Shared plan actions ignore retired owners and late replies.
+and deletion. Nested steps have independent collapse controls for viewers and
+editors. Shared plan actions ignore retired owners and late replies.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
 Issue creation and Modules have native private routes. Issue creation supports
 title, description, status, priority, module assignment, labels, and inline label
 creation. Modules supports lifecycle tabs, unbounded issue counts, progress,
-creation, detail, scalar edits, and deletion. Both use shared Rust services and
-the workspace/sidebar. Viewers receive read-only content. Cached navigation
+creation, detail, scalar edits, and inline-confirmed deletion. Lifecycle tabs
+persist under Main's project-identifier storage key. Both use shared Rust services
+and the workspace/sidebar. Viewers receive read-only content. Cached navigation
 checks the destination's rendered project permissions against current records.
 
 The intermediate JavaScript frontend is deleted, including controllers,
@@ -49,8 +51,20 @@ JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
 
 ## Unfinished features
 
-Filtered issue lists and boards and public readers have no intermediate
-fallback. Their canonical routes return 404 until native ports are implemented.
+Issue lists and boards share a complete authorized candidate loader, native
+filter/search/sort projection, list subtabs, and project-scoped stored view state.
+Query strings are ignored as they are in Main; they do not select filters.
+Status tally shortcuts, filter badges, list tab counts, and visible result counts
+share the same Rust projection. Board column visibility is reversible even when
+all columns were hidden in saved preferences.
+The candidate loader retains Main's skinny previews and does not stop at the
+REST pagination limit. Saved views, bulk actions, drag/drop, clickable group and
+board folds, realtime reconciliation, and remaining toolbar interactions still
+need ports. Restored fold state is rendered. Main's board column predicate
+currently hides every column under the Unresolved filter; this port preserves
+that reference behavior.
+
+Public readers have no intermediate fallback and return 404 until implemented.
 Existing backend REST/MCP interfaces remain available.
 
 Files and dependency graphs now have native private routes and reuse the
@@ -68,14 +82,17 @@ authorized edits. Loading/error recovery, close transitions, global undo toasts,
 and full gesture parity remain unfinished. It is not yet wired into graph nodes.
 
 Pages still needs folder management, other metadata editing, autosave, comments,
-attachments, and realtime recovery. Plans still needs step reordering, activity,
+attachments, and realtime recovery. Plans still needs activity,
 the full metadata/editor workflow, and realtime recovery. Keep the family
 tickets open until their remaining main assertions and visual parity are met.
 
 Issue creation still needs the attachment composer and Main's picker and input
-interactions. Modules still needs persisted tabs, the shared icon picker and
-Markdown editor, delete confirmation, realtime updates, and remaining mobile,
+interactions. Modules still needs the shared icon picker and
+Markdown editor, realtime updates, and remaining mobile,
 keyboard, error, and visual parity. These family tickets remain open.
+
+Main has no step reordering controls. The backend's reordering operations do
+not establish a missing frontend interaction.
 
 Each feature must still match main's behavior, text, visual layout, permissions,
 keyboard/touch interactions, mounted URLs, conflicts, and realtime recovery.
@@ -105,3 +122,12 @@ read-only and editable initial hydration, hidden resources, revoked membership,
 query defaults, mounted navigation, and permission changes during cached
 navigation. Node executes the emitted module-save handlers with the packaged
 runtime to check mounted procedure and navigation URLs without a browser.
+
+Collection tests cover composed filters, fuzzy search ranking and limits,
+stable sorting, tabs, grouping, swimlanes, candidate sets beyond 500 records,
+initial rendering, ignored queries, and revoked authorization. The packaged
+runtime executes the emitted filter, search, sort, and visibility controls;
+their signals also drive authenticated render requests. Module tests cover
+stored tabs and inline deletion success, cancellation, failure, and disposal.
+Plan regressions cover independent folds, retained descendant fold state,
+and collapse attempts during pending mutations.
