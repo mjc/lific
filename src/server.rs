@@ -56,7 +56,7 @@ mod topcoat_app {
             .path_and_query()
             .map_or_else(|| uri.path(), |path| path.as_str());
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
-        let native = native_route(&route, uri.query().is_some());
+        let native = native_route(&route);
         let native_page = native.is_some();
         let title = if native_page {
             "Lific"
@@ -133,7 +133,7 @@ mod topcoat_app {
         if let Some(destination) = route.redirect.as_deref() {
             return Err(topcoat::router::error::redirect_permanent(destination).into());
         }
-        match native_route(&route, uri.query().is_some()) {
+        match native_route(&route) {
             Some(NativeRoute::Login) => super::topcoat_frontend::native::login::screen(cx),
             Some(NativeRoute::Signup) => super::topcoat_frontend::native::signup::screen(cx),
             Some(NativeRoute::Home) => super::topcoat_frontend::native::home::screen(cx),
