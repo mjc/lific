@@ -255,8 +255,7 @@ async fn native_files_delete_success_reports_reference_count() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        completed["notifications"][0]["type"],
-        "lific:native-toast-success",
+        completed["notifications"][0]["type"], "lific:native-toast-success",
         "successful deletion dispatches the account-owned success toast request"
     );
     assert_eq!(completed["notifications"][0]["detail"], success_request);

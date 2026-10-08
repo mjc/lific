@@ -1,5 +1,6 @@
 //! Native project Files rendering and interaction state.
 use super::super::collation::BrowserCollation;
+use super::super::deferred_delete::ToastRequest;
 use super::super::{context, dates, icons, session, transport};
 use super::actions::delete as delete_file;
 use super::model;
@@ -1200,6 +1201,10 @@ fn file_row<'a>(
     let success_busy = deleting;
     let success_confirming = confirming.clone();
     let success_expanded = expanded.clone();
+    let success_notification = ToastRequest {
+        account_id: account,
+        message: model::delete_success_message(entities.len()),
+    };
     let success_offset = offset;
     let success_revision = revision;
     let success_orphan_revision = orphan_revision;
@@ -1214,6 +1219,11 @@ fn file_row<'a>(
             };
             let _delete = async || {
                 delete_file(account, id).await;
+                let _notification = success_notification.clone();
+                raw!(
+                    "window.dispatchEvent(new CustomEvent('lific:native-toast-success',{detail:${_notification},cancelable:true}));",
+                    ()
+                );
                 success_busy.set(false);
                 success_confirming.set(None);
                 success_expanded.set(None);
@@ -1458,6 +1468,10 @@ fn orphan_row<'a>(
     let success_busy = deleting;
     let success_confirming = confirming.clone();
     let success_offset = offset;
+    let success_notification = ToastRequest {
+        account_id: account,
+        message: model::delete_success_message(0),
+    };
     let success_revision = revision;
     let success_orphan_revision = orphan_revision;
     let delete_handler = expr!(|_event: Event| {
@@ -1471,6 +1485,11 @@ fn orphan_row<'a>(
             };
             let _delete = async || {
                 delete_file(account, id).await;
+                let _notification = success_notification.clone();
+                raw!(
+                    "window.dispatchEvent(new CustomEvent('lific:native-toast-success',{detail:${_notification},cancelable:true}));",
+                    ()
+                );
                 success_busy.set(false);
                 success_confirming.set(None);
                 success_offset.set(0_i64);
