@@ -410,6 +410,9 @@ fn roster_action_attrs(
     let reauth_password = state.reauth_password.clone();
     let reauth_error = state.reauth_error.clone();
     let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let failure_busy_id = busy_id.clone();
+    let failure_row_error_id = row_error_id.clone();
+    let failure_row_error = row_error.clone();
     let action = action.to_owned();
     let handler = expr!(|_event: Event| {
         let operation = if action == "pending" {
@@ -442,9 +445,9 @@ fn roster_action_attrs(
         let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
         let _failed = || {
             if raw!("${_live}()", true) {
-                busy_id.set(0_i64);
-                row_error_id.set(user_id);
-                row_error.set("Couldn't update this member. Try again.".to_owned());
+                failure_busy_id.set(0_i64);
+                failure_row_error_id.set(user_id);
+                failure_row_error.set("Couldn't update this member. Try again.".to_owned());
             }
         };
         let _save = async || {
@@ -557,6 +560,9 @@ fn confirm_member_reauth_attrs(
     let reauth_error = state.reauth_error.clone();
     let row_error = state.row_error.clone();
     let recent_auth_required = crate::auth::RECENT_AUTH_REQUIRED_MESSAGE.to_owned();
+    let failure_reauth_id = reauth_id.clone();
+    let failure_reauth_busy = reauth_busy.clone();
+    let failure_reauth_error = reauth_error.clone();
     let handler = expr!(|_event: Event| {
         let action_user_id = user_id;
         let action = reauth_action.get();
@@ -578,9 +584,10 @@ fn confirm_member_reauth_attrs(
         let _live = || !raw!("cx.hydrate(cx.abortSignal.aborted)", false);
         let _failed = || {
             if raw!("${_live}()", true) {
-                if reauth_id.get() == action_user_id {
-                    reauth_busy.set(false);
-                    reauth_error.set("Couldn't confirm your password. Try again.".to_owned());
+                if failure_reauth_id.get() == action_user_id {
+                    failure_reauth_busy.set(false);
+                    failure_reauth_error
+                        .set("Couldn't confirm your password. Try again.".to_owned());
                 }
             }
         };
