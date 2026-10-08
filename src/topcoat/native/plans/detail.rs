@@ -1694,11 +1694,10 @@ mod tests {
                     "Old title"
                 };
                 let new = if description {
-                    "New description line\nunchanged context"
+                    "New description line\nunchanged context".to_owned()
                 } else {
-                    "Audit new {index}"
+                    format!("Audit new {index}")
                 };
-                let new = new.replace("{index}", &index.to_string());
                 conn.execute(
                     "INSERT INTO audit_log
                      (transport, entity_type, entity_id, entity_label, project_id,
