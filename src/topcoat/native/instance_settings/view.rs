@@ -422,11 +422,11 @@ fn roster_action_attrs(
         } else {
             operation == "reactivate"
         };
-        if busy_id.get() != 0 {
+        if busy_id.get() != 0_i64 {
             return;
         }
         if grants_access {
-            if reauth_id.get() != 0 {
+            if reauth_id.get() != 0_i64 {
                 return;
             }
             if settings_saving.get() {
@@ -462,9 +462,9 @@ fn roster_action_attrs(
                 let is_active_admin = if result.1 { result.2 } else { false };
                 if was_active_admin != is_active_admin {
                     admin_count.set(if is_active_admin {
-                        admin_count.get() + 1
+                        admin_count.get() + 1_usize
                     } else {
-                        admin_count.get() - 1
+                        admin_count.get() - 1_usize
                     });
                 }
                 is_admin.set(result.1);
@@ -524,7 +524,7 @@ fn request_confirmation_attrs(
     let row_error_id = state.row_error_id.clone();
     let action = action.to_owned();
     let handler = expr!(|_event: Event| {
-        if busy_id.get() != 0 {
+        if busy_id.get() != 0_i64 {
             return;
         }
         pending_id.set(user_id);
@@ -564,7 +564,7 @@ fn confirm_member_reauth_attrs(
         if reauth_id.get() != action_user_id {
             return;
         }
-        if action_user_id == 0 {
+        if action_user_id == 0_i64 {
             return;
         }
         if password.is_empty() {
@@ -603,9 +603,9 @@ fn confirm_member_reauth_attrs(
                 let is_active_admin = if result.1 { result.2 } else { false };
                 if was_active_admin != is_active_admin {
                     admin_count.set(if is_active_admin {
-                        admin_count.get() + 1
+                        admin_count.get() + 1_usize
                     } else {
-                        admin_count.get() - 1
+                        admin_count.get() - 1_usize
                     });
                 }
                 is_admin.set(result.1);
@@ -1079,7 +1079,7 @@ fn roster_row<'a>(
     let cancel_pending = state.pending_id.clone();
     let cancel_busy = state.busy_id.clone();
     let cancel = expr!(|_event: Event| {
-        if cancel_busy.get() == 0 {
+        if cancel_busy.get() == 0_i64 {
             cancel_pending.set(0_i64);
         }
     });
@@ -1166,7 +1166,7 @@ fn roster_row<'a>(
                             aria-label=(remove_admin_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--warn-text)]"
                             :hidden=$(!is_admin.get())
-                            :disabled=$(when_busy.get() != 0)
+                            :disabled=$(when_busy.get() != 0_i64)
                             (demote)
                         >
                             "Demote"
@@ -1177,9 +1177,9 @@ fn roster_row<'a>(
                             aria-label=(promote_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--accent-subtle)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40"
                             :hidden=$(is_admin.get())
-                            :disabled=$(if when_busy.get() != 0 {
+                            :disabled=$(if when_busy.get() != 0_i64 {
                                 true
-                            } else if when_reauth.get() != 0 {
+                            } else if when_reauth.get() != 0_i64 {
                                 true
                             } else if settings_saving.get() {
                                 true
@@ -1196,7 +1196,7 @@ fn roster_row<'a>(
                             aria-label=(deactivate_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
                             :hidden=$(!is_active.get())
-                            :disabled=$(when_busy.get() != 0)
+                            :disabled=$(when_busy.get() != 0_i64)
                             (deactivate)
                         >
                             "Deactivate"
@@ -1207,9 +1207,9 @@ fn roster_row<'a>(
                             aria-label=(reactivate_label)
                             class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--success-bg)] hover:text-[var(--success)] disabled:cursor-not-allowed disabled:opacity-40"
                             :hidden=$(is_active.get())
-                            :disabled=$(if when_busy.get() != 0 {
+                            :disabled=$(if when_busy.get() != 0_i64 {
                                 true
-                            } else if when_reauth.get() != 0 {
+                            } else if when_reauth.get() != 0_i64 {
                                 true
                             } else if settings_saving.get() {
                                 true
@@ -1230,7 +1230,7 @@ fn roster_row<'a>(
                                 type="button"
                                 data-native-instance-member-confirm=""
                                 class="rounded-md bg-[var(--error)] px-2 py-1 text-caption font-medium text-[var(--error-text)] hover:opacity-90 disabled:opacity-40"
-                                :disabled=$(when_busy.get() != 0)
+                                :disabled=$(when_busy.get() != 0_i64)
                                 (confirm_pending)
                             >
                                 $(if when_busy.get() == id {
@@ -1244,7 +1244,7 @@ fn roster_row<'a>(
                             <button
                                 type="button"
                                 class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
-                                :disabled=$(when_busy.get() != 0)
+                                :disabled=$(when_busy.get() != 0_i64)
                                 (cancel_attrs)
                             >
                                 "Cancel"
