@@ -45,17 +45,7 @@ pub(super) fn views<'a>(
     revision: Signal<usize>,
     state: State,
 ) -> Views<'a> {
-    let create = create_attributes(
-        cx,
-        account,
-        project_id,
-        state.name.clone(),
-        state.composer_open.clone(),
-        state.busy.clone(),
-        state.error.clone(),
-        state.parent_folder.clone(),
-        revision,
-    );
+    let create = create_attributes(cx, account, project_id, state.clone(), revision);
     let menu_toggle = menu_toggle_attributes(cx, state.menu_open.clone());
     let menu_item = menu_item_attributes(
         cx,
@@ -226,13 +216,17 @@ fn create_attributes(
     cx: &Cx,
     account: i64,
     project_id: i64,
-    name: Signal<String>,
-    composer_open: Signal<bool>,
-    busy: Signal<bool>,
-    error: Signal<String>,
-    parent_folder: Signal<String>,
+    state: State,
     revision: Signal<usize>,
 ) -> Attributes {
+    let State {
+        name,
+        composer_open,
+        busy,
+        error,
+        parent_folder,
+        ..
+    } = state;
     let failed_busy = busy.clone();
     let failed_error = error.clone();
     let browser = browser::bindings();
