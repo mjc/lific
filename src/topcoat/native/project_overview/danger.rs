@@ -160,7 +160,7 @@ pub(super) fn panel<'a>(
                                             account,
                                             project,
                                             "identifier".to_owned(),
-                                            value,
+                                            value.trim().to_uppercase(),
                                         ).await;
                                         renaming.set(false);
                                         if result.0.is_ok() {
