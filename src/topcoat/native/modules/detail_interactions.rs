@@ -508,6 +508,22 @@ async fn native_module_detail_description_emitted_handlers_cancel_preview_save_a
         "save": save,
         "preview": preview,
     });
+    let lifecycle = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/description_handlers.test.cjs",
+        &serde_json::json!({
+            "phase": "owner_lifecycle",
+            "mount": "/app",
+            "signals": home_fixture::page_signals(&edit_html),
+            "initial_description": "Original module body with marker",
+            "edit": edit,
+            "input": input_handler,
+            "save": save,
+        }),
+    );
+    assert_eq!(lifecycle["successRequests"], 1);
+    assert_eq!(lifecycle["failureRequests"], 1);
+    assert_eq!(lifecycle["disposedRequests"], 1);
+
     let output = home_fixture::evaluate_handler(
         "src/topcoat/native/modules/description_handlers.test.cjs",
         &edit_args,
