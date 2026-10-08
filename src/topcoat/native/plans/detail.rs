@@ -475,10 +475,14 @@ fn render_detail<'a>(
 
 fn prepare_step_expansion_state(cx: &Cx, steps: &[PlanStepNode]) {
     for step in steps {
-        let row_cx = cx.keyed(step.id);
+        let row_cx = step_context(cx, step.id);
         let _collapsed = collapsed_state(&row_cx);
         prepare_step_expansion_state(&row_cx, &step.children);
     }
+}
+
+fn step_context(cx: &Cx, id: i64) -> Cx {
+    cx.keyed(id)
 }
 
 fn collapsed_state(cx: &Cx) -> Signal<bool> {
@@ -496,7 +500,7 @@ fn step_node<'a>(
     depth: usize,
     editor: PlanEditor,
 ) -> BoxView<'a> {
-    let row_cx = cx.keyed(step.id);
+    let row_cx = step_context(cx, step.id);
     let collapsed = collapsed_state(&row_cx);
     let project = project.to_owned();
     let step_id = step.id;
@@ -679,7 +683,7 @@ fn expansion_button<'a>(
     } else {
         "rotate-90 transition-transform"
     };
-    let refresh = revision.clone();
+    let refresh = revision;
     let action_busy = busy.clone();
     let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
