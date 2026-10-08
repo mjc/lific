@@ -14,7 +14,7 @@ pub(crate) fn runtime_source() -> &'static str {
     static SOURCE: OnceLock<String> = OnceLock::new();
     SOURCE.get_or_init(|| {
         let handlers = [
-            (super::native::home_shell::handler_url(), "mount as native0,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,preferences as nativePreferences,navigationAuthority as nativeNavigationAuthority,archiveImport as nativeArchiveImport"),
+            (super::native::home_shell::handler_url(), "mount as native0,browser as nativeBrowser,paletteProjection as nativePaletteProjection,chromeThemeToggle as nativeChromeThemeToggle,chromeThemeChoice as nativeChromeThemeChoice,chromeCollapse as nativeChromeCollapse,homeRefresh as nativeHomeRefresh,mobileDispatch as nativeMobileDispatch,accountFocus as nativeAccountFocus,sessionStorage as nativeSessionStorage,motion as nativeMotion,preferences as nativePreferences,navigationAuthority as nativeNavigationAuthority,archiveImport as nativeArchiveImport"),
             (super::native::project_sidebar::handler_url(), "mount as native1,recentsRefresh as nativeRecentsRefresh"),
         ];
         let mut source = String::new();
@@ -25,7 +25,12 @@ pub(crate) fn runtime_source() -> &'static str {
             source.push_str(&format!("import {{{exports}}} from {import};\n"));
             bindings.push(format!("{key}:native{index}"));
         }
+        bindings.push("browser:nativeBrowser".to_owned());
         for (key, function) in [
+            (format!("{}#chromeThemeToggle", super::native::home_shell::handler_url()), "nativeChromeThemeToggle"),
+            (format!("{}#chromeThemeChoice", super::native::home_shell::handler_url()), "nativeChromeThemeChoice"),
+            (format!("{}#chromeCollapse", super::native::home_shell::handler_url()), "nativeChromeCollapse"),
+            (format!("{}#palette-projection", super::native::home_shell::handler_url()), "nativePaletteProjection"),
             (format!("{}#home-refresh", super::native::home_shell::handler_url()), "nativeHomeRefresh"),
             (format!("{}#mobile-dispatch", super::native::home_shell::handler_url()), "nativeMobileDispatch"),
             (format!("{}#account-focus", super::native::home_shell::handler_url()), "nativeAccountFocus"),
