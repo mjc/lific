@@ -1,10 +1,13 @@
-//! Shared account-level notifications for deferred deletion and Module assignment.
+//! Shared account-level issue writes and notifications across native navigation.
 //! Four slots retain deadlines and one-shot Undo across native navigation.
 use super::super::runtime::{
     procedure::ProcedureKeepaliveExt,
     signal_vec::{SignalVecExt, VecPositionExt},
 };
 use super::icons::UiIcon;
+use super::issue_edit::labels::{
+    LabelReply, LabelReplyValue, LabelRequestValue, create_label, update_labels,
+};
 use super::issue_edit::module_assignment::{ModuleAssignmentReply, ModuleRequest, assign_module};
 use super::{issue_edit::delete::commit_delete, transport};
 use topcoat::{
@@ -47,6 +50,7 @@ struct OwnerHandles {
     remove_index: Signal<usize>,
     pending_issues: Signal<Vec<i64>>,
     module_pending: Signal<Vec<i64>>,
+    label_pending: Signal<Vec<i64>>,
     mount: String,
 }
 
@@ -134,6 +138,7 @@ pub(crate) fn owner<'a>(
     let focused = slots.each_ref().map(|slot| slot.focused.clone());
     let module_request = slots.each_ref().map(|slot| slot.module_request.clone());
     let module_pending = signal(state_cx, Vec::<i64>::new);
+    let label_pending = signal(state_cx, Vec::<i64>::new);
     let handles = OwnerHandles {
         activated,
         id,
@@ -157,6 +162,7 @@ pub(crate) fn owner<'a>(
         remove_index,
         pending_issues,
         module_pending,
+        label_pending,
         mount,
     };
     let captured_handles = serde_json::to_string(&handles.into_surrogate())
@@ -258,6 +264,7 @@ pub(crate) fn handler_factory() -> Js {
         let remove_index = handles.remove_index;
         let pending_issues = handles.pending_issues;
         let module_pending = handles.module_pending;
+        let label_pending = handles.label_pending;
         let _mount_path = handles.mount;
         let _module_finish_request = module_request.clone();
         let _module_finish_message = message.clone();
@@ -267,6 +274,9 @@ pub(crate) fn handler_factory() -> Js {
         let _module_failure_message = message.clone();
         let _module_failure_kind = kind.clone();
         let _module_failure_remaining = remaining.clone();
+        let _label_failure_message = message.clone();
+        let _label_failure_kind = kind.clone();
+        let _label_failure_remaining = remaining.clone();
         let _allocate_module_request = module_request.clone();
         let _close_module_request = module_request.clone();
         let _undo_module_request = module_request;
@@ -547,6 +557,109 @@ pub(crate) fn handler_factory() -> Js {
                 }
             }
         };
+        let _label_release = |target: I64Surrogate| {
+            let position = label_pending.get().position(target);
+            if position.is_some() {
+                label_pending.remove(position.unwrap());
+            }
+        };
+        let _label_finish = |request: LabelRequestValue, reply: LabelReplyValue| {
+            raw!("${_label_release}(${request}.issue_id);", ());
+            // Catalog creation can succeed before attachment fails. Forward both
+            // outcomes so the live picker can refresh its catalog independently.
+            raw!(
+                "window.dispatchEvent(new CustomEvent('lific:native-issue-label-applied',{detail:${reply}}));",
+                ()
+            );
+            if reply.status.is_err() {
+                let index = raw!("${_allocate}()", 0_usize);
+                let create_failed = if request.mode == "create".to_owned() {
+                    reply.catalog_item.is_none()
+                } else {
+                    false
+                };
+                if create_failed {
+                    _label_failure_message
+                        .index(index)
+                        .set("Couldn't create label: ".to_owned());
+                } else {
+                    _label_failure_message
+                        .index(index)
+                        .set("Couldn't save ".to_owned());
+                    _label_failure_message
+                        .index(index)
+                        .push_str(request.identifier);
+                    _label_failure_message.index(index).push_str(": ");
+                }
+                _label_failure_message
+                    .index(index)
+                    .push_str(reply.status.unwrap_err());
+                _label_failure_kind.index(index).set("error".to_owned());
+                _label_failure_remaining.index(index).set(8_000.0_f64);
+                raw!("${_timer}(${index});", ());
+            }
+        };
+        let _label_network_failure = |request: LabelRequestValue| {
+            let _reply = LabelReply {
+                status: Err(
+                    "Couldn't reach the server. Check your connection and try again.".to_owned(),
+                ),
+                account_id: request.account_id.clone(),
+                issue_id: request.issue_id.clone(),
+                seq: 0_i64,
+                labels: request.labels.clone(),
+                canonical: None,
+                catalog_item: None,
+            };
+            raw!("${_label_finish}(${request},${_reply});", ());
+        };
+        let _label_run = |request: LabelRequestValue| {
+            let _success = |_reply: LabelReplyValue| {
+                raw!(
+                    "if(nativeOwnerToken.active)nativeOwnerToken.host.nativeLabelFinish(${request},${_reply});",
+                    ()
+                );
+            };
+            let _failure = || {
+                raw!(
+                    "if(nativeOwnerToken.active)nativeOwnerToken.host.nativeLabelNetworkFailure(${request});",
+                    ()
+                );
+            };
+            if request.mode == "create".to_owned() {
+                let _keepalive = create_label.with_keepalive();
+                let _future = _keepalive(request.clone());
+                raw!("${_future}.then(${_success},${_failure});", ());
+            } else {
+                let _keepalive = update_labels.with_keepalive();
+                let _future = _keepalive(request.clone());
+                raw!("${_future}.then(${_success},${_failure});", ());
+            }
+        };
+        let _label_accept = |request: LabelRequestValue| {
+            let mode_valid = if request.mode == "create".to_owned() {
+                true
+            } else {
+                request.mode == "update".to_owned()
+            };
+            if request.account_id != account_id {
+                false
+            } else if request.issue_id <= 0_i64 {
+                false
+            } else if !mode_valid {
+                false
+            } else if label_pending
+                .get()
+                .position(request.issue_id.clone())
+                .is_some()
+            {
+                false
+            } else {
+                label_pending.push(request.issue_id.clone());
+                raw!("${_label_run}(${request});", ());
+                true
+            }
+        };
         let _failure_toast = |label: StringSurrogate, _restore: StringSurrogate| {
             let index = raw!("${_allocate}()", 0_usize);
             _failure_toast_message
@@ -712,6 +825,11 @@ pub(crate) fn handler_factory() -> Js {
             owner.nativeFailure = ${_failure_toast};
             owner.nativeModuleFinish = ${_module_finish};
             owner.nativeModuleFailure = ${_module_failure};
+            owner.nativeLabelFinish = ${_label_finish};
+            owner.nativeLabelNetworkFailure = ${_label_network_failure};
+            window.addEventListener('lific:native-issue-label-request',event=>{
+                if (${_label_accept}(event.detail).toString()==='true') event.preventDefault();
+            },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-module-request',event=>{
                 if (${_module_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
@@ -753,6 +871,8 @@ pub(crate) fn handler_factory() -> Js {
                     delete owner.nativeFailure;
                     delete owner.nativeModuleFinish;
                     delete owner.nativeModuleFailure;
+                    delete owner.nativeLabelFinish;
+                    delete owner.nativeLabelNetworkFailure;
                 }
             },{once:true});
         "#,
@@ -791,6 +911,7 @@ pub(crate) fn activated_snapshot(html: &str) -> serde_json::Map<String, serde_js
 
 #[cfg(test)]
 mod tests {
+    use super::super::issue_edit::labels::{LabelCatalogItem, LabelRequest};
     use super::*;
     use std::{io::Write, process::Stdio, sync::Arc};
     use topcoat::{context::CxTestBuilder, router::RemoteAddr, runtime::Surrogated};
@@ -874,6 +995,24 @@ mod tests {
                             canonical:None,account_id:7,issue_id:42,seq:0,
                             module_id:None,module_label:"None".into(),
                         }.into_surrogate(),
+                        "label_requests": (["update", "create", "unknown", "wrong_account"].into_iter().map(|mode| (
+                            mode,
+                            LabelRequest {
+                                mode: if mode == "wrong_account" { "update" } else { mode }.into(),
+                                account_id: if mode == "wrong_account" { 8 } else { 7 },
+                                issue_id:42,identifier:"ACC-42".into(),labels:vec!["bug".into()],
+                                name:if mode == "create" { "new label" } else { "" }.into(),color:"#2563EB".into(),
+                            }.into_surrogate(),
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
+                        "label_replies": (["saved", "create_failed", "attach_failed"].into_iter().map(|outcome| (
+                            outcome,
+                            LabelReply {
+                                status: if outcome == "saved" { Ok("saved".into()) } else { Err("Forbidden: insufficient project role".into()) },
+                                account_id:7,issue_id:42,seq:if outcome == "saved" { 13 } else { 0 },
+                                labels:vec!["bug".into()],canonical:None,
+                                catalog_item: (outcome == "attach_failed").then(|| LabelCatalogItem {name:"new label".into(),color:"#2563EB".into()}),
+                            }.into_surrogate(),
+                        )).collect::<std::collections::BTreeMap<_,_>>()),
                     })
                         .to_string()
                         .as_bytes(),

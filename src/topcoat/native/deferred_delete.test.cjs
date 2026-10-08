@@ -79,13 +79,8 @@ function fixture() {
     assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted Module updates.');
   };
   const updateLabels=(mode='update',accepted=true)=>{
-    const sample=input.module_requests['42:9:null'].v;
-    const request=input.label_requests?.[mode] ?? {t:'Record',v:{
-      mode,account_id:sample.account_id,issue_id:sample.issue_id,identifier:sample.identifier,
-      labels:{t:'Vec',bits:64,v:['bug']},name:mode==='create'?'new label':'',color:'#2563EB',
-    }};
     const event=new Event('lific:native-issue-label-request',{cancelable:true});
-    event.detail=base.hydrate(request);
+    event.detail=base.hydrate(input.label_requests[mode]);
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted label updates.');
   };
@@ -109,9 +104,10 @@ function fixture() {
   };
   const failNetwork=async()=>{pending.shift().reject(new TypeError('offline'));await flush();};
   const failModule=async()=>{pending.shift().resolve({ok:true,json:async()=>input.module_failure});await flush();};
+  const finishLabels=async(outcome='saved')=>{pending.shift().resolve({ok:true,json:async()=>input.label_replies[outcome]});await flush();};
   const texts=()=>signalIds.map(id=>base.signal(id).get().toString());
   const snapshot=()=>Object.fromEntries(signalIds.map(id=>[id,base.signal(id).get().dehydrate()]));
-  return {schedule,assignModule,updateLabels,advance,replace,finish,finishModule,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,updateLabels,advance,replace,finish,finishModule,finishLabels,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
 if(input.probe_only){
   process.stdout.write(JSON.stringify(fixture().snapshot()));
@@ -121,8 +117,65 @@ test('Label writes start immediately without an Undo action',async()=>{
   const f=fixture();f.updateLabels();await flush();
   assert.equal(f.calls.length,1);
   assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/update_labels'));
+  assert.equal(f.calls[0].options.keepalive,true);
+  assert.deepEqual(JSON.parse(f.calls[0].options.body),[input.label_requests.update]);
+  await f.finishLabels();
   assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+  f.click(f.owner.toasts[0].undo);await tick(f,10000);assert.equal(f.calls.length,1);
   assert.deepEqual(f.navigations,[]);
+});
+test('Label updates reject wrong accounts, unknown modes and duplicate pending writes',async()=>{
+  const f=fixture();f.updateLabels('wrong_account',false);f.updateLabels('unknown',false);
+  assert.equal(f.calls.length,0);f.updateLabels();f.updateLabels('update',false);
+  assert.equal(f.calls.length,1);await f.finishLabels();f.updateLabels();assert.equal(f.calls.length,2);
+});
+test('Label results follow the transferred account owner on common routes',async()=>{
+  const f=fixture(),applied=[];
+  f.window.addEventListener('lific:native-issue-label-applied',event=>applied.push(event.detail.dehydrate()));
+  f.updateLabels();f.replace({key:'7:'});await f.finishLabels();
+  assert.deepEqual(JSON.parse(JSON.stringify(applied)),[input.label_replies.saved]);
+  assert.equal(f.timers.size,0);assert.deepEqual(f.navigations,[]);
+});
+test('Catalog creation and failed attachment are both forwarded without offering Undo',async()=>{
+  const f=fixture(),applied=[];
+  f.window.addEventListener('lific:native-issue-label-applied',event=>applied.push(event.detail.dehydrate()));
+  f.updateLabels('create');assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/create_label'));
+  assert.equal(f.calls[0].options.keepalive,true);f.replace({key:'7:OTHER'});await f.finishLabels('attach_failed');
+  assert.deepEqual(JSON.parse(JSON.stringify(applied)),[input.label_replies.attach_failed]);
+  assert.ok(f.texts().includes("Couldn't save ACC-42: Forbidden: insufficient project role"));
+  f.click(f.owner.toasts[0].undo);await tick(f,8000);assert.equal(f.calls.length,1);
+  f.updateLabels('create');assert.equal(f.calls.length,2);
+});
+test('Failed label creation preserves its operation and releases pending state',async()=>{
+  const f=fixture();f.updateLabels('create');await f.finishLabels('create_failed');
+  assert.ok(f.texts().includes("Couldn't create label: Forbidden: insufficient project role"));
+  f.updateLabels('create');assert.equal(f.calls.length,2);
+});
+test('Label network failures reach the transferred picker and release pending state',async()=>{
+  const f=fixture(),applied=[];
+  f.window.addEventListener('lific:native-issue-label-applied',event=>applied.push(event.detail));
+  f.updateLabels('create');f.replace({key:'7:'});await f.failNetwork();
+  assert.equal(applied.length,1);assert.equal(applied[0].status.is_err().toString(),'true');
+  assert.equal(applied[0].catalog_item.is_none().toString(),'true');
+  assert.ok(f.texts().includes("Couldn't create label: Couldn't reach the server. Check your connection and try again."));
+  f.updateLabels();assert.equal(f.calls.length,2);
+});
+test('Retired account owners suppress late label successes and failures',async()=>{
+  for(const outcome of ['saved','create_failed','network']){
+    const f=fixture();let applied=0;
+    f.window.addEventListener('lific:native-issue-label-applied',()=>applied++);
+    f.updateLabels('create');f.replace({key:'8:ACC',mount:false});
+    if(outcome==='network')await f.failNetwork();else await f.finishLabels(outcome);
+    assert.equal(applied,0);assert.equal(f.timers.size,0);
+  }
+});
+test('Label errors share the stack without consuming deletion or Module Undo',async()=>{
+  const f=fixture();f.schedule();f.assignModule(43);await f.finishModule('9',43);
+  f.updateLabels();await f.finishLabels('create_failed');
+  f.click(f.owner.toasts[2].undo);assert.equal(f.calls.length,2);
+  f.click(f.owner.toasts[0].undo);f.click(f.owner.toasts[1].undo);await f.finishModule(null,43);
+  await tick(f,10000);assert.equal(f.calls.length,3);
+  assert.ok(f.calls.every(call=>!call.url.endsWith('/__native_issue_edit/delete')));
 });
 test('Module updates start immediately from the durable owner',async()=>{
   const f=fixture();f.assignModule();await flush();
