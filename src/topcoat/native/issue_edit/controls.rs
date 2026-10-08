@@ -3,7 +3,7 @@
 use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Expr, Signal, expr, procedure, shard, signal},
+    runtime::{Event, Expr, Signal, Surrogated, expr, procedure, shard, signal},
     view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
 };
 
@@ -29,6 +29,8 @@ type WireOutcome = (
     Vec<String>,
     Vec<String>,
 );
+type ModuleAssignmentReplyValue =
+    <super::module_assignment::ModuleAssignmentReply as Surrogated>::Surrogate;
 
 fn wire(outcome: SaveOutcome) -> WireOutcome {
     let (result, snapshot) = match outcome {
@@ -120,6 +122,8 @@ async fn save_priority(
 #[derive(Clone)]
 struct Controls {
     identifier: String,
+    account_id: i64,
+    issue_id: i64,
     seq: Signal<i64>,
     title: Signal<String>,
     description: Signal<String>,
@@ -146,9 +150,11 @@ struct Controls {
 }
 
 impl Controls {
-    fn new(cx: &Cx, snapshot: &Snapshot) -> Self {
+    fn new(cx: &Cx, snapshot: &Snapshot, account_id: i64, issue_id: i64) -> Self {
         Self {
             identifier: snapshot.identifier.clone(),
+            account_id,
+            issue_id,
             seq: signal(cx, || snapshot.seq),
             title: signal(cx, || snapshot.title.clone()),
             description: signal(cx, || snapshot.description.clone()),
@@ -490,7 +496,7 @@ async fn editor_component(
     can_edit: bool,
     markdown: bool,
 ) -> topcoat::Result<impl View> {
-    let controls = Controls::new(cx, &snapshot);
+    let controls = Controls::new(cx, &snapshot, 0, 0);
     Ok(render_editor(
         cx, &snapshot, can_edit, markdown, &controls, false,
     ))
@@ -528,7 +534,12 @@ fn document_views<'a>(
     project: &str,
     delete_request: &super::delete_menu::Request,
 ) -> (BoxView<'a>, BoxView<'a>) {
-    let controls = Controls::new(cx, snapshot);
+    let controls = Controls::new(
+        cx,
+        snapshot,
+        delete_request.account_id,
+        delete_request.issue_id,
+    );
     (
         document_topbar(cx, &controls, project, can_edit, delete_request),
         render_editor(cx, snapshot, can_edit, true, &controls, true),
@@ -602,6 +613,20 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
     let header_status_open = controls.header_status_open.clone();
     let priority_open = controls.priority_open.clone();
     let disposed_revision = controls.description_revision.clone();
+    let module_seq = controls.seq.clone();
+    let module_account = controls.account_id;
+    let module_issue = controls.issue_id;
+    let module_title = controls.title.clone();
+    let module_description = controls.description.clone();
+    let module_status = controls.status.clone();
+    let module_priority = controls.priority.clone();
+    let module_blocks = controls.blocks.clone();
+    let module_blocked_by = controls.blocked_by.clone();
+    let module_relates_to = controls.relates_to.clone();
+    let module_duplicates = controls.duplicates.clone();
+    let module_duplicated_by = controls.duplicated_by.clone();
+    let module_title_draft = controls.title_draft.clone();
+    let module_description_draft = controls.description_draft.clone();
     let input = format!("native-issue-body-input-{}", controls.identifier);
     let handler = expr!(|_mount: Event| {
         let _dispose = || {
@@ -639,6 +664,40 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
         };
         raw!(
             "window.addEventListener('click', event => ${_dismiss}(cx.hydrate(Boolean(event.target?.closest?.('.native-issue-detail__picker')))), {signal:cx.abortSignal})",
+            ()
+        );
+        let _module_applied = |reply: ModuleAssignmentReplyValue| {
+            if reply.account_id == module_account {
+                if reply.issue_id == module_issue {
+                    if reply.seq >= module_seq.get() {
+                        let was_clean_title = module_title_draft.get() == module_title.get();
+                        let was_clean_description =
+                            module_description_draft.get() == module_description.get();
+                        module_seq.set(reply.seq);
+                        if reply.canonical.is_some() {
+                            let canonical = reply.canonical.unwrap();
+                            module_title.set(canonical.title.clone());
+                            module_description.set(canonical.description.clone());
+                            module_status.set(canonical.status);
+                            module_priority.set(canonical.priority);
+                            module_blocks.set(canonical.blocks);
+                            module_blocked_by.set(canonical.blocked_by);
+                            module_relates_to.set(canonical.relates_to);
+                            module_duplicates.set(canonical.duplicates);
+                            module_duplicated_by.set(canonical.duplicated_by);
+                            if was_clean_title {
+                                module_title_draft.set(canonical.title);
+                            }
+                            if was_clean_description {
+                                module_description_draft.set(canonical.description);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        raw!(
+            "window.addEventListener('lific:native-issue-module-applied', event => ${_module_applied}(event.detail), {signal:cx.abortSignal})",
             ()
         );
     });
@@ -971,11 +1030,12 @@ async fn native_issue_metadata(
     identifier: String,
     revision: i64,
     dates: bool,
+    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>),
 ) -> topcoat::Result<impl View> {
     // The saved cursor invalidates this read; it never supplies authority.
     let _ = revision;
     let caller = super::super::session::read(cx, super::super::context::caller(cx))?;
-    super::super::session::read(cx, crate::api::require_user(&caller.identity))?;
+    let user = super::super::session::read(cx, crate::api::require_user(&caller.identity))?;
     let db = super::super::context::db(cx);
     let issue = super::super::session::read(
         cx,
@@ -992,7 +1052,21 @@ async fn native_issue_metadata(
         Err(error) => return super::super::session::read(cx, Err(error)),
     };
     let metadata = super::super::session::read(cx, super::route::metadata(cx, &issue))?;
-    Ok(metadata_view(cx, metadata, dates, can_edit))
+    let module_request = super::module_assignment::ModuleRequest {
+        account_id: user.id,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        previous_module_id: issue.module_id,
+        next_module_id: None,
+    };
+    Ok(metadata_view(
+        cx,
+        metadata,
+        dates,
+        can_edit,
+        module_request,
+        menu_signals,
+    ))
 }
 
 fn metadata_view<'a>(
@@ -1000,10 +1074,13 @@ fn metadata_view<'a>(
     metadata: super::route::DocumentMetadata,
     dates: bool,
     can_edit: bool,
+    module_request: super::module_assignment::ModuleRequest,
+    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>),
 ) -> BoxView<'a> {
     let waits = metadata
         .waits
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|wait| {
             let label = match wait.kind {
                 crate::db::models::WaitKind::User => wait
@@ -1040,15 +1117,13 @@ fn metadata_view<'a>(
             } else {
                 <section>
                     <h2>"Module"</h2>
-                    <span
-                        class=(if metadata.module_id.is_none() {
-                            "native-issue-detail__empty-value"
-                        } else {
-                            ""
-                        })
-                    >
-                        (metadata.module)
-                    </span>
+                    (super::module_assignment::field(
+                        cx,
+                        &metadata,
+                        module_request,
+                        can_edit,
+                        menu_signals,
+                    ))
                 </section>
                 <section>
                     <h2>"Labels"</h2>
@@ -1457,6 +1532,11 @@ fn editor_fields<'a>(
     let status_open = controls.status_open.clone();
     let header_status_open = controls.header_status_open.clone();
     let priority_open = controls.priority_open.clone();
+    let module_menu_signals = (
+        status_open.clone(),
+        header_status_open.clone(),
+        priority_open.clone(),
+    );
     let properties_open = controls.properties_open.clone();
     let busy = controls.busy.clone();
     let editable_priority_label = priority_label(priority.clone());
@@ -1659,7 +1739,8 @@ fn editor_fields<'a>(
                 native_issue_metadata(
                     identifier: metadata_identifier,
                     revision: $(seq.get()),
-                    dates: false
+                    dates: false,
+                    menu_signals: module_menu_signals.clone()
                 )
             }
             if document {
@@ -1674,7 +1755,8 @@ fn editor_fields<'a>(
                 native_issue_metadata(
                     identifier: dates_identifier,
                     revision: $(seq.get()),
-                    dates: true
+                    dates: true,
+                    menu_signals: module_menu_signals
                 )
             }
         </aside>

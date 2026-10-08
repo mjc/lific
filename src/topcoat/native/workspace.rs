@@ -372,16 +372,13 @@ pub(crate) fn common_screen<'a>(
         .path_and_query()
         .map_or_else(|| uri.path(), |path| path.as_str())
         .to_owned();
-    Ok(view! {
-        cx =>
-        workspace_owner(
-            user: user,
-            projects: projects,
-            project: String::new(),
-            initial: (path, entry)
-        )
-    }
-    .boxed())
+    Ok(render_workspace_owner(
+        cx,
+        user,
+        projects,
+        String::new(),
+        (path, entry),
+    ))
 }
 
 #[shard("/__native_workspace/common_page")]
@@ -451,16 +448,34 @@ pub(crate) fn screen<'a>(cx: &'a Cx, route: &ParsedRoute<'_>) -> topcoat::Result
         path.push('?');
         path.push_str(route.query);
     }
-    Ok(view! {
+    Ok(render_workspace_owner(
+        cx,
+        user,
+        projects,
+        project,
+        (path, String::new()),
+    ))
+}
+
+// Both entry paths use one component invocation site so account-owned signals
+// retain their identities when navigation switches between project and common pages.
+fn render_workspace_owner<'a>(
+    cx: &'a Cx,
+    user: crate::db::models::AuthUser,
+    projects: Vec<crate::db::models::Project>,
+    project: String,
+    initial: (String, String),
+) -> BoxView<'a> {
+    view! {
         cx =>
         workspace_owner(
             user: user,
             projects: projects,
             project: project,
-            initial: (path, String::new())
+            initial: initial
         )
     }
-    .boxed())
+    .boxed()
 }
 
 #[component]
@@ -485,8 +500,12 @@ async fn workspace_owner(
         &ParsedRoute::parse(&initial_path),
     );
     chrome.profile = Some(profile.clone());
+    let action_cx = cx.keyed(user.id);
+    let pending_issues = signal(&action_cx, Vec::<i64>::new);
+    let action_owner =
+        super::deferred_delete::owner(cx, &action_cx, user.id, &project, pending_issues.clone());
+    let page_path = path;
     let page = if common {
-        let page_path = path;
         let page_palette = palette_open.clone();
         view! {
             cx =>
@@ -499,17 +518,8 @@ async fn workspace_owner(
         }
         .boxed()
     } else {
-        let state_cx = cx.keyed((user.id, project.as_str()));
-        let pending_issues = signal(&state_cx, Vec::<i64>::new);
-        let page_path = path;
         view! {
             cx =>
-            (super::deferred_delete::owner(
-                &state_cx,
-                user.id,
-                &project,
-                pending_issues.clone(),
-            ))
             native_workspace_page(
                 path: $(page_path.get()),
                 pending_issues: $(pending_issues.get())
@@ -519,6 +529,7 @@ async fn workspace_owner(
     };
     let region = view! {
         cx =>
+        (action_owner)
         (page)
         (super::issue_peek::shared_owner(cx, user.id))
     }
@@ -676,4 +687,83 @@ async fn native_workspace_page(
         _ => return Err(topcoat::router::error::not_found().into()),
     };
     Ok(content)
+}
+
+#[cfg(test)]
+mod owner_identity_tests {
+    use super::super::home_fixture;
+    use crate::db::{models::CreateProject, queries};
+
+    fn toast_bindings(html: &str) -> Vec<String> {
+        let document = scraper::Html::parse_document(html);
+        let owner = document
+            .select(&scraper::Selector::parse("#native-deferred-delete-owner").unwrap())
+            .next()
+            .expect("every authenticated workspace page mounts the durable toast owner");
+        let bindings = owner
+            .select(&scraper::Selector::parse("[data-native-toast-slot]").unwrap())
+            .map(|slot| {
+                slot.value()
+                    .attr("data-topcoat-bind:data-native-toast-id")
+                    .expect("toast visibility is bound to its actual slot signal")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bindings.len(), 4, "the shared toast stack has four slots");
+        assert_eq!(
+            bindings
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4
+        );
+        bindings
+    }
+
+    #[tokio::test]
+    async fn native_workspace_toast_signal_ids_survive_project_and_common_route_changes() {
+        let fixture = home_fixture::fixture();
+        {
+            let conn = fixture.db.write().unwrap();
+            let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::create_project(
+                &conn,
+                &CreateProject {
+                    identifier: "TWO".into(),
+                    name: "Second workspace".into(),
+                    lead_user_id: Some(user.id),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        for mount in ["", "/app", "/ACC"] {
+            let mut expected = None;
+            let mut signals = None;
+            for path in [
+                "/ACC/issues/ACC-1",
+                "/ACC/issues",
+                "/ACC/pages",
+                "/",
+                "/TWO/issues",
+            ] {
+                let (status, html) =
+                    home_fixture::document(&fixture, mount, path, true, signals.take()).await;
+                assert_eq!(status, axum::http::StatusCode::OK, "{mount}{path}");
+                if path == "/" {
+                    assert!(html.contains("tc-native-home__page"));
+                }
+                let bindings = toast_bindings(&html);
+                signals = Some(super::super::deferred_delete::activated_snapshot(&html));
+                if let Some(expected) = &expected {
+                    assert_eq!(
+                        &bindings, expected,
+                        "route changes retain the same four account-owned signal IDs at {mount}{path}"
+                    );
+                } else {
+                    expected = Some(bindings);
+                }
+            }
+        }
+    }
 }

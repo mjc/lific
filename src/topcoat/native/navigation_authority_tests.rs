@@ -379,10 +379,14 @@ async fn navigation_authority_rechecks_module_location_and_deletion_with_valid_s
     );
 }
 
-async fn deferred_owner_factory(fixture: &home_fixture::Fixture, path: &str) -> String {
+async fn deferred_owner_bindings(
+    fixture: &home_fixture::Fixture,
+    path: &str,
+    token: &str,
+) -> Vec<String> {
     let mut request = Request::builder()
         .uri(path)
-        .header("cookie", format!("lific_token={}", fixture.token))
+        .header("cookie", format!("lific_token={token}"))
         .body(Body::empty())
         .unwrap();
     request.extensions_mut().insert(axum::extract::ConnectInfo(
@@ -394,21 +398,31 @@ async fn deferred_owner_factory(fixture: &home_fixture::Fixture, path: &str) -> 
         .await
         .unwrap();
     let html = std::str::from_utf8(&body).unwrap();
+    deferred_slot_bindings(html)
+}
+
+fn deferred_slot_bindings(html: &str) -> Vec<String> {
     let document = scraper::Html::parse_document(html);
     let selector = scraper::Selector::parse("#native-deferred-delete-owner").unwrap();
     let owner = document
         .select(&selector)
         .next()
-        .unwrap_or_else(|| panic!("deferred owner missing at {path}: {html}"));
-    owner
-        .value()
-        .attr("data-topcoat-on:mount")
-        .unwrap_or_else(|| panic!("deferred mount missing at {path}: {}", owner.html()))
-        .to_owned()
+        .unwrap_or_else(|| panic!("deferred owner missing: {html}"));
+    let bindings = owner
+        .select(&scraper::Selector::parse("[data-native-toast-slot]").unwrap())
+        .map(|slot| {
+            slot.value()
+                .attr("data-topcoat-bind:data-native-toast-id")
+                .expect("every slot binds its actual signal")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(bindings.len(), 4);
+    bindings
 }
 
 #[tokio::test]
-async fn navigation_deferred_owner_keeps_signal_identity_only_within_the_same_project() {
+async fn navigation_deferred_owner_keeps_signal_identity_only_within_the_same_account() {
     let fixture = home_fixture::fixture();
     let (account, _) = account_and_project(&fixture);
     {
@@ -416,13 +430,41 @@ async fn navigation_deferred_owner_keeps_signal_identity_only_within_the_same_pr
         let other = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
         queries::members::upsert_member(&conn, other, account, Role::Viewer).unwrap();
     }
-    let list = deferred_owner_factory(&fixture, "/ACC/issues").await;
-    assert_eq!(list, deferred_owner_factory(&fixture, "/ACC/board").await);
-    assert_eq!(
+    let list = deferred_owner_bindings(&fixture, "/ACC/issues", &fixture.token).await;
+    for path in ["/ACC/board", "/ACC/issues/ACC-1", "/HIDE/issues"] {
+        assert_eq!(
+            list,
+            deferred_owner_bindings(&fixture, path, &fixture.token).await
+        );
+    }
+    let (status, project_html) =
+        home_fixture::document(&fixture, "", "/ACC/issues", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let activated = super::deferred_delete::activated_snapshot(&project_html);
+    let (status, home_html) =
+        home_fixture::document(&fixture, "", "/", true, Some(activated)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(home_html.contains("tc-native-home__page"));
+    assert_eq!(list, deferred_slot_bindings(&home_html));
+    let replacement_token = {
+        let conn = fixture.db.write().unwrap();
+        let replacement: i64 = conn
+            .query_row(
+                "SELECT id FROM users WHERE username = 'non_member'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let project = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        queries::members::upsert_member(&conn, project, replacement, Role::Viewer).unwrap();
+        queries::users::create_session(&conn, replacement, None)
+            .unwrap()
+            .token
+    };
+    assert_ne!(
         list,
-        deferred_owner_factory(&fixture, "/ACC/issues/ACC-1").await
+        deferred_owner_bindings(&fixture, "/ACC/issues", &replacement_token).await
     );
-    assert_ne!(list, deferred_owner_factory(&fixture, "/HIDE/issues").await);
 }
 
 #[tokio::test]

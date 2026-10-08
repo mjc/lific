@@ -15,8 +15,10 @@ use super::super::{context, session};
 use super::{actions, controls, delete_menu};
 
 pub(crate) struct DocumentMetadata {
+    pub(crate) project_identifier: String,
     pub(crate) module_id: Option<i64>,
     pub(crate) module: String,
+    pub(crate) modules: Vec<crate::db::models::Module>,
     pub(crate) labels: Vec<(String, Option<String>)>,
     pub(crate) waits: Vec<crate::db::models::IssueWait>,
     pub(crate) created_at: String,
@@ -28,16 +30,20 @@ pub(crate) fn metadata(
     cx: &Cx,
     issue: &crate::db::models::Issue,
 ) -> Result<DocumentMetadata, LificError> {
+    let modules = {
+        let conn = context::db(cx).read()?;
+        queries::list_modules(&conn, issue.project_id)?
+    };
     let module = match issue.module_id {
         None => "None".to_owned(),
-        Some(id) => {
-            let conn = context::db(cx).read()?;
-            match queries::get_module_name(&conn, id) {
-                Ok(name) => name,
-                Err(LificError::NotFound(_)) => "Unknown".to_owned(),
-                Err(error) => return Err(error),
-            }
-        }
+        Some(id) => modules
+            .iter()
+            .find(|module| module.id == id)
+            .map_or_else(|| "Unknown".to_owned(), |module| module.name.clone()),
+    };
+    let project_identifier = {
+        let conn = context::db(cx).read()?;
+        queries::get_project(&conn, issue.project_id)?.identifier
     };
     let labels = {
         let conn = context::db(cx).read()?;
@@ -55,8 +61,10 @@ pub(crate) fn metadata(
             .collect()
     };
     Ok(DocumentMetadata {
+        project_identifier,
         module_id: issue.module_id,
         module,
+        modules,
         labels,
         waits: issue.waits.clone(),
         created_at: issue.created_at.clone(),

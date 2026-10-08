@@ -12,6 +12,7 @@ pub(crate) mod delete_menu;
 pub(crate) mod export;
 pub(crate) mod list_return;
 mod model;
+pub(crate) mod module_assignment;
 pub(crate) mod route;
 pub(crate) mod view;
 

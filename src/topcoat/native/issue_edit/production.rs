@@ -26,10 +26,24 @@ use crate::db::{
     models::{CreateLabel, CreateModule, Issue, Priority, Role, UpdateIssue},
     queries,
 };
+use topcoat::runtime::Surrogated;
 
 const TITLE: &str = "Production issue initial title";
 const DESCRIPTION: &str = "# Production markdown\n\nExact initial description.";
 const MOUNTS: [&str; 3] = ["", "/app", "/ACC"];
+
+fn named_section<'a>(document: &'a Html, title: &str) -> scraper::ElementRef<'a> {
+    document
+        .select(&Selector::parse("section").unwrap())
+        .find(|section| {
+            section.children().any(|child| {
+                scraper::ElementRef::wrap(child).is_some_and(|heading| {
+                    heading.value().name() == "h2" && heading.text().collect::<String>() == title
+                })
+            })
+        })
+        .unwrap_or_else(|| panic!("IssueDetail renders the {title} metadata section"))
+}
 
 fn fixture() -> Fixture {
     let fixture = home_fixture::fixture();
@@ -322,33 +336,55 @@ async fn native_issue_detail_module_assignment_picker_matches_main_for_both_role
             },
         )
         .unwrap();
-        (queries::get_issue(&conn, issue.id).unwrap(), assigned, inactive)
+        (
+            queries::get_issue(&conn, issue.id).unwrap(),
+            assigned,
+            inactive,
+        )
     };
 
-    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let maintainer = Html::parse_document(&html(response).await);
-    let module_section = maintainer
-        .select(&Selector::parse("section").unwrap())
-        .find(|section| {
-            section
-                .select(&Selector::parse("h2").unwrap())
-                .any(|heading| heading.text().collect::<String>() == "Module")
-        })
-        .expect("IssueDetail renders its Module metadata section");
-    assert!(
-        module_section
-            .select(&Selector::parse("button").unwrap())
-            .any(|button| button.text().collect::<String>().contains("Assigned module")),
-        "Maintainers get an assignment control showing the current module"
-    );
-    assert!(
-        maintainer
-            .select(&Selector::parse("button[title='Open module']").unwrap())
-            .next()
-            .is_some(),
-        "the separate Open module affordance remains available to maintainers"
-    );
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let maintainer = Html::parse_document(&html(response).await);
+        let module_section = named_section(&maintainer, "Module");
+        assert!(
+            module_section
+                .select(&Selector::parse("button").unwrap())
+                .any(|button| button
+                    .text()
+                    .collect::<String>()
+                    .contains("Assigned module")),
+            "Maintainers get an assignment control showing the current module"
+        );
+        let expected_href = format!("{mount}/ACC/modules/{}", assigned.id);
+        assert!(
+            maintainer
+                .select(&Selector::parse("a[title='Open module'][data-topcoat-link]").unwrap())
+                .any(|link| link.attr("href") == Some(expected_href.as_str())),
+            "the separate Open module link is a native route at mount {mount}"
+        );
+        assert!(
+            module_section
+                .select(&Selector::parse("[data-native-issue-module-option='none']").unwrap())
+                .next()
+                .is_some(),
+            "Maintainers can clear the current module"
+        );
+        assert!(
+            module_section
+                .select(
+                    &Selector::parse(&format!(
+                        "[data-native-issue-module-option='{}']",
+                        inactive.id
+                    ))
+                    .unwrap()
+                )
+                .next()
+                .is_some(),
+            "inactive modules remain assignable"
+        );
+    }
     assert_eq!(
         queries::get_issue(&fixture.db.read().unwrap(), issue.id)
             .unwrap()
@@ -362,32 +398,332 @@ async fn native_issue_detail_module_assignment_picker_matches_main_for_both_role
         let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
         queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Viewer).unwrap();
     }
-    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
-    assert_eq!(response.status(), StatusCode::OK);
-    let viewer = Html::parse_document(&html(response).await);
-    let module_section = viewer
-        .select(&Selector::parse("section").unwrap())
-        .find(|section| {
-            section
-                .select(&Selector::parse("h2").unwrap())
-                .any(|heading| heading.text().collect::<String>() == "Module")
-        })
-        .expect("Viewer keeps the Module metadata section");
-    assert_eq!(
-        module_section
-            .select(&Selector::parse("button").unwrap())
-            .count(),
-        0,
-        "Viewers see the assigned module without an assignment control"
-    );
-    assert!(
-        viewer
-            .select(&Selector::parse("button[title='Open module']").unwrap())
-            .next()
-            .is_some(),
-        "Viewers retain the separate Open module affordance"
-    );
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let viewer = Html::parse_document(&html(response).await);
+        let module_section = named_section(&viewer, "Module");
+        assert_eq!(
+            module_section
+                .select(&Selector::parse("button").unwrap())
+                .count(),
+            0,
+            "Viewers see the assigned module without an assignment control"
+        );
+        let expected_href = format!("{mount}/ACC/modules/{}", assigned.id);
+        assert!(
+            viewer
+                .select(&Selector::parse("a[title='Open module'][data-topcoat-link]").unwrap())
+                .any(|link| link.attr("href") == Some(expected_href.as_str())),
+            "Viewers retain the native Open module link at mount {mount}"
+        );
+    }
     assert_eq!(inactive.project_id, issue.project_id);
+}
+
+#[tokio::test]
+async fn native_issue_module_choice_emits_typed_request_and_same_choice_is_a_noop() {
+    let fixture = fixture();
+    let (issue, account, current, next) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let current = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Current module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let next = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Next module".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                module_id: Some(Some(current.id)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (
+            queries::get_issue(&conn, issue.id).unwrap(),
+            account,
+            current,
+            next,
+        )
+    };
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let trigger = document
+        .select(&Selector::parse("[aria-haspopup='listbox']").unwrap())
+        .next()
+        .expect("emitted module picker trigger")
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let option = |id: &str| {
+        document
+            .select(&Selector::parse("[data-native-issue-module-option]").unwrap())
+            .find(|node| node.value().attr("data-native-issue-module-option") == Some(id))
+            .unwrap_or_else(|| panic!("missing emitted module option {id}"))
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap()
+            .to_owned()
+    };
+    let same_handler = option(&current.id.to_string());
+    let next_handler = option(&next.id.to_string());
+    let request = super::module_assignment::ModuleRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        previous_module_id: Some(current.id),
+        next_module_id: Some(next.id),
+    };
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/module_assignment_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&source),
+            "trigger_handler": trigger,
+            "same_handler": same_handler,
+            "option_handler": next_handler,
+            "request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+        }),
+    );
+    assert_eq!(
+        result["request"],
+        serde_json::to_value(request.into_surrogate()).unwrap(),
+        "the packaged runtime forwards the actual emitted typed request"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_module_procedure_returns_coherent_snapshot_and_rechecks_scope() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, assigned, outside) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let assigned = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Paused destination".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let hidden_project = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+        let outside = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: hidden_project,
+                name: "Other project module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        (account, issue, assigned, outside)
+    };
+    let (initial_status, initial_html) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(initial_status, StatusCode::OK);
+    let initial_document = Html::parse_document(&initial_html);
+    let editor = initial_document
+        .select(&Selector::parse("section[data-native-issue-editor='ACC-1']").unwrap())
+        .next()
+        .expect("the production issue editor owns canonical and draft signals");
+    let mount_handler = editor
+        .value()
+        .attr("data-topcoat-on:mount")
+        .expect("the durable issue owner emits its mount handler");
+    let title_binding = initial_document
+        .select(&Selector::parse("input[aria-label='Issue title']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:value")
+        .unwrap();
+    let description_binding = initial_document
+        .select(&Selector::parse("textarea[aria-label='Issue description']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:value")
+        .unwrap();
+
+    // A different writer changes every editable field after this browser has
+    // rendered. The assignment has no expected_seq and must return one fresh,
+    // coherent canonical snapshot with its new sequence.
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                title: Some("Changed before module assignment".into()),
+                description: Some("Fresh canonical body".into()),
+                status: Some(crate::db::models::Status::Active),
+                priority: Some(Priority::High),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let request = super::module_assignment::ModuleRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        previous_module_id: issue.module_id,
+        next_module_id: Some(assigned.id),
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign_module",
+        serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "typed assignment response: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.module_id, Some(assigned.id));
+    assert_eq!(saved.title, "Changed before module assignment");
+    assert_eq!(saved.description, "Fresh canonical body");
+    let expected = super::module_assignment::ModuleAssignmentReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        module_id: Some(assigned.id),
+        module_label: "Paused destination".into(),
+        canonical: Some(super::module_assignment::ModuleAssignmentSnapshot {
+            title: saved.title.clone(),
+            description: saved.description.clone(),
+            status: saved.status.as_str().into(),
+            priority: saved.priority.as_str().into(),
+            blocks: saved.blocks.clone(),
+            blocked_by: saved.blocked_by.clone(),
+            // The service reply retains only relations visible to this
+            // caller, even though the stored issue still includes HIDE-1.
+            relates_to: vec!["ACC-2".to_owned()],
+            duplicates: saved.duplicates.clone(),
+            duplicated_by: saved.duplicated_by.clone(),
+        }),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap(),
+        "the assignment reply's canonical fields and sequence come from the same service commit"
+    );
+    let refreshed = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/module_applied_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&initial_html),
+            "mount_handler": mount_handler,
+            "title_binding": title_binding,
+            "description_binding": description_binding,
+            "initial_title": issue.title,
+            "initial_description": issue.description,
+            "initial_seq": issue.seq.to_string(),
+            "reply": reply,
+        }),
+    );
+    assert_eq!(refreshed["canonical_title"], saved.title);
+    assert_eq!(refreshed["canonical_description"], saved.description);
+    assert_eq!(
+        refreshed["canonical_seq"]
+            .as_str()
+            .and_then(|seq| seq.parse::<i64>().ok()),
+        Some(saved.seq),
+        "the runtime preserves the canonical sequence as a decimal string"
+    );
+    assert_eq!(refreshed["dirty_title"], "Dirty title draft");
+    assert_eq!(refreshed["dirty_description"], "Dirty description draft");
+
+    for (mut denied, message) in [
+        (
+            super::module_assignment::ModuleRequest {
+                account_id: account + 1000,
+                ..request.clone()
+            },
+            "insufficient project permissions",
+        ),
+        (
+            super::module_assignment::ModuleRequest {
+                next_module_id: Some(outside.id),
+                ..request.clone()
+            },
+            "module does not belong to this project",
+        ),
+    ] {
+        denied.previous_module_id = Some(assigned.id);
+        let (status, outcome) = home_fixture::procedure(
+            &fixture,
+            "/__native_issue_edit/assign_module",
+            serde_json::to_value((denied,).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(outcome["v"]["status"]["err"], message);
+        let unchanged = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        assert_eq!(unchanged.module_id, Some(assigned.id));
+        assert_eq!(unchanged.seq, saved.seq);
+    }
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied = super::module_assignment::ModuleRequest {
+        previous_module_id: Some(assigned.id),
+        next_module_id: None,
+        ..request
+    };
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign_module",
+        serde_json::to_value((denied,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        outcome["v"]["status"]["err"],
+        "insufficient project permissions"
+    );
+    let unchanged = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(unchanged.module_id, Some(assigned.id));
+    assert_eq!(unchanged.seq, saved.seq);
 }
 
 #[tokio::test]
