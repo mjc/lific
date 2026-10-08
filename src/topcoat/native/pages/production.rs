@@ -4289,7 +4289,7 @@ async fn native_page_markdown_emitted_image_handlers_obey_owner_lifetime_and_fal
 
     use topcoat::runtime::Surrogated;
     let shard = &result["markdown_shard"];
-    assert_eq!(shard["path"], "/app/__native_pages/markdown");
+    assert_eq!(shard["path"], "/__native_pages/markdown");
     let mut arguments = shard["args"].as_array().unwrap().clone();
     let replacement_source = "![Replacement image](/api/attachments/9007199254741000)";
     fixture
