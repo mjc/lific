@@ -135,10 +135,10 @@ pub(super) async fn create_structure<R: Structure>(
     Json(input): Json<R::Create>,
 ) -> Result<Json<R::Model>, LificError> {
     let project_id = R::create_project_id(&input);
-    require_structure_role(&db, &identity, project_id)?;
-    let created = with_write(&db, |conn| R::create(conn, &input))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(created))
+    crate::services::structure::commit_create(&db, &realtime, &identity, project_id, |conn| {
+        R::create(conn, &input)
+    })
+    .map(Json)
 }
 
 pub(super) async fn update_structure<R: Structure>(
@@ -451,8 +451,14 @@ mod tests {
     #[tokio::test]
     async fn folder_creation_rechecks_current_admin_authority_before_inserting() {
         let (db, admin, _, _, _, _, project_id) = setup_membership_test();
-        let identity = Some(crate::auth::fresh_identity(&admin, crate::actor::Transport::Web));
-        db.write().unwrap().execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id]).unwrap();
+        let identity = Some(crate::auth::fresh_identity(
+            &admin,
+            crate::actor::Transport::Web,
+        ));
+        db.write()
+            .unwrap()
+            .execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id])
+            .unwrap();
 
         let result = super::create_structure::<super::Folders>(
             axum::extract::State(db.clone()),
@@ -463,10 +469,18 @@ mod tests {
                 parent_id: None,
                 name: "Must not create".into(),
             }),
-        ).await;
+        )
+        .await;
 
-        assert!(matches!(result, Err(crate::error::LificError::Forbidden(_))), "stale admin snapshot must not authorize folder creation");
-        assert!(crate::db::queries::list_folders(&db.read().unwrap(), project_id).unwrap().is_empty());
+        assert!(
+            matches!(result, Err(crate::error::LificError::Forbidden(_))),
+            "stale admin snapshot must not authorize folder creation"
+        );
+        assert!(
+            crate::db::queries::list_folders(&db.read().unwrap(), project_id)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
