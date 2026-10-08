@@ -1015,8 +1015,7 @@ async fn page_detail(
         None
     };
     let activity_identity = (account, page.id);
-    let save_feedback =
-        detail_presentation::save_feedback(cx, save_busy.clone(), last_saved.clone());
+    let save_feedback = detail_presentation::save_feedback(cx, save_busy, last_saved);
     let (export_error, export_button) = super::super::document_export::toolbar_fragments(
         cx,
         super::super::document_export::DocumentKind::Page,
