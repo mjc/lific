@@ -68,6 +68,13 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         .value()
         .attr("data-topcoat-on:change")
         .expect("status changes have an emitted Topcoat handler");
+    let save_feedback_saving_binding = document
+        .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:hidden")
+        .unwrap();
     let activity_marker = shard_marker(&html, "/__native_pages/activity");
     let title_input = document
         .select(&scraper::Selector::parse("input[aria-label='Page title']").unwrap())
@@ -114,6 +121,7 @@ async fn native_page_detail_hydrates_status_and_emits_status_write() {
         "expected_seq": expected_seq,
         "status": "active",
         "shard_marker": activity_marker,
+        "save_feedback_saving_binding": save_feedback_saving_binding,
         "reply": outcome,
     }));
     assert_eq!(completion["requests"], 1);
@@ -768,6 +776,13 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
         let activity_marker = shard_marker(&html, "/__native_pages/activity");
+        let save_feedback_saving_binding = document
+            .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:hidden")
+            .unwrap();
         let labels = document
             .select(&scraper::Selector::parse("[data-native-page-labels]").unwrap())
             .next()
@@ -834,6 +849,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                 "phases": [{
                     "mode": "request",
                     "signals": signals,
+                    "save_feedback_saving_binding": save_feedback_saving_binding,
                     "mount_handler": mount_handler,
                     "hidden_binding": hidden_binding,
                     "open_handler": open_handler,
@@ -921,6 +937,7 @@ async fn native_page_label_handlers_reconcile_real_owner_replies_at_every_mount(
                 "phases": [{
                     "mode": "applied",
                     "signals": request_signals,
+                    "save_feedback_saving_binding": save_feedback_saving_binding,
                     "mount_handler": mount_handler,
                     "hidden_binding": hidden_binding,
                     "stale_choice_handler": choice_handler,
@@ -1153,6 +1170,13 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         .value()
         .attr("data-topcoat-bind:aria-pressed")
         .expect("the pin control reflects its owned value");
+    let save_feedback_saving_binding = document
+        .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:hidden")
+        .unwrap();
     let signals = home_fixture::page_signals(&html);
     let activity_marker = shard_marker(&html, "/__native_pages/activity");
 
@@ -1198,6 +1222,7 @@ async fn native_page_detail_pins_and_unpins_through_the_production_route() {
         "expected_seq": expected_seq,
         "pinned": true,
         "shard_marker": activity_marker,
+        "save_feedback_saving_binding": save_feedback_saving_binding,
         "reply": outcome,
     }));
     assert_eq!(completion["requests"], 1);
@@ -3961,4 +3986,95 @@ async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_ha
             "the selected content diff stays open after the canonical revision refresh"
         );
     }
+}
+
+#[tokio::test]
+async fn native_page_detail_renders_viewer_cue_export_and_reactive_save_feedback() {
+    let fixture = home_fixture::fixture();
+    let (page_id, account, _) = seed_page(&fixture, false);
+    for mount in ["", "/app", "/ACC"] {
+        let (status, html) = home_fixture::document(
+            &fixture,
+            mount,
+            &format!("/ACC/pages/{page_id}"),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let badge = document
+            .select(&scraper::Selector::parse("[data-native-page-readonly]").unwrap())
+            .next()
+            .expect("a Viewer sees Main's read-only badge");
+        assert_eq!(badge.text().collect::<String>().trim(), "Read-only");
+        assert_eq!(
+            badge.value().attr("title"),
+            Some("Read-only — you're a viewer on this project. You can still comment."),
+        );
+        let detail = document
+            .select(&scraper::Selector::parse(".native-pages__detail").unwrap())
+            .next()
+            .unwrap();
+        let export = detail
+            .select(&scraper::Selector::parse("button.native-page-detail__export").unwrap())
+            .next()
+            .expect("Page export sits in the detail toolbar for Viewers too");
+        assert!(export.value().attr("data-topcoat-on:click").is_some());
+        assert!(
+            detail
+                .select(&scraper::Selector::parse("[data-native-page-export-error]").unwrap())
+                .next()
+                .is_some()
+        );
+        for state in ["saving", "saved"] {
+            let feedback = detail
+                .select(
+                    &scraper::Selector::parse(&format!(
+                        "[data-native-page-save-feedback='{state}']"
+                    ))
+                    .unwrap(),
+                )
+                .next()
+                .expect("both save feedback states are present for client reactivity");
+            assert!(feedback.value().attr("data-topcoat-bind:hidden").is_some());
+        }
+        let saving = detail
+            .select(&scraper::Selector::parse("[data-native-page-save-feedback='saving']").unwrap())
+            .next()
+            .unwrap();
+        assert!(saving.text().collect::<String>().contains("Saving..."));
+        let saved = detail
+            .select(&scraper::Selector::parse("[data-native-page-save-feedback='saved']").unwrap())
+            .next()
+            .unwrap();
+        assert!(saved.text().collect::<String>().contains("Saved at"));
+        assert!(
+            saved
+                .value()
+                .attr("data-topcoat-bind:data-saved-at")
+                .is_some()
+        );
+    }
+    let project_id =
+        queries::resolve_project_identifier(&fixture.db.read().unwrap(), "ACC").unwrap();
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE project_members SET role = 'maintainer' WHERE project_id = ?1 AND user_id = ?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    assert!(
+        document
+            .select(&scraper::Selector::parse("[data-native-page-readonly]").unwrap())
+            .next()
+            .is_none()
+    );
 }

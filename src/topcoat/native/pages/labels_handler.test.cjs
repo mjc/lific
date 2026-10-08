@@ -69,6 +69,10 @@ async function run(phase) {
     new context.CustomEvent('lific:native-page-label-applied', {detail: cx.hydrate(reply)}));
 
   handler(phase.mount_handler)(click());
+  if (phase.save_feedback_saving_binding) {
+    assert.equal(readBinding(phase.save_feedback_saving_binding), true,
+      'a Page label action starts with Save progress hidden');
+  }
   if (phase.mode === 'remounted_late_reply') {
     const startPin = phase.start_pin ?? true;
     handler(phase.title_input_handler)(textInput('Remounted dirty title'));
@@ -114,6 +118,10 @@ async function run(phase) {
 
     handler(phase.choice_handler)(click());
     assert.equal(requests.length, 1, 'one selection emits one request');
+    if (phase.save_feedback_saving_binding) {
+      assert.equal(readBinding(phase.save_feedback_saving_binding), true,
+        'a pending Page label write does not show Save progress');
+    }
     assert.equal(requests[0].type, phase.event_type);
     assert.deepEqual(plain(requests[0].detail), phase.expected_request);
     assert.equal(requests[0].defaultPrevented, true,
@@ -153,6 +161,10 @@ async function run(phase) {
       'the PageDetail listener ignores another page’s completion');
 
     dispatchReply(phase.reply);
+    if (phase.save_feedback_saving_binding) {
+      assert.equal(readBinding(phase.save_feedback_saving_binding), true,
+        'a committed Page label write still does not show Save progress');
+    }
     handler(phase.stale_choice_handler)(click());
     assert.equal(requests.length, 0,
       'an option rendered before the refreshed catalog cannot send an obsolete choice');

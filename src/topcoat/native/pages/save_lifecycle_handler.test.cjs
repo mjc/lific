@@ -20,6 +20,8 @@ const fixture = handlerFixture(input.signals, (url, options) => {
   return new Promise((resolve, reject) => {
     settleRequest = outcome => outcome === 'success'
       ? resolve({ok: true, json: async () => input.reply})
+      : outcome === 'canonical_error'
+        ? resolve({ok: true, json: async () => input.error_reply})
       : reject(new Error('offline'));
   });
 }, input.browser_source);
@@ -44,6 +46,8 @@ assert.equal(busyIds.length, 1, 'the emitted pin control resolves the shared bus
 const busyId = busyIds[0];
 const titleDraftId = bindingSignal(input.title_binding);
 const bodyDraftId = bindingSignal(input.body_binding);
+const savingId = bindingSignal(input.saving_binding);
+const savedAtId = bindingSignal(input.saved_at_binding);
 const unbox = value => {
   while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
   return value;
@@ -77,7 +81,7 @@ async function run() {
     await flush();
     assert.equal(requests.length, 0, 'disposal before queued Save prevents the procedure call');
     assert.deepEqual(snapshot(), afterClick, 'the queued callback makes no post-disposal signal writes');
-    process.stdout.write(JSON.stringify({passed: true, requests: requests.length}));
+    process.stdout.write(JSON.stringify({passed: true, requests: requests.length, saving: value(savingId), saved_at: value(savedAtId)}));
     return;
   }
 
@@ -86,6 +90,9 @@ async function run() {
   assert.equal(requests.length, 1, 'the actual emitted Save handler started one pending request');
   assert.equal(typeof settleRequest, 'function');
   const request = requests[0];
+  assert.equal(value(savingId), true, 'the actual pending Save exposes its own Saving cue');
+  assert.equal(value(savedAtId), '', 'no prior successful Save time is invented while pending');
+  assert.notEqual(savingId, busyId, 'metadata operation busy is separate from Save progress');
   if (input.scenario === 'live_success' || input.scenario === 'pending_edit_success') {
     if (input.scenario === 'pending_edit_success') {
       handler(input.title_handler)(textInput('Newer title draft'));
@@ -96,6 +103,9 @@ async function run() {
     const activity = emittedShard(input.shard_marker, context, cx, plain);
     assert.deepEqual(activity.args[1], input.reply.v.seq.v,
       'the activity shard reads the sequence adopted from the committed Save reply');
+    assert.equal(value(savingId), false, 'successful Save clears its progress cue');
+    assert.ok(typeof value(savedAtId) === 'string' && value(savedAtId).length > 0,
+      'success stores the browser-local saved time');
     process.stdout.write(JSON.stringify({
       passed: true,
       requests: requests.length,
@@ -103,7 +113,41 @@ async function run() {
       arguments: request,
       activity_shard: activity,
       drafts: [value(titleDraftId), value(bodyDraftId)],
+      saving: value(savingId),
+      saved_at: value(savedAtId),
     }));
+    return;
+  }
+  if (input.scenario === 'live_conflict') {
+    handler(input.title_handler)(textInput('Newer title draft'));
+    handler(input.body_handler)(textInput('Newer body draft'));
+    settleRequest('canonical_error');
+    await flush();
+    assert.equal(value(savingId), false, 'a canonical Save conflict clears its progress cue');
+    assert.equal(value(savedAtId), '', 'a conflict does not create a saved timestamp');
+    assert.deepEqual([value(titleDraftId), value(bodyDraftId)], ['Newer title draft', 'Newer body draft']);
+    const messageId = [...referencedSignals].find(id => {
+      const current = value(id);
+      return typeof current === 'string' && current.includes('changed elsewhere');
+    });
+    assert.ok(messageId, 'the canonical conflict remains visible');
+    process.stdout.write(JSON.stringify({passed: true, saving: value(savingId), saved_at: value(savedAtId), drafts: [value(titleDraftId), value(bodyDraftId)], message: value(messageId)}));
+    return;
+  }
+  if (input.scenario === 'live_rejection') {
+    handler(input.title_handler)(textInput('Newer title draft'));
+    handler(input.body_handler)(textInput('Newer body draft'));
+    settleRequest('rejection');
+    await flush();
+    assert.equal(value(savingId), false, 'a live failed Save clears its progress cue');
+    assert.equal(value(savedAtId), '', 'a failed first Save has no success timestamp');
+    assert.deepEqual([value(titleDraftId), value(bodyDraftId)], ['Newer title draft', 'Newer body draft']);
+    const messageId = [...referencedSignals].find(id => {
+      const current = value(id);
+      return typeof current === 'string' && current.includes("Couldn't save");
+    });
+    assert.ok(messageId, 'the failed Save remains visible');
+    process.stdout.write(JSON.stringify({passed: true, saving: value(savingId), saved_at: value(savedAtId), drafts: [value(titleDraftId), value(bodyDraftId)], message: value(messageId)}));
     return;
   }
   controller.abort();
@@ -120,6 +164,8 @@ async function run() {
     requests: requests.length,
     response,
     arguments: request,
+    saving: value(savingId),
+    saved_at: value(savedAtId),
   }));
 }
 
