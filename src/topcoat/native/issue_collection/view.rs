@@ -1,14 +1,323 @@
+//! Shared issue rows and board cards, selected by the Rust model.
+use super::super::{icons, issue_peek, navigation};
 use super::{data::Collection, model::Selection};
+use crate::db::models::{Issue, Status};
 use topcoat::{
     context::Cx,
-    view::{Attributes, BoxView},
+    view::{Attributes, BoxView, ViewExt, view},
 };
 
 pub(super) fn region<'a>(
-    _cx: &'a Cx,
-    _collection: &Collection,
-    _selection: &Selection,
-    _clear_filters: Attributes,
+    cx: &'a Cx,
+    collection: &Collection,
+    selection: &Selection,
+    clear_filters: Attributes,
 ) -> BoxView<'a> {
-    unimplemented!("native issue collection body is not implemented")
+    if selection.layout == "board" {
+        return board(cx, collection, selection);
+    }
+    let project = collection.project.identifier.clone();
+    let body = if selection.issues.is_empty() {
+        empty(cx, selection.empty_filtered, clear_filters)
+    } else if let Some(groups) = &selection.groups {
+        let groups = groups.iter().map(|group| {
+            let key = group.key.clone(); let label = group.label.clone(); let collapsed = group.collapsed;
+            let label_class = if group.kind == "module" { "font-semibold text-caption" } else { "font-semibold text-caption capitalize" };
+            let count = group.issues.len().to_string();
+            let rows = list_rows(cx, &project, &group.issues, selection);
+            view! {
+                cx =>
+                <section
+                    data-native-issue-group=(key)
+                    data-native-group-collapsed=(collapsed.to_string())
+                >
+                    <div
+                        class="sticky top-0 z-10 flex items-center gap-2 px-6 py-2 bg-[var(--surface)] border-b border-solid border-[var(--border)]"
+                    >
+                        <span class=(label_class)>(label)</span>
+                        <span class="text-micro text-[var(--text-faint)]">(count)</span>
+                    </div>
+                    if !collapsed {
+                        (rows)
+                    }
+                </section>
+            }.boxed()
+        }).collect::<Vec<_>>();
+        view! {
+            cx =>
+            for group in groups {
+                (group)
+            }
+        }
+        .boxed()
+    } else {
+        list_rows(cx, &project, &selection.issues, selection)
+    };
+    let capped = selection.show_search_cap;
+    let count = selection.count_label.clone();
+    view! {
+        cx =>
+        <div
+            data-native-issue-list=(project)
+            data-native-issue-count=(count.clone())
+            class="native-issue-list min-w-0 min-h-0 overflow-auto"
+        >
+            <div
+                class="px-6 py-2 text-caption text-[var(--text-faint)]"
+                aria-label="Issue count"
+            >
+                (count)
+            </div>
+            if capped {
+                <div
+                    class="text-micro text-[var(--text-faint)] uppercase tracking-widest font-semibold px-6 py-2 border-b border-solid border-[var(--border)] bg-[var(--surface)]"
+                >
+                    "Top 50 matches — narrow the query for fewer results"
+                </div>
+            }
+            (body)
+        </div>
+    }.boxed()
+}
+
+fn empty(cx: &Cx, filtered: bool, clear_filters: Attributes) -> BoxView<'_> {
+    view! {
+        cx =>
+        <div class="flex flex-col items-center justify-center py-20 gap-3 text-center">
+            if filtered {
+                <p class="text-[var(--text-muted)] text-body-lg">
+                    "No issues match your filters"
+                </p>
+                <button
+                    type="button"
+                    class="text-body-sm text-[var(--accent)] hover:underline border-0 bg-transparent"
+                    (clear_filters)
+                >
+                    "Clear filters"
+                </button>
+            } else {
+                <p class="text-[var(--text)] text-heading font-medium m-0">
+                    "All quiet here"
+                </p>
+                <p class="text-[var(--text-muted)] text-body m-0">
+                    "No work on the board. Time for a nap… or a fresh idea."
+                </p>
+            }
+        </div>
+    }.boxed()
+}
+
+fn list_rows<'a>(
+    cx: &'a Cx,
+    project: &str,
+    issues: &[Issue],
+    selection: &Selection,
+) -> BoxView<'a> {
+    let rows = issues.iter().map(|issue| {
+        let id = issue.id.to_string(); let status = issue.status; let priority = issue.priority;
+        let identifier = issue.identifier.clone(); let title = issue.title.clone();
+        let href = navigation::attrs(cx, &format!("/{project}/issues/{identifier}"));
+        let peek = issue_peek::button(cx, &identifier);
+        let preview = if let Some(snippet) = selection.snippets.get(&issue.id) { snippet.clone() }
+            else if selection.density == "comfortable" { description_preview(&issue.description) }
+            else { String::new() };
+        let labels = issue.labels.clone();
+        view! {
+            cx =>
+            <li data-native-issue-row=(id) class="group flex items-center">
+                <a class="native-issue-list__row flex-1 min-w-0" (href)>
+                    (icons::status_icon(cx, status, 16))
+                    <span class="native-issue-list__identifier">(identifier)</span>
+                    <span class="flex-1 min-w-0">
+                        <span class="native-issue-list__title block">(title)</span>
+                        if !preview.is_empty() {
+                            <span
+                                class="block truncate text-caption text-[var(--text-faint)]"
+                            >
+                                (preview)
+                            </span>
+                        }
+                    </span>
+                    for label in labels {
+                        <span
+                            class="hidden md:inline text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+                        >
+                            (label)
+                        </span>
+                    }
+                    (icons::priority_icon(cx, priority, 21))
+                </a>
+                <span class="mr-3">(peek)</span>
+            </li>
+        }.boxed()
+    }).collect::<Vec<_>>();
+    view! {
+        cx =>
+        <ul class="native-issue-list__rows" aria-label="Issues">
+            for row in rows {
+                (row)
+            }
+        </ul>
+    }
+    .boxed()
+}
+
+fn description_preview(description: &str) -> String {
+    let line = description
+        .lines()
+        .find(|line| !line.trim().is_empty() && !line.starts_with('#'))
+        .unwrap_or("");
+    let stripped = line
+        .chars()
+        .filter(|character| !"*_`>[]".contains(*character))
+        .collect::<String>();
+    String::from_utf16_lossy(&stripped.trim().encode_utf16().take(160).collect::<Vec<_>>())
+}
+
+fn board<'a>(cx: &'a Cx, collection: &Collection, selection: &Selection) -> BoxView<'a> {
+    let project = collection.project.identifier.clone();
+    let lanes = if let Some(lanes) = &selection.lanes {
+        lanes.iter().map(|lane| {
+            let key = lane.key.clone(); let label = lane.label.clone(); let collapsed = lane.collapsed;
+            let label_class = if lane.kind == "priority" { "text-caption font-semibold capitalize" } else { "text-caption font-semibold" };
+            let count = lane.issues.len().to_string(); let columns = columns(cx, &project, &lane.issues, selection);
+            view! {
+                cx =>
+                <section
+                    data-native-board-lane=(key)
+                    data-native-lane-collapsed=(collapsed.to_string())
+                    class="flex flex-col min-h-0"
+                >
+                    <header
+                        class="flex items-center gap-2 px-4 py-2 border-b border-solid border-[var(--border)] bg-[var(--bg-subtle)]"
+                    >
+                        <span class=(label_class)>(label)</span>
+                        <span class="text-micro text-[var(--text-faint)]">(count)</span>
+                    </header>
+                    if !collapsed {
+                        (columns)
+                    }
+                </section>
+            }.boxed()
+        }).collect::<Vec<_>>()
+    } else {
+        vec![columns(cx, &project, &selection.issues, selection)]
+    };
+    let count = selection.count_label.clone();
+    view! {
+        cx =>
+        <section
+            class="native-board flex-col overflow-auto"
+            data-native-board=(project)
+            data-native-issue-count=(count.clone())
+            aria-label="Issue board"
+        >
+            <div
+                class="px-4 py-2 text-caption text-[var(--text-faint)]"
+                aria-label="Issue count"
+            >
+                (count)
+            </div>
+            for lane in lanes {
+                (lane)
+            }
+        </section>
+    }
+    .boxed()
+}
+
+fn columns<'a>(cx: &'a Cx, project: &str, issues: &[Issue], selection: &Selection) -> BoxView<'a> {
+    let columns = selection
+        .visible_statuses
+        .iter()
+        .map(|status| {
+            let status = *status;
+            let cards = issues
+                .iter()
+                .filter(|issue| issue.status == status)
+                .map(|issue| {
+                    let id = issue.id.to_string();
+                    let identifier = issue.identifier.clone();
+                    let title = issue.title.clone();
+                    let priority = issue.priority;
+                    let href = navigation::attrs(cx, &format!("/{project}/issues/{identifier}"));
+                    let peek = issue_peek::button(cx, &identifier);
+                    let title_class = if matches!(status, Status::Done | Status::Cancelled) {
+                        "native-board__title native-board__title--closed"
+                    } else {
+                        "native-board__title"
+                    };
+                    view! {
+                        cx =>
+                        <div class="relative group">
+                            <a
+                                class="native-board__card"
+                                data-native-board-card=(id)
+                                (href)
+                            >
+                                <div class="native-board__card-top">
+                                    <span class="native-board__identifier">(identifier)</span>
+                                    (icons::priority_icon(cx, priority, 14))
+                                </div>
+                                <h3 class=(title_class)>(title)</h3>
+                            </a>
+                            <span class="absolute right-8 top-2">(peek)</span>
+                        </div>
+                    }
+                    .boxed()
+                })
+                .collect::<Vec<_>>();
+            let count = cards.len().to_string();
+            let collapsed = selection
+                .collapsed_columns
+                .iter()
+                .any(|column| column == status.as_str());
+            view! {
+                cx =>
+                <section
+                    class=(if collapsed {
+                        "native-board__column !basis-12"
+                    } else {
+                        "native-board__column"
+                    })
+                    data-native-board-status=(status.as_str())
+                    data-native-column-collapsed=(collapsed.to_string())
+                    aria-label=(status.as_str())
+                >
+                    <header class="native-board__header">
+                        (icons::status_icon(cx, status, 14))
+                        if !collapsed {
+                            <h2>(status.as_str())</h2>
+                        }
+                        <span
+                            class="native-board__count"
+                            data-native-board-count=(count.clone())
+                        >
+                            (count)
+                        </span>
+                    </header>
+                    if !collapsed {
+                        <div class="native-board__cards">
+                            if cards.is_empty() {
+                                <p class="native-board__empty">"All quiet"</p>
+                            }
+                            for card in cards {
+                                (card)
+                            }
+                        </div>
+                    }
+                </section>
+            }
+            .boxed()
+        })
+        .collect::<Vec<_>>();
+    view! {
+        cx =>
+        <div class="native-board__columns">
+            for column in columns {
+                (column)
+            }
+        </div>
+    }
+    .boxed()
 }
