@@ -1534,6 +1534,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_plan_linked_step_renders_detach_issue_control_for_maintainer() {
+        let fixture = super::super::super::home_fixture::fixture();
+        let plan = {
+            let conn = fixture.db.write().unwrap();
+            let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            let issue_id = crate::db::queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                project_id,
+                account,
+                Role::Maintainer,
+            )
+            .unwrap();
+            crate::db::queries::plans::create_plan(
+                &conn,
+                &crate::db::models::CreatePlan {
+                    project_id,
+                    title: "Release checklist".into(),
+                    issue_id: None,
+                    steps: vec![crate::db::models::CreatePlanStep {
+                        title: "Ship it".into(),
+                        description: "Ready".into(),
+                        issue_id: Some(issue_id),
+                        done: true,
+                        steps: vec![],
+                    }],
+                },
+            )
+            .unwrap()
+        };
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let detach = document
+            .select(&scraper::Selector::parse("button[aria-label='Detach issue']").unwrap())
+            .next();
+        assert!(
+            detach.is_some(),
+            "maintainers can detach a linked issue from a plan step",
+        );
+    }
+
+    #[tokio::test]
     async fn native_plan_anchor_can_be_cleared_by_maintainer() {
         let fixture = super::super::super::home_fixture::fixture();
         let (plan, account, issue_id) = {
