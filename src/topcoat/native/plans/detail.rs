@@ -1637,12 +1637,13 @@ mod tests {
             .value()
             .attr("data-topcoat-on:click")
             .expect("clearing the anchor runs the emitted native mutation handler");
+        let saved_reply = serde_json::to_value("saved".to_owned().into_surrogate()).unwrap();
         let emitted = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/anchor_handler.test.cjs",
             &serde_json::json!({
                 "handler": handler,
                 "signals": super::super::super::home_fixture::page_signals(&html),
-                "response": serde_json::to_value("saved".to_owned().into_surrogate()).unwrap(),
+                "response": saved_reply.clone(),
             }),
         );
         let arguments = emitted["arguments"].clone();
@@ -1723,17 +1724,22 @@ mod tests {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert_eq!(outcome["t"], "String");
-        assert_eq!(outcome["v"], "saved");
+        assert_eq!(outcome, saved_reply);
         let cleared =
             crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id).unwrap();
         assert_eq!(cleared.issue_id, None);
         assert_eq!(cleared.anchor_identifier, None);
-        assert_eq!(cleared.title, "Release checklist");
-        assert_eq!(cleared.status, "active");
-        assert_eq!(cleared.steps.len(), 1);
-        assert_eq!(cleared.steps[0].title, "Ship it");
-        assert_eq!(cleared.steps[0].description, "Ready");
+        assert_eq!(cleared.title, plan.title);
+        assert_eq!(cleared.status, plan.status);
+        assert_eq!(cleared.step_count, plan.step_count);
+        assert_eq!(cleared.done_count, plan.done_count);
+        assert_eq!(cleared.steps.len(), plan.steps.len());
+        for (after, before) in cleared.steps.iter().zip(&plan.steps) {
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.title, before.title);
+            assert_eq!(after.description, before.description);
+            assert_eq!(after.done, before.done);
+        }
 
         {
             let conn = fixture.db.write().unwrap();

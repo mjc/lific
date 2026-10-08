@@ -31,7 +31,9 @@ async function run() {
   assert.equal(initialSignals[revision].v, '0', 'owner revision starts at zero');
   assert.equal(signals[revision].v, '1', 'owner revision increments after the saved response');
   for (const [id, value] of Object.entries(initialSignals)) {
-    if (value.t === 'String') {
+    const isString = typeof value === 'string' ||
+      (value && typeof value === 'object' && ['String', 'str'].includes(value.t));
+    if (isString) {
       assert.deepEqual(signals[id], value,
         'saving the anchor preserves title and step drafts');
     }
