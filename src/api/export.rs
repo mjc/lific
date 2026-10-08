@@ -2,23 +2,16 @@ use axum::Extension;
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
 
-use crate::{
-    authz,
-    db::{DbPool, models::Role},
-    error::LificError,
-};
-
-use super::with_read;
+use crate::{db::DbPool, error::LificError};
 
 // Preserve the established API/archive helper and test-gate entry points.
+pub(super) use crate::services::export::stream_body;
 #[cfg(test)]
 use crate::services::export::{EXPORT_STREAM_CHUNK_BYTES, stream_response_with_timeouts};
 #[cfg(test)]
 pub(super) use crate::services::export::{EXPORT_TEST_GATE, ExportTestGate};
-pub(super) use crate::services::export::{blocking_export, single_file_response, stream_body};
-
 #[cfg(test)]
-pub(super) use crate::services::export::{PreparedExport, stream_response};
+pub(super) use crate::services::export::{PreparedExport, blocking_export, stream_response};
 
 #[derive(serde::Deserialize)]
 pub(super) struct ExportQuery {
@@ -40,33 +33,7 @@ pub(super) async fn export_page(
     Path(identifier): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, LificError> {
-    if let Some(format) = q.format.as_deref()
-        && !matches!(format, "json" | "markdown")
-    {
-        return Err(LificError::BadRequest(
-            "invalid export format. Expected 'markdown' or 'json'".into(),
-        ));
-    }
-    let project_id = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_page_identifier(conn, &identifier)?;
-        crate::db::queries::page_project_id(conn, id)
-    })?;
-    match project_id {
-        Some(pid) => authz::require_role(&db, &identity, pid, Role::Viewer)?,
-        None => authz::require_workspace_admin(&db, &identity)?,
-    }
-    let slot = db.acquire_export_slot()?;
-    let (bundle, slot) = blocking_export(slot, move || {
-        with_read(&db, |conn| crate::export::export_page(conn, &identifier))
-    })
-    .await?;
-    single_file_response(
-        bundle,
-        q.format.as_deref().unwrap_or("markdown"),
-        "page.md",
-        slot,
-    )
-    .await
+    crate::services::export::page(db, &identity, identifier, q.format).await
 }
 
 pub(super) async fn export_project(

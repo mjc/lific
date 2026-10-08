@@ -430,6 +430,13 @@ pub fn export_page(conn: &Connection, identifier: &str) -> Result<ExportBundle, 
 
 fn export_page_snapshot(conn: &Connection, identifier: &str) -> Result<ExportBundle, LificError> {
     let page_id = queries::resolve_page_identifier(conn, identifier)?;
+    export_page_snapshot_by_id(conn, page_id)
+}
+
+pub(crate) fn export_page_snapshot_by_id(
+    conn: &Connection,
+    page_id: i64,
+) -> Result<ExportBundle, LificError> {
     let oversized: i64 = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1 AND deleted_at IS NULL AND (length(CAST(title AS BLOB)) > ?2 OR length(CAST(content AS BLOB)) > ?2))",
         rusqlite::params![page_id, MAX_EXPORT_FILE_BYTES],
