@@ -78,6 +78,17 @@ function fixture() {
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted Module updates.');
   };
+  const updateLabels=(mode='update',accepted=true)=>{
+    const sample=input.module_requests['42:9:null'].v;
+    const request=input.label_requests?.[mode] ?? {t:'Record',v:{
+      mode,account_id:sample.account_id,issue_id:sample.issue_id,identifier:sample.identifier,
+      labels:{t:'Vec',bits:64,v:['bug']},name:mode==='create'?'new label':'',color:'#2563EB',
+    }};
+    const event=new Event('lific:native-issue-label-request',{cancelable:true});
+    event.detail=base.hydrate(request);
+    window.dispatchEvent(event);
+    assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted label updates.');
+  };
   const advance=amount=>{
     const target=now+amount;
     while(true){const next=[...timers].filter(([,timer])=>timer.at<=target).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;timers.delete(next[0]);now=next[1].at;next[1].callback();}
@@ -100,12 +111,19 @@ function fixture() {
   const failModule=async()=>{pending.shift().resolve({ok:true,json:async()=>input.module_failure});await flush();};
   const texts=()=>signalIds.map(id=>base.signal(id).get().toString());
   const snapshot=()=>Object.fromEntries(signalIds.map(id=>[id,base.signal(id).get().dehydrate()]));
-  return {schedule,assignModule,advance,replace,finish,finishModule,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,updateLabels,advance,replace,finish,finishModule,failNetwork,failModule,texts,snapshot,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
 if(input.probe_only){
   process.stdout.write(JSON.stringify(fixture().snapshot()));
   return;
 }
+test('Label writes start immediately without an Undo action',async()=>{
+  const f=fixture();f.updateLabels();await flush();
+  assert.equal(f.calls.length,1);
+  assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/update_labels'));
+  assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+  assert.deepEqual(f.navigations,[]);
+});
 test('Module updates start immediately from the durable owner',async()=>{
   const f=fixture();f.assignModule();await flush();
   assert.equal(f.calls.length,1);
