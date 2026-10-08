@@ -12,7 +12,7 @@ use tower::ServiceExt;
 
 use super::super::home_fixture::{self, Fixture};
 use crate::db::{
-    models::{Role, UpdateIssue},
+    models::{CreatePage, Role, UpdateIssue},
     queries,
 };
 
@@ -174,12 +174,118 @@ async fn native_issue_export_normal_issue_document_exposes_export_to_both_author
                 "the actual normal document has one private Export button for {role:?}"
             );
             assert!(exports[0].value().attr("disabled").is_none());
+            assert_eq!(exports[0].value().attr("type"), Some("button"));
+            assert_eq!(
+                exports[0].value().attr("id"),
+                Some("native-issue-export-ACC-1")
+            );
+            assert!(
+                exports[0]
+                    .value()
+                    .attr("class")
+                    .unwrap()
+                    .contains("toolbar-pill")
+            );
+            assert_eq!(
+                document
+                    .select(&Selector::parse("[data-native-issue-export-error]").unwrap())
+                    .count(),
+                1,
+                "the shared toolbar retains the existing Issue error hook"
+            );
+            let error_at = markup.find("data-native-issue-export-error").unwrap();
+            let status_at = markup.find("native-issue-detail__save-status").unwrap();
+            let export_at = markup.find("native-issue-export-ACC-1").unwrap();
+            assert!(error_at < status_at && status_at < export_at);
+            match role {
+                Role::Maintainer | Role::Lead => {
+                    let mode_at = markup.find("native-issue-detail__mode").unwrap();
+                    assert!(error_at < mode_at && mode_at < status_at);
+                }
+                Role::Viewer => assert!(!markup.contains("native-issue-detail__mode")),
+            }
             assert!(
                 !markup.contains("/api/export/issues/"),
                 "the native control must not call the legacy API transport"
             );
         }
     }
+}
+
+#[tokio::test]
+async fn shared_document_export_executes_actual_issue_and_page_ssr_handlers() {
+    let fixture = export_fixture(Role::Viewer);
+    let (page_id, page_identifier) = {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        let page = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project_id),
+                title: "Native page export".into(),
+                content: "Committed page bytes".into(),
+                status: "draft".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (page.id, page.identifier)
+    };
+    let mut cases = Vec::new();
+    for mount in MOUNTS {
+        for (kind, path, selector, endpoint) in [
+            (
+                "issue",
+                "/ACC/issues/ACC-1".to_owned(),
+                "button.native-issue-detail__export",
+                format!("{mount}/__native_issue_export/ACC-1"),
+            ),
+            (
+                "page",
+                format!("/ACC/pages/{page_id}"),
+                "button.native-page-detail__export",
+                format!("{mount}/__native_page_export/{page_identifier}"),
+            ),
+        ] {
+            let (status, html) = home_fixture::document(&fixture, mount, &path, true, None).await;
+            assert_eq!(status, StatusCode::OK, "{kind} SSR at mount {mount}");
+            let document = Html::parse_document(&html);
+            let button = document
+                .select(&Selector::parse(selector).unwrap())
+                .next()
+                .unwrap_or_else(|| panic!("{kind} SSR exposes its actual export toolbar"));
+            if kind == "page" {
+                let error = document
+                    .select(&Selector::parse("[data-native-page-export-error]").unwrap())
+                    .next()
+                    .expect("Page SSR emits its export error fragment");
+                let classes = error.value().attr("class").unwrap();
+                assert!(classes.contains("hidden sm:inline"));
+                assert!(classes.contains("text-[var(--tc-danger)]"));
+            }
+            let click = button
+                .value()
+                .attr("data-topcoat-on:click")
+                .expect("the button has a real emitted click handler");
+            let mount_handler = button
+                .value()
+                .attr("data-topcoat-on:mount")
+                .expect("the button has a real emitted mount handler");
+            cases.push(serde_json::json!({
+                "kind": kind,
+                "endpoint": endpoint,
+                "click": click,
+                "mount": mount_handler,
+                "signals": home_fixture::page_signals(&html),
+            }));
+        }
+    }
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/document_export_handler.test.cjs",
+        &serde_json::json!({"cases": cases}),
+    );
+    assert_eq!(result["passed"], true);
+    assert_eq!(result["cases"].as_array().unwrap().len(), 6);
 }
 
 #[tokio::test]
