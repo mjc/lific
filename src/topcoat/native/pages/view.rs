@@ -1018,7 +1018,7 @@ async fn page_detail(
     let title_revision = signal(cx, || 0_usize);
     let title_controls = title_editor::Controls {
         editing: title_editing.clone(),
-        revision: title_revision.clone(),
+        revision: title_revision,
         busy: busy.clone(),
         save_busy: save_busy.clone(),
         message: message.clone(),
