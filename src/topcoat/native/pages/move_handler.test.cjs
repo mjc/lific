@@ -101,7 +101,9 @@ async function run() {
   const expandedBinding = input.expanded_binding
     ? vm.runInNewContext(`cx => (${input.expanded_binding})`, context)
     : null;
-  const readExpanded = () => expandedBinding ? unbox(expandedBinding(cx)) : null;
+  const readExpanded = () => expandedBinding
+    ? unbox(expandedBinding(cx).dehydrate()) === 'true'
+    : null;
   if (input.scenario === 'success' && input.tree_toggle_handler) {
     const folderTarget = {
       closest(selector) {
