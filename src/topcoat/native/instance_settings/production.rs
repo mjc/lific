@@ -11,11 +11,6 @@ async fn native_instance_settings_admin_route_loads_authorized_settings_and_rost
         let viewer = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
             .unwrap();
-        let own_display_name = if viewer.display_name.trim().is_empty() {
-            viewer.username.clone()
-        } else {
-            viewer.display_name.clone()
-        };
         crate::db::queries::settings::update(
             &conn,
             crate::db::queries::settings::InstanceSettingsPatch {
@@ -53,6 +48,11 @@ async fn native_instance_settings_admin_route_exposes_member_roster_actions() {
         let viewer = crate::db::queries::users::validate_session(&conn, &fixture.token).unwrap();
         conn.execute("UPDATE users SET is_admin = 1 WHERE id = ?1", [viewer.id])
             .unwrap();
+        let own_display_name = if viewer.display_name.trim().is_empty() {
+            viewer.username.clone()
+        } else {
+            viewer.display_name.clone()
+        };
         crate::db::queries::users::create_user(
             &conn,
             &crate::db::models::CreateUser {
