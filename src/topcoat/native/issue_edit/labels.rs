@@ -62,18 +62,15 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
         .iter()
         .map(|label| (label.name.clone(), label.color.clone()))
         .collect::<Vec<_>>();
-    let chips = attached
-        .iter()
-        .map(|name| {
-            (
-                name.clone(),
-                catalog
-                    .iter()
-                    .find(|label| label.name == *name)
-                    .map(|label| label.color.clone()),
-            )
-        })
-        .collect::<Vec<_>>();
+    let chips = attached.iter().map(|name| {
+        (
+            name.clone(),
+            catalog
+                .iter()
+                .find(|label| label.name == *name)
+                .map(|label| label.color.clone()),
+        )
+    });
     let identity = (account_id, issue_id, identifier.to_owned());
     let toggle_open = open.clone();
     let status_open = menus.0;
@@ -164,7 +161,6 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
     }
     .boxed();
     let chip_views = chips
-        .into_iter()
         .map(|(name, tint)| {
             let action = can_edit.then(|| remove_button(cx, identity.clone(), &name));
             super::super::label_chip::render_with_action(cx, name, tint.as_deref(), action)
