@@ -82,7 +82,7 @@ pub(super) fn content<'a>(
     let name_error = signal(&owner, String::new);
     let description = signal(&owner, || module.description.clone());
     let description_controls = DescriptionControls {
-        value: description.clone(),
+        value: description,
         draft: signal(&owner, || module.description.clone()),
         editing: signal(&owner, || false),
         saving: signal(&owner, || false),
@@ -226,7 +226,7 @@ pub(super) fn content<'a>(
         description_controls.value.clone(),
         description_controls.draft.clone(),
         description_controls.editing.clone(),
-        description_controls.saving.clone(),
+        description_controls.saving,
     );
     let authority_marker = authority.encoded();
     let name = module.name.clone();
@@ -764,15 +764,7 @@ fn description_owner_attributes(
                     false
                 );
                 if editor_target {
-                    if event.alt_key {
-                        false
-                    } else if event.shift_key {
-                        false
-                    } else if event.ctrl_key {
-                        true
-                    } else {
-                        event.meta_key
-                    }
+                    if event.ctrl_key { true } else { event.meta_key }
                 } else {
                     false
                 }
