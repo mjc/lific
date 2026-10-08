@@ -1126,52 +1126,64 @@ fn status_options<'a>(cx: &'a Cx, controls: &Controls) -> BoxView<'a> {
     .boxed()
 }
 
-#[shard("/__native_issue_edit/metadata")]
-async fn native_issue_metadata(
-    cx: &Cx,
-    identifier: String,
-    revision: i64,
-    catalog_revision: i64,
-    dates: bool,
-    menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
-    picker_state: super::labels::PickerState,
-) -> topcoat::Result<impl View> {
-    // The saved cursor invalidates this read; it never supplies authority.
-    let _ = (revision, catalog_revision);
-    let caller = super::super::session::read(cx, super::super::context::caller(cx))?;
-    let user = super::super::session::read(cx, crate::api::require_user(&caller.identity))?;
-    let db = super::super::context::db(cx);
-    let issue = super::super::session::read(
-        cx,
-        crate::services::issues::resolve_issue(db, &caller.identity, &identifier),
-    )?;
-    let can_edit = match crate::authz::require_role(
-        db,
-        &caller.identity,
-        issue.project_id,
-        crate::db::models::Role::Maintainer,
-    ) {
-        Ok(()) => true,
-        Err(crate::error::LificError::Forbidden(_)) => false,
-        Err(error) => return super::super::session::read(cx, Err(error)),
-    };
-    let metadata = super::super::session::read(cx, super::route::metadata(cx, &issue))?;
-    let module_request = super::module_assignment::ModuleRequest {
-        account_id: user.id,
-        issue_id: issue.id,
-        identifier: issue.identifier.clone(),
-        previous_module_id: issue.module_id,
-        next_module_id: None,
-    };
-    Ok(metadata_view(
-        cx,
-        metadata,
-        dates,
-        can_edit,
-        module_request,
-        menu_signals,
-        picker_state,
-    ))
+use metadata_shard::native_issue_metadata;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Topcoat emits shard handlers with an extra context argument and drops function lint attributes"
+)]
+mod metadata_shard {
+    use super::super::super::{context, session};
+    use super::super::{labels, module_assignment, route};
+    use super::*;
+
+    #[shard("/__native_issue_edit/metadata")]
+    pub(super) async fn native_issue_metadata(
+        cx: &Cx,
+        identifier: String,
+        revision: i64,
+        catalog_revision: i64,
+        dates: bool,
+        menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+        picker_state: labels::PickerState,
+    ) -> topcoat::Result<impl View> {
+        // The saved cursor invalidates this read; it never supplies authority.
+        let _ = (revision, catalog_revision);
+        let caller = session::read(cx, context::caller(cx))?;
+        let user = session::read(cx, crate::api::require_user(&caller.identity))?;
+        let db = context::db(cx);
+        let issue = session::read(
+            cx,
+            crate::services::issues::resolve_issue(db, &caller.identity, &identifier),
+        )?;
+        let can_edit = match crate::authz::require_role(
+            db,
+            &caller.identity,
+            issue.project_id,
+            crate::db::models::Role::Maintainer,
+        ) {
+            Ok(()) => true,
+            Err(crate::error::LificError::Forbidden(_)) => false,
+            Err(error) => return session::read(cx, Err(error)),
+        };
+        let metadata = session::read(cx, route::metadata(cx, &issue))?;
+        let module_request = module_assignment::ModuleRequest {
+            account_id: user.id,
+            issue_id: issue.id,
+            identifier: issue.identifier.clone(),
+            previous_module_id: issue.module_id,
+            next_module_id: None,
+        };
+        Ok(metadata_view(
+            cx,
+            metadata,
+            dates,
+            can_edit,
+            module_request,
+            menu_signals,
+            picker_state,
+        ))
+    }
 }
 
 fn metadata_view<'a>(
@@ -1247,7 +1259,7 @@ fn metadata_view<'a>(
             catalog: &metadata.label_catalog,
             attached: &attached_labels,
             can_edit,
-            menus: menu_signals.clone(),
+            menus: menu_signals,
             state: picker_state,
         },
     );

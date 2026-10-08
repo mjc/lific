@@ -145,9 +145,9 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
         color.clone(),
         error.clone(),
         color_open.clone(),
-        hex_draft.clone(),
-        hex_bad.clone(),
-        creating.clone(),
+        hex_draft,
+        hex_bad,
+        creating,
     );
     let options_identity = identity.clone();
     let options_attached = attached.to_vec();
@@ -291,7 +291,7 @@ async fn native_label_options(
         default_color.clone()
     } else {
         super::super::project_overview::labels_model::normalize_hex(&selected_color_input)
-            .unwrap_or(default_color.clone())
+            .unwrap_or_else(|| default_color.clone())
     };
     let palette_views = palette
         .iter()
@@ -313,10 +313,10 @@ async fn native_label_options(
         account_id: identity.0,
         issue_id: identity.1,
         identifier: identity.2.clone(),
-        name: base_name.clone(),
+        name: base_name,
         color: selected_color.clone(),
     };
-    let create_error = error.clone();
+    let create_error = error;
     let create_busy = creating.clone();
     let create_color = picked_color.clone();
     let browser = browser::bindings();
