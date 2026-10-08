@@ -6,6 +6,15 @@ use topcoat::{
 };
 
 pub(crate) fn render<'a>(cx: &'a Cx, name: String, color: Option<&str>) -> BoxView<'a> {
+    render_with_action(cx, name, color, None)
+}
+
+pub(crate) fn render_with_action<'a>(
+    cx: &'a Cx,
+    name: String,
+    color: Option<&str>,
+    action: Option<BoxView<'a>>,
+) -> BoxView<'a> {
     let style = color.map_or_else(
         || "border-color:var(--border)".to_owned(),
         |color| {
@@ -20,6 +29,9 @@ pub(crate) fn render<'a>(cx: &'a Cx, name: String, color: Option<&str>) -> BoxVi
             style=(style)
         >
             (name)
+            if let Some(action) = action {
+                (action)
+            }
         </span>
     }
     .boxed()

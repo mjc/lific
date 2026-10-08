@@ -1183,6 +1183,27 @@ fn metadata_view<'a>(
     menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
     picker_state: super::labels::PickerState,
 ) -> BoxView<'a> {
+    if dates {
+        return view! {
+            cx =>
+            <div class="native-issue-detail__metadata-read" style="display: contents;">
+                <div class="native-issue-detail__divider" aria-hidden="true"></div>
+                <section>
+                    <h2>"Created"</h2>
+                    <p class="native-issue-detail__date">
+                        (date_text(cx, metadata.created_at))
+                    </p>
+                </section>
+                <section>
+                    <h2>"Updated"</h2>
+                    <p class="native-issue-detail__date">
+                        (date_text(cx, metadata.updated_at))
+                    </p>
+                </section>
+            </div>
+        }
+        .boxed();
+    }
     let waits = metadata
         .waits
         .iter()
@@ -1233,48 +1254,32 @@ fn metadata_view<'a>(
     view! {
         cx =>
         <div class="native-issue-detail__metadata-read" style="display: contents;">
-            if dates {
-                <div class="native-issue-detail__divider" aria-hidden="true"></div>
+            <section>
+                <h2>"Module"</h2>
+                (super::module_assignment::field(
+                    cx,
+                    &metadata,
+                    module_request,
+                    can_edit,
+                    module_menus,
+                    module_open,
+                ))
+            </section>
+            <section>
+                <h2>"Labels"</h2>
+                (label_picker)
+            </section>
+            <div class="native-issue-detail__divider" aria-hidden="true"></div>
+            if can_edit || !waits.is_empty() {
                 <section>
-                    <h2>"Created"</h2>
-                    <p class="native-issue-detail__date">
-                        (date_text(cx, metadata.created_at))
-                    </p>
-                </section>
-                <section>
-                    <h2>"Updated"</h2>
-                    <p class="native-issue-detail__date">
-                        (date_text(cx, metadata.updated_at))
-                    </p>
-                </section>
-            } else {
-                <section>
-                    <h2>"Module"</h2>
-                    (super::module_assignment::field(
-                        cx,
-                        &metadata,
-                        module_request,
-                        can_edit,
-                        module_menus,
-                        module_open,
-                    ))
-                </section>
-                <section>
-                    <h2>"Labels"</h2>
-                    (label_picker)
-                </section>
-                <div class="native-issue-detail__divider" aria-hidden="true"></div>
-                if can_edit || !waits.is_empty() {
-                    <section>
-                        <h2>"Waiting on"</h2>
-                        for (label, note) in waits {
-                            <span>(label)</span>
-                            if !note.is_empty() {
-                                <small>(note)</small>
-                            }
+                    <h2>"Waiting on"</h2>
+                    for (label, note) in waits {
+                        <span>(label)</span>
+                        if !note.is_empty() {
+                            <small>(note)</small>
                         }
-                    </section>
-                }
+                    }
+                </section>
             }
         </div>
     }
