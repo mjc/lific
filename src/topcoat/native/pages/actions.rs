@@ -1,7 +1,7 @@
 //! Authenticated native page writes. Services own authorization and SQLite.
 use super::super::{context, session};
 use crate::{
-    db::models::{CreatePage, Page, UpdatePage},
+    db::models::{CreateFolder, CreatePage, Folder, Page, UpdatePage},
     error::LificError,
     realtime::RealtimeHub,
 };
@@ -44,6 +44,14 @@ pub(super) struct MoveOutcome {
     pub status: Result<String, String>,
 }
 
+#[record]
+#[derive(Clone)]
+pub(super) struct FolderOutcome {
+    pub status: Result<String, String>,
+    pub folder_id: Option<i64>,
+    pub folder_name: Option<String>,
+}
+
 #[procedure("/__native_pages/create")]
 pub(super) async fn create(
     cx: &Cx,
@@ -75,6 +83,71 @@ pub(super) async fn create(
         })
         .await;
     Ok(result.map_or_else(classify, page_outcome))
+}
+
+#[procedure("/__native_pages/create-folder")]
+pub(super) async fn create_folder(
+    cx: &Cx,
+    account: i64,
+    project_id: i64,
+    name: String,
+    parent_value: String,
+) -> topcoat::Result<FolderOutcome> {
+    let caller = session::read(cx, context::caller(cx))?;
+    match crate::api::require_user(&caller.identity) {
+        Ok(user) if user.id == account => {}
+        Ok(_) => return Ok(failed_folder("forbidden")),
+        Err(LificError::Forbidden(message)) if message == "authentication required" => {
+            return Ok(failed_folder("reauth"));
+        }
+        Err(error) => {
+            let result = classify(error);
+            return Ok(FolderOutcome {
+                status: result.status,
+                folder_id: None,
+                folder_name: None,
+            });
+        }
+    }
+    let parent_id = if parent_value.is_empty() || parent_value == "0" {
+        None
+    } else {
+        match parent_value.parse::<i64>() {
+            Ok(id) if id > 0 => Some(id),
+            _ => return Ok(failed_folder("Invalid parent folder.")),
+        }
+    };
+    let result = caller
+        .scope(async {
+            crate::services::structure::commit_create(
+                context::db(cx),
+                app_context::<RealtimeHub>(cx),
+                &caller.identity,
+                project_id,
+                |conn| {
+                    crate::db::queries::create_folder(
+                        conn,
+                        &CreateFolder {
+                            project_id,
+                            parent_id,
+                            name,
+                        },
+                    )
+                },
+            )
+        })
+        .await;
+    Ok(result.map_or_else(
+        |error| {
+            let result = classify(error);
+            FolderOutcome {
+                status: result.status,
+                folder_id: None,
+                folder_name: None,
+            }
+        },
+        folder_outcome,
+    ))
 }
 
 #[procedure("/__native_pages/save")]
@@ -215,6 +288,22 @@ pub(super) async fn move_to_folder(
 fn failed_move(message: &str) -> MoveOutcome {
     MoveOutcome {
         status: Err(message.to_owned()),
+    }
+}
+
+fn folder_outcome(folder: Folder) -> FolderOutcome {
+    FolderOutcome {
+        status: Ok("saved".into()),
+        folder_id: Some(folder.id),
+        folder_name: Some(folder.name),
+    }
+}
+
+fn failed_folder(message: &str) -> FolderOutcome {
+    FolderOutcome {
+        status: Err(message.into()),
+        folder_id: None,
+        folder_name: None,
     }
 }
 
