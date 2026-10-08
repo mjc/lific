@@ -200,7 +200,7 @@ async fn native_files_route_activates_the_shared_owner_after_home_navigation() {
 async fn native_files_delete_success_reports_reference_count() {
     for mount in ["", "/app", "/ACC"] {
         let fixture = super::super::home_fixture::fixture();
-        let (account, id, signals, root_handler, button_id, success_text) =
+        let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, false).await;
         let arguments = serde_json::to_value((account, id).into_surrogate()).unwrap();
         let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
@@ -219,7 +219,7 @@ async fn native_files_delete_success_reports_reference_count() {
             &serde_json::json!({
                 "phase":"delete", "mount":mount, "signals":signals,
                 "root_handler":root_handler,
-                "button":{"id":button_id,"success":"untrusted DOM copy"},
+                "button":{"id":button_id},
                 "expected_arguments":expected_arguments, "nested_icon":true,
                 "reply":reply, "success_request":success_request,
                 "browser_source":super::super::shell_handlers::source_named(
@@ -266,7 +266,6 @@ async fn capture_delete_handler(
     i64,
     i64,
     serde_json::Map<String, serde_json::Value>,
-    String,
     String,
     String,
 ) {
@@ -345,11 +344,13 @@ async fn capture_delete_handler(
         .attr("data-native-files-confirm-delete")
         .expect("Delete button carries its exact attachment intent")
         .to_owned();
-    let success = button
-        .value()
-        .attr("data-native-files-delete-success")
-        .expect("Delete button carries its precomputed Main success copy")
-        .to_owned();
+    assert!(
+        button
+            .value()
+            .attr("data-native-files-delete-success")
+            .is_none(),
+        "the procedure response owns the success copy"
+    );
     let root_selector = scraper::Selector::parse("[data-native-files]").unwrap();
     let root_handler = confirmed
         .select(&root_selector)
@@ -363,14 +364,13 @@ async fn capture_delete_handler(
         super::super::home_fixture::page_signals(&confirmed_html),
         root_handler,
         id_attr,
-        success,
     )
 }
 #[tokio::test]
 async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at_each_mount() {
     for mount in ["", "/app", "/ACC"] {
         let fixture = super::super::home_fixture::fixture();
-        let (account, id, signals, root_handler, button_id, success_text) =
+        let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, false).await;
         let conn = fixture.db.write().unwrap();
         queries::attachments::delete_attachment(&conn, id).unwrap();
@@ -396,7 +396,7 @@ async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at
         let failed = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"service_error", "mount":mount,
-                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id}, "reply":reply,
                 "expected_arguments":expected_arguments, "error_request":error,
                 "browser_source":super::super::shell_handlers::source_named(
                     "browser", super::super::browser::factory(),
@@ -414,7 +414,7 @@ async fn native_files_normal_delete_service_error_uses_real_request_and_reply_at
 async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at_each_mount() {
     for mount in ["", "/app", "/ACC"] {
         let fixture = super::super::home_fixture::fixture();
-        let (account, id, signals, root_handler, button_id, success_text) =
+        let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, true).await;
         let conn = fixture.db.write().unwrap();
         queries::attachments::delete_attachment(&conn, id).unwrap();
@@ -440,7 +440,7 @@ async fn native_files_orphan_delete_service_error_uses_real_request_and_reply_at
         let failed = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"service_error", "mount":mount,
-                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":success_text}, "reply":reply,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id}, "reply":reply,
                 "expected_arguments":expected_arguments, "error_request":error,
                 "browser_source":super::super::shell_handlers::source_named(
                     "browser", super::super::browser::factory(),
@@ -490,7 +490,7 @@ async fn native_files_delete_transport_failures_are_distinct_and_preserve_revisi
     for mount in ["", "/app", "/ACC"] {
         for orphan in [false, true] {
             let fixture = super::super::home_fixture::fixture();
-            let (account, id, signals, root_handler, button_id, success_text) =
+            let (account, id, signals, root_handler, button_id) =
                 capture_delete_handler(&fixture, mount, orphan).await;
             let expected_arguments =
                 serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
@@ -502,7 +502,7 @@ async fn native_files_delete_transport_failures_are_distinct_and_preserve_revisi
                 let failed = super::super::home_fixture::evaluate_handler(
                     "src/topcoat/native/files/delete_feedback.test.cjs",
                     &serde_json::json!({ "phase":phase, "mount":mount,
-                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
+                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id},
                         "expected_arguments":expected_arguments, "error_request":error,
                 "browser_source":super::super::shell_handlers::source_named(
                     "browser", super::super::browser::factory(),
@@ -523,7 +523,7 @@ async fn native_files_delete_disposal_is_separate_from_same_page_completion() {
     for mount in ["", "/app", "/ACC"] {
         for orphan in [false, true] {
             let fixture = super::super::home_fixture::fixture();
-            let (account, id, signals, root_handler, button_id, success_text) =
+            let (account, id, signals, root_handler, button_id) =
                 capture_delete_handler(&fixture, mount, orphan).await;
             let expected_arguments =
                 serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
@@ -545,7 +545,7 @@ async fn native_files_delete_disposal_is_separate_from_same_page_completion() {
                 let output = super::super::home_fixture::evaluate_handler(
                     "src/topcoat/native/files/delete_feedback.test.cjs",
                     &serde_json::json!({ "phase":phase, "mount":mount,
-                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id,"success":success_text},
+                        "signals":signals.clone(), "root_handler":root_handler, "button":{"id":button_id},
                         "expected_arguments":expected_arguments, "reply":late_success_reply, "detached":phase == "detached",
                         "browser_source":super::super::shell_handlers::source_named(
                             "browser", super::super::browser::factory(),
@@ -561,7 +561,7 @@ async fn native_files_delete_disposal_is_separate_from_same_page_completion() {
 async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
     for mount in ["", "/app", "/ACC"] {
         let fixture = super::super::home_fixture::fixture();
-        let (account, id, signals, root_handler, button_id, success_text) =
+        let (account, id, signals, root_handler, button_id) =
             capture_delete_handler(&fixture, mount, true).await;
         let args = serde_json::to_value((account, id).into_surrogate()).unwrap();
         let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
@@ -572,7 +572,7 @@ async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
         let output = super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/files/delete_feedback.test.cjs",
             &serde_json::json!({ "phase":"delete", "mount":mount,
-                "signals":signals, "root_handler":root_handler, "button":{"id":button_id,"success":"untrusted DOM copy"}, "reply":reply,
+                "signals":signals, "root_handler":root_handler, "button":{"id":button_id}, "reply":reply,
                 "expected_arguments":expected_arguments, "success_request":success,
                 "browser_source":super::super::shell_handlers::source_named(
                     "browser", super::super::browser::factory(),
@@ -602,7 +602,7 @@ async fn native_files_orphan_delete_success_refreshes_at_each_mount() {
 async fn native_files_delete_completion_returns_canonical_outcome_while_body_is_busy() {
     let mount = "/app";
     let fixture = super::super::home_fixture::fixture();
-    let (account, id, signals, root_handler, button_id, success_text) =
+    let (account, id, signals, root_handler, button_id) =
         capture_delete_handler(&fixture, mount, false).await;
     let arguments = serde_json::to_value((account, id).into_surrogate()).unwrap();
     let expected_arguments = serde_json::json!([account.into_surrogate(), id.into_surrogate()]);
@@ -617,7 +617,7 @@ async fn native_files_delete_completion_returns_canonical_outcome_while_body_is_
     let input = serde_json::json!({
         "signals":signals,
         "root_handler":root_handler,
-        "button":{"id":button_id,"success":success_text},
+        "button":{"id":button_id},
         "mount":mount,
         "expected_arguments":expected_arguments.clone(),
         "error_request":error_request,

@@ -59,7 +59,6 @@ fixture.context.window.dispatchEvent = event => {
 const button = {
   getAttribute(name) {
     if (name === 'data-native-files-confirm-delete') return input.button?.id ?? null;
-    if (name === 'data-native-files-delete-success') return input.button?.success ?? null;
     return null;
   },
   closest(selector) {

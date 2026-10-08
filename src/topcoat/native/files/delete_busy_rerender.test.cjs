@@ -55,7 +55,6 @@ const scalar = wire => {
     const button = {
       getAttribute(name) {
         if (name === 'data-native-files-confirm-delete') return input.button.id;
-        if (name === 'data-native-files-delete-success') return input.button.success;
         return null;
       },
       closest(selector) {
