@@ -58,17 +58,18 @@ pub(crate) fn delete(
     store: &AttachmentStore,
     identity: &Option<ResolvedIdentity>,
     attachment_id: i64,
-) -> Result<(), LificError> {
-    let events = store
+) -> Result<usize, LificError> {
+    let (events, reference_count) = store
         .try_with_lock(|store| {
-            let (sha256, events) = db.transaction(|conn| {
+            let (sha256, events, reference_count) = db.transaction(|conn| {
                 let current = crate::auth::refresh_identity(conn, identity.as_ref())?;
                 let user = crate::api::require_user(&current)?;
                 let attachment = queries::attachments::get_attachment(conn, attachment_id)?;
                 authorize_delete_conn(conn, &current, &user, &attachment)?;
+                let reference_count = visible_links_conn(conn, &current, attachment_id)?.len();
                 let events = linked_events_conn(conn, attachment_id)?;
                 queries::attachments::delete_attachment(conn, attachment_id)?;
-                Ok((attachment.sha256, events))
+                Ok((attachment.sha256, events, reference_count))
             })?;
             let remaining = {
                 let conn = db.read()?;
@@ -77,13 +78,13 @@ pub(crate) fn delete(
             if remaining == 0 {
                 store.delete_unlocked(&sha256)?;
             }
-            Ok(events)
+            Ok((events, reference_count))
         })?
         .ok_or_else(AttachmentStore::busy_error)?;
     for event in events {
         hub.send(event);
     }
-    Ok(())
+    Ok(reference_count)
 }
 
 fn authorize_delete_conn(

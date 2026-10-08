@@ -82,6 +82,15 @@ impl Browser {
         panic!("browser bindings are only callable in client expressions")
     }
 
+    pub(crate) fn button_attribute(
+        &self,
+        _event: Event,
+        _selector: StringSurrogate,
+        _attribute: StringSurrogate,
+    ) -> StringSurrogate {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
     pub(crate) fn json_array_set_string(
         &self,
         wire: StringSurrogate,
@@ -314,6 +323,15 @@ pub(crate) fn factory() -> Js {
                     if (!/^[1-9][0-9]{0,18}$/.test(decimal) ||
                         (decimal.length === 19 && decimal > '9223372036854775807')) return fallback;
                     return cx.hydrate({...fallback.dehydrate(), v:decimal});
+                },
+                button_attribute: (event, selector, attribute) => {
+                    const root = event.inner.currentTarget;
+                    const target = event.inner.target;
+                    const button = target instanceof Element ? target.closest(selector.toString()) : null;
+                    if (!(root instanceof Element) || !(button instanceof Element) || !root.contains(button)) {
+                        return cx.hydrate('');
+                    }
+                    return cx.hydrate(button.getAttribute(attribute.toString()) || '');
                 },
                 json_array_set_string: (wire, value, included) => {
                     let items = [];

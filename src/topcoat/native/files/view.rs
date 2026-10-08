@@ -1,4 +1,5 @@
 //! Native project Files rendering and interaction state.
+use super::super::browser;
 use super::super::collation::BrowserCollation;
 use super::super::deferred_delete::ToastRequest;
 use super::super::{context, dates, icons, session, transport};
@@ -48,7 +49,6 @@ type Controls = (
     (
         Signal<String>,
         Signal<bool>,
-        Signal<String>,
         Signal<String>,
         Signal<bool>,
         Signal<bool>,
@@ -189,7 +189,6 @@ pub(super) fn content<'a>(
     let request_generation = signal(&owner, || 0_usize);
     let request_timeout = signal(&owner, || 0_f64);
     let load_error = signal(&owner, String::new);
-    let delete_error = signal(&owner, String::new);
     let orphan_open = signal(&owner, || false);
     let history_rows = signal(&owner, String::new);
     let history_key = signal(&owner, String::new);
@@ -226,6 +225,16 @@ pub(super) fn content<'a>(
         deleting.clone(),
         request,
     );
+    let delete_handler_attrs = delete_attributes(
+        cx,
+        account,
+        deleting.clone(),
+        confirming.clone(),
+        expanded.clone(),
+        offset.clone(),
+        revision.clone(),
+        orphan_revision.clone(),
+    );
     let target_for_body = target;
     let history = (
         history_rows,
@@ -248,7 +257,6 @@ pub(super) fn content<'a>(
             collation.clone(),
             deleting.clone(),
             links_cache.clone(),
-            delete_error,
             loading_more,
             refreshing,
             refresh_pending,
@@ -262,6 +270,7 @@ pub(super) fn content<'a>(
         <div
             class="native-files h-full min-h-0 flex flex-col leading-[1.6] text-[var(--text)]"
             data-native-files=""
+            (delete_handler_attrs)
             (mount)
         >
             (live)
@@ -455,8 +464,6 @@ async fn files_body(
     let now = signal(cx, || chrono::Utc::now().timestamp_millis() as f64);
     let body = files_page(
         cx,
-        account,
-        project_id,
         &identifier,
         user.id,
         user.is_admin,
@@ -471,24 +478,22 @@ async fn files_body(
         confirming_id,
         orphans_open,
         controls.9.1.clone(),
+        controls.9.3.clone(),
         controls.9.4.clone(),
-        controls.9.5.clone(),
         now,
         controls.0.clone(),
         controls.1.clone(),
         controls.2.clone(),
         controls.3.clone(),
         controls.4.clone(),
-        controls.5.clone(),
         controls.6.clone(),
         controls.7.clone(),
         controls.8.clone(),
         controls.9.0.clone(),
-        controls.9.3.clone(),
-        controls.9.9.clone(),
-        controls.9.7.clone(),
         controls.9.8.clone(),
         controls.9.6.clone(),
+        controls.9.7.clone(),
+        controls.9.5.clone(),
     );
     let rows_wire = serde_json::to_string(
         &rows
@@ -528,22 +533,22 @@ async fn files_body(
     let page_total_count = page.total_count;
     let page_total_bytes = page.total_bytes;
     let links_cache = controls.9.2;
-    let completed_loading_more = controls.9.4.clone();
-    let completed_refreshing = controls.9.5.clone();
-    let completed_pending = controls.9.6.clone();
+    let completed_loading_more = controls.9.3.clone();
+    let completed_refreshing = controls.9.4.clone();
+    let completed_pending = controls.9.5.clone();
     let completed_deleting = controls.9.1.clone();
-    let completed_generation = controls.9.7.clone();
-    let completed_timeout = controls.9.8.clone();
+    let completed_generation = controls.9.6.clone();
+    let completed_timeout = controls.9.7.clone();
     let request_generation = request_generation_value;
-    let followup_loading = controls.9.4.clone();
-    let followup_refreshing = controls.9.5.clone();
-    let followup_generation = controls.9.7.clone();
-    let followup_timeout = controls.9.8.clone();
-    let expiry_timeout = controls.9.8.clone();
-    let followup_error = controls.9.9.clone();
+    let followup_loading = controls.9.3.clone();
+    let followup_refreshing = controls.9.4.clone();
+    let followup_generation = controls.9.6.clone();
+    let followup_timeout = controls.9.7.clone();
+    let expiry_timeout = controls.9.7.clone();
+    let followup_error = controls.9.8.clone();
     let followup_offset = controls.3.clone();
     let followup_revision = controls.5.clone();
-    let completed_load_error = controls.9.9;
+    let completed_load_error = controls.9.8;
     let persist = view! {
         cx =>
         <span
@@ -658,12 +663,12 @@ struct RequestState {
 impl RequestState {
     fn from_controls(controls: &Controls) -> Self {
         Self {
-            loading_more: controls.9.4.clone(),
-            refreshing: controls.9.5.clone(),
-            pending: controls.9.6.clone(),
-            generation: controls.9.7.clone(),
-            timeout: controls.9.8.clone(),
-            error: controls.9.9.clone(),
+            loading_more: controls.9.3.clone(),
+            refreshing: controls.9.4.clone(),
+            pending: controls.9.5.clone(),
+            generation: controls.9.6.clone(),
+            timeout: controls.9.7.clone(),
+            error: controls.9.8.clone(),
         }
     }
 }
@@ -738,10 +743,102 @@ fn query_change(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn delete_attributes(
+    cx: &Cx,
+    account: i64,
+    deleting: Signal<bool>,
+    confirming: Signal<Option<i64>>,
+    expanded: Signal<Option<i64>>,
+    offset: Signal<i64>,
+    revision: Signal<usize>,
+    orphan_revision: Signal<usize>,
+) -> Attributes {
+    let browser = browser::bindings();
+    let parent_browser = browser::bindings();
+    let queue_browser = browser::bindings();
+    let request_browser = browser::bindings();
+    let failure_browser = browser::bindings();
+    let busy_start = deleting.clone();
+    let busy_service = deleting.clone();
+    let confirming_service = confirming.clone();
+    let expanded_success = expanded;
+    let offset_success = offset;
+    let revision_success = revision;
+    let orphan_revision_success = orphan_revision;
+    let busy_transport = deleting;
+    let confirming_transport = confirming;
+    let transport_error = ToastRequest {
+        account_id: account,
+        message: "Couldn't delete the file: Couldn't reach the server. Check your connection and try again.".to_owned(),
+    };
+    let selector = "button[data-native-files-confirm-delete]".to_owned();
+    let id_attribute = "data-native-files-confirm-delete".to_owned();
+    let handler = expr!(|event: Event| {
+        let id_value = browser.button_attribute(event, selector.clone(), id_attribute.clone());
+        let attachment_id = browser.positive_i64(id_value, 0_i64);
+        if !parent_browser.is_disposed() {
+            if attachment_id > 0_i64 {
+                if !busy_start.get() {
+                    busy_start.set(true);
+                    let _failed = || {
+                        if !failure_browser.is_disposed() {
+                            busy_transport.set(false);
+                            confirming_transport.set(None);
+                            let _notification = transport_error.clone();
+                            raw!(
+                                "window.dispatchEvent(new CustomEvent('lific:native-toast-error',{detail:${_notification},cancelable:true}));",
+                                ()
+                            );
+                        }
+                    };
+                    let _request = async || {
+                        if !request_browser.is_disposed() {
+                            let outcome = delete_file(account, attachment_id).await;
+                            if !request_browser.is_disposed() {
+                                busy_service.set(false);
+                                confirming_service.set(None);
+                                if outcome.succeeded {
+                                    let _notification = outcome.notification;
+                                    raw!(
+                                        "window.dispatchEvent(new CustomEvent('lific:native-toast-success',{detail:${_notification},cancelable:true}));",
+                                        ()
+                                    );
+                                    expanded_success.set(None);
+                                    offset_success.set(0_i64);
+                                    revision_success.increment();
+                                    orphan_revision_success.increment();
+                                } else {
+                                    let _notification = outcome.notification;
+                                    raw!(
+                                        "window.dispatchEvent(new CustomEvent('lific:native-toast-error',{detail:${_notification},cancelable:true}));",
+                                        ()
+                                    );
+                                }
+                            }
+                        }
+                    };
+                    if !queue_browser.is_disposed() {
+                        raw!(
+                            "Promise.resolve().then(()=>${_request}()).catch(()=>${_failed}());",
+                            ()
+                        );
+                    }
+                }
+            }
+        }
+    });
+    let mut attributes = Attributes::with_capacity(1);
+    attributes.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attributes
+}
+
+#[allow(clippy::too_many_arguments)]
 fn files_page<'a>(
     cx: &'a Cx,
-    account: i64,
-    project_id: i64,
     project: &str,
     viewer_id: i64,
     is_admin: bool,
@@ -764,12 +861,10 @@ fn files_page<'a>(
     sort: Signal<String>,
     offset: Signal<i64>,
     expanded: Signal<Option<i64>>,
-    revision: Signal<usize>,
     orphan_revision: Signal<usize>,
     confirming: Signal<Option<i64>>,
     orphan_open: Signal<bool>,
     collation: Signal<String>,
-    delete_error: Signal<String>,
     load_error: Signal<String>,
     request_generation: Signal<usize>,
     request_timeout: Signal<f64>,
@@ -848,7 +943,6 @@ fn files_page<'a>(
             };
             file_row(
                 cx,
-                account,
                 project,
                 viewer_id,
                 is_admin,
@@ -861,10 +955,6 @@ fn files_page<'a>(
                 now.clone(),
                 expanded.clone(),
                 confirming.clone(),
-                revision.clone(),
-                orphan_revision.clone(),
-                offset.clone(),
-                delete_error.clone(),
             )
         })
         .collect::<Vec<_>>();
@@ -875,8 +965,6 @@ fn files_page<'a>(
                 .map(|orphan| {
                     orphan_row(
                         cx,
-                        account,
-                        project_id,
                         viewer_id,
                         is_admin,
                         can_edit,
@@ -884,10 +972,6 @@ fn files_page<'a>(
                         confirming_id,
                         deleting.clone(),
                         confirming.clone(),
-                        revision.clone(),
-                        orphan_revision.clone(),
-                        offset.clone(),
-                        delete_error.clone(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -907,7 +991,6 @@ fn files_page<'a>(
     let orphan_bytes = orphans.map_or(0, |value| value.total_bytes);
     let orphan_error = orphans.is_none();
     let cache_signal = collation;
-    let delete_error_text = delete_error.get();
     let sort_options = SORT_OPTIONS
         .iter()
         .map(|(value, label)| {
@@ -961,11 +1044,6 @@ fn files_page<'a>(
                             (total_bytes)
                         </span>
                     </div>
-                    if !delete_error_text.is_empty() {
-                        <p class="text-caption text-[var(--error)] mb-3" role="status">
-                            (delete_error_text)
-                        </p>
-                    }
                     <div class="flex flex-col divide-y divide-[var(--border)]">
                         for row in file_rows {
                             (row)
@@ -1155,7 +1233,6 @@ fn files_page<'a>(
 #[allow(clippy::too_many_arguments)]
 fn file_row<'a>(
     cx: &'a Cx,
-    account: i64,
     project: &str,
     viewer_id: i64,
     is_admin: bool,
@@ -1168,10 +1245,6 @@ fn file_row<'a>(
     now: Signal<f64>,
     expanded: Signal<Option<i64>>,
     confirming: Signal<Option<i64>>,
-    revision: Signal<usize>,
-    orphan_revision: Signal<usize>,
-    offset: Signal<i64>,
-    delete_error: Signal<String>,
 ) -> BoxView<'a> {
     let id = row.id;
     let filename = row.filename.clone();
@@ -1193,56 +1266,6 @@ fn file_row<'a>(
     let time = dates::relative_time_view(cx, &row.created_at, now);
     let deleting_value = deleting.get();
     let confirming_signal = confirming.clone();
-    let busy_signal = deleting.clone();
-    let error_signal = delete_error.clone();
-    let failed_busy = deleting.clone();
-    let failed_confirming = confirming.clone();
-    let failed_error = delete_error;
-    let success_busy = deleting;
-    let success_confirming = confirming.clone();
-    let success_expanded = expanded.clone();
-    let success_notification = ToastRequest {
-        account_id: account,
-        message: model::delete_success_message(entities.len()),
-    };
-    let success_offset = offset;
-    let success_revision = revision;
-    let success_orphan_revision = orphan_revision;
-    let delete_handler = expr!(|_event: Event| {
-        if !busy_signal.get() {
-            busy_signal.set(true);
-            error_signal.set("".to_owned());
-            let _failed = || {
-                failed_busy.set(false);
-                failed_confirming.set(None);
-                failed_error.set("Couldn't delete this file. Try again.".to_owned());
-            };
-            let _delete = async || {
-                delete_file(account, id).await;
-                let _notification = success_notification.clone();
-                raw!(
-                    "window.dispatchEvent(new CustomEvent('lific:native-toast-success',{detail:${_notification},cancelable:true}));",
-                    ()
-                );
-                success_busy.set(false);
-                success_confirming.set(None);
-                success_expanded.set(None);
-                success_offset.set(0_i64);
-                success_revision.increment();
-                success_orphan_revision.increment();
-            };
-            raw!(
-                "Promise.resolve().then(()=>${_delete}()).catch(()=>${_failed}());",
-                ()
-            );
-        }
-    });
-    let mut delete_handler_attrs = Attributes::with_capacity(1);
-    delete_handler_attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        delete_handler.into_evaluated_and_js().1,
-    );
     let duplicates = detail
         .map(|data| {
             data.duplicates
@@ -1314,7 +1337,7 @@ fn file_row<'a>(
                         type="button"
                         class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)] hover:opacity-90"
                         :disabled=$(deleting_value)
-                        (delete_handler_attrs)
+                        data-native-files-confirm-delete=(id.to_string())
                     >
                         $(if deleting_value { "Deleting…" } else { "Delete" })
                     </button>
@@ -1437,8 +1460,6 @@ fn entity_chips<'a>(
 #[allow(clippy::too_many_arguments)]
 fn orphan_row<'a>(
     cx: &'a Cx,
-    account: i64,
-    project_id: i64,
     viewer_id: i64,
     is_admin: bool,
     can_edit: bool,
@@ -1446,10 +1467,6 @@ fn orphan_row<'a>(
     confirming_id: Option<i64>,
     deleting: Signal<bool>,
     confirming: Signal<Option<i64>>,
-    revision: Signal<usize>,
-    orphan_revision: Signal<usize>,
-    offset: Signal<i64>,
-    delete_error: Signal<String>,
 ) -> BoxView<'a> {
     let id = orphan.id;
     let can_delete = model::can_delete(orphan.uploader_id, Some(viewer_id), is_admin, can_edit);
@@ -1460,54 +1477,6 @@ fn orphan_row<'a>(
     let confirm = confirming_id == Some(id);
     let delete = confirming.clone();
     let busy = deleting.get();
-    let delete_busy = deleting.clone();
-    let error_signal = delete_error.clone();
-    let failed_busy = deleting.clone();
-    let failed_confirming = confirming.clone();
-    let failed_error = delete_error;
-    let success_busy = deleting;
-    let success_confirming = confirming.clone();
-    let success_offset = offset;
-    let success_notification = ToastRequest {
-        account_id: account,
-        message: model::delete_success_message(0),
-    };
-    let success_revision = revision;
-    let success_orphan_revision = orphan_revision;
-    let delete_handler = expr!(|_event: Event| {
-        if !delete_busy.get() {
-            delete_busy.set(true);
-            error_signal.set("".to_owned());
-            let _failed = || {
-                failed_busy.set(false);
-                failed_confirming.set(None);
-                failed_error.set("Couldn't delete this file. Try again.".to_owned());
-            };
-            let _delete = async || {
-                delete_file(account, id).await;
-                let _notification = success_notification.clone();
-                raw!(
-                    "window.dispatchEvent(new CustomEvent('lific:native-toast-success',{detail:${_notification},cancelable:true}));",
-                    ()
-                );
-                success_busy.set(false);
-                success_confirming.set(None);
-                success_offset.set(0_i64);
-                success_revision.increment();
-                success_orphan_revision.increment();
-            };
-            raw!(
-                "Promise.resolve().then(()=>${_delete}()).catch(()=>${_failed}());",
-                ()
-            );
-        }
-    });
-    let mut delete_handler_attrs = Attributes::with_capacity(1);
-    delete_handler_attrs.insert(
-        cx,
-        "data-topcoat-on:click",
-        delete_handler.into_evaluated_and_js().1,
-    );
     let row = view! {
         cx =>
         <div class="flex items-center gap-3 py-2">
@@ -1555,7 +1524,7 @@ fn orphan_row<'a>(
                     type="button"
                     class="text-caption font-medium px-2 py-1 rounded-md text-[var(--error-text)] bg-[var(--error)]"
                     :disabled=$(busy)
-                    (delete_handler_attrs)
+                    data-native-files-confirm-delete=(id.to_string())
                 >
                     $(if busy { "Deleting…" } else { "Delete" })
                 </button>
@@ -1569,7 +1538,6 @@ fn orphan_row<'a>(
             </div>
         }
     };
-    let _ = project_id;
     row.boxed()
 }
 
