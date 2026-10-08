@@ -297,6 +297,24 @@ fn render_detail<'a>(
     } else {
         None
     };
+    let clear_anchor = if can_edit && plan.issue_id.is_some() {
+        Some(action_button(
+            cx,
+            account,
+            project,
+            plan.id,
+            0,
+            PlanAction {
+                action: "anchor",
+                value: "",
+                label: "Clear anchor",
+                class: "text-[var(--text-faint)] hover:text-[var(--error)]",
+            },
+            editor.clone(),
+        ))
+    } else {
+        None
+    };
     let delete = if can_edit {
         Some(action_button(
             cx,
@@ -426,6 +444,9 @@ fn render_detail<'a>(
                         }
                         if let Some(editor) = anchor_editor {
                             (editor)
+                        }
+                        if let Some(button) = clear_anchor {
+                            (button)
                         }
                     </div>
                     <div class="issue-meta-dates py-3">
@@ -1455,6 +1476,7 @@ async fn mutate_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use topcoat::runtime::Surrogated;
 
     #[component]
     async fn step_render_fixture(cx: &Cx, step: PlanStepNode) -> topcoat::Result<impl View> {
@@ -1509,5 +1531,232 @@ mod tests {
         assert!(html.contains("padding-left: min(3rem, 25%)"));
         assert!(html.contains("✓"));
         assert!(html.contains("<strong>matter</strong>"));
+    }
+
+    #[tokio::test]
+    async fn native_plan_anchor_can_be_cleared_by_maintainer() {
+        let fixture = super::super::super::home_fixture::fixture();
+        let (plan, account, issue_id) = {
+            let conn = fixture.db.write().unwrap();
+            let account = crate::db::queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            let issue_id = crate::db::queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            let plan = crate::db::queries::plans::create_plan(
+                &conn,
+                &crate::db::models::CreatePlan {
+                    project_id,
+                    title: "Release checklist".into(),
+                    issue_id: Some(issue_id),
+                    steps: vec![crate::db::models::CreatePlanStep {
+                        title: "Ship it".into(),
+                        description: "Ready".into(),
+                        issue_id: None,
+                        done: false,
+                        steps: vec![],
+                    }],
+                },
+            )
+            .unwrap();
+            (plan, account, issue_id)
+        };
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let selector = scraper::Selector::parse("button[aria-label='Clear anchor']").unwrap();
+        assert!(
+            document
+                .select(&scraper::Selector::parse("button[aria-label='Clear anchor']").unwrap())
+                .next()
+                .is_none(),
+            "viewers cannot clear plan anchors",
+        );
+
+        {
+            let conn = fixture.db.write().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                project_id,
+                account,
+                Role::Maintainer,
+            )
+            .unwrap();
+        }
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture,
+            "",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let (project_id, role, current_plan) = {
+            let conn = fixture.db.read().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            let role = conn
+                .query_row(
+                    "SELECT role FROM project_members WHERE project_id = ?1 AND user_id = ?2",
+                    rusqlite::params![project_id, account],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let plan = crate::db::queries::plans::get_plan(&conn, plan.id).unwrap();
+            (project_id, role, plan)
+        };
+        let clear = document.select(&selector).next();
+        assert!(
+            clear.is_some(),
+            "maintainer clear control missing: project_id={project_id}, role={role}, plan.issue_id={:?}, anchor_identifier={:?}; HTML={html}",
+            current_plan.issue_id,
+            current_plan.anchor_identifier,
+        );
+        let clear = clear.unwrap();
+        let handler = clear
+            .value()
+            .attr("data-topcoat-on:click")
+            .expect("clearing the anchor runs the emitted native mutation handler");
+        let emitted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/anchor_handler.test.cjs",
+            &serde_json::json!({
+                "handler": handler,
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "response": serde_json::to_value("saved".to_owned().into_surrogate()).unwrap(),
+            }),
+        );
+        let arguments = emitted["arguments"].clone();
+        assert_eq!(emitted["path"], "/__native_plans/mutate");
+        let expected_arguments = serde_json::to_value(
+            (
+                account,
+                "ACC".to_owned(),
+                plan.id,
+                0_i64,
+                "anchor".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        assert_eq!(arguments, expected_arguments);
+        assert_eq!(emitted["changed_signal_ids"].as_array().unwrap().len(), 1);
+        assert_eq!(emitted["revision_before"], "0");
+        assert_eq!(emitted["revision_after"], "1");
+
+        let changed_account = serde_json::to_value(
+            (
+                account + 1,
+                "ACC".to_owned(),
+                plan.id,
+                0_i64,
+                "anchor".to_owned(),
+                String::new(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            changed_account,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+
+        {
+            let conn = fixture.db.write().unwrap();
+            let project_id = crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            crate::db::queries::members::upsert_member(&conn, project_id, account, Role::Viewer)
+                .unwrap();
+        }
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments.clone(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id)
+                .unwrap()
+                .anchor_identifier
+                .as_deref(),
+            Some("ACC-1"),
+            "a viewer cannot clear the anchor",
+        );
+
+        {
+            let conn = fixture.db.write().unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap(),
+                account,
+                Role::Maintainer,
+            )
+            .unwrap();
+        }
+        let (status, outcome) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments.clone(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(outcome["t"], "String");
+        assert_eq!(outcome["v"], "saved");
+        let cleared =
+            crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id).unwrap();
+        assert_eq!(cleared.issue_id, None);
+        assert_eq!(cleared.anchor_identifier, None);
+        assert_eq!(cleared.title, "Release checklist");
+        assert_eq!(cleared.status, "active");
+        assert_eq!(cleared.steps.len(), 1);
+        assert_eq!(cleared.steps[0].title, "Ship it");
+        assert_eq!(cleared.steps[0].description, "Ready");
+
+        {
+            let conn = fixture.db.write().unwrap();
+            crate::db::queries::plans::update_plan(
+                &conn,
+                plan.id,
+                &UpdatePlan {
+                    issue_id: Some(Some(issue_id)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            crate::db::queries::members::upsert_member(
+                &conn,
+                crate::db::queries::resolve_project_identifier(&conn, "ACC").unwrap(),
+                account,
+                Role::Viewer,
+            )
+            .unwrap();
+        }
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(
+            crate::db::queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id)
+                .unwrap()
+                .anchor_identifier
+                .as_deref(),
+            Some("ACC-1"),
+            "revoked maintainer access cannot clear the anchor",
+        );
     }
 }
