@@ -928,10 +928,10 @@ fn delete_menu<'a>(
         menu_open.set(false);
         confirming.set(false);
         deleting.set(false);
-        let _dismiss = |event: Event| {
+        let _dismiss = |_event: Event| {
             if !dismiss_browser.is_disposed() {
                 let outside = raw!(
-                    "cx.hydrate(!document.getElementById(${dismiss_id}.toString())?.contains(${event}.inner.target))",
+                    "cx.hydrate(!document.getElementById(${dismiss_id}.toString())?.contains(${_event}.inner.target))",
                     false
                 );
                 if outside {
@@ -949,38 +949,70 @@ fn delete_menu<'a>(
         "data-topcoat-on:mount",
         mounted.into_evaluated_and_js().1,
     );
-    view! { cx =>
+    view! {
+        cx =>
         <div id=(owner_id) class="relative" (mount_attrs)>
-            <button type="button"
+            <button
+                type="button"
                 class="grid size-7 place-items-center rounded-md text-[var(--text-faint)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
-                title="More actions" aria-label="More actions" data-native-module-delete-trigger="" (toggle_attrs)>
+                title="More actions"
+                aria-label="More actions"
+                data-native-module-delete-trigger=""
+                (toggle_attrs)
+            >
                 (icons::ui_icon(cx, icons::UiIcon::MoreActions, 14))
             </button>
-            <div data-native-module-delete-menu-panel="" class="absolute right-0 top-full z-30 mt-1.5 w-[180px] rounded-md border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg"
-                :hidden=$(if menu_open.get() { confirming.get() } else { true })>
-                <button type="button"
+            <div
+                data-native-module-delete-menu-panel=""
+                class="absolute right-0 top-full z-30 mt-1.5 w-[180px] rounded-md border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg"
+                :hidden=$(if menu_open.get() { confirming.get() } else { true })
+            >
+                <button
+                    type="button"
                     class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm text-[var(--error)] hover:bg-[var(--error-bg)]"
-                    (open_attrs)>
-                    (icons::ui_icon(cx, icons::UiIcon::Delete, 14)) "Delete module"
+                    (open_attrs)
+                >
+                    (icons::ui_icon(cx, icons::UiIcon::Delete, 14))
+                    "Delete module"
                 </button>
             </div>
-            <div data-native-module-delete-confirm-panel="" class="absolute right-0 top-full z-30 mt-1.5 w-[260px] rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg"
-                :hidden=$(!confirming.get())>
-                <p class="mb-1 text-body-sm font-medium text-[var(--text)]">"Delete " (name) "?"</p>
+            <div
+                data-native-module-delete-confirm-panel=""
+                class="absolute right-0 top-full z-30 mt-1.5 w-[260px] rounded-md border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg"
+                :hidden=$(!confirming.get())
+            >
+                <p class="mb-1 text-body-sm font-medium text-[var(--text)]">
+                    "Delete "
+                    (name)
+                    "?"
+                </p>
                 <p class="mb-3 text-caption text-[var(--text-muted)]">(confirm_body)</p>
                 <div class="flex items-center gap-2">
-                    <button type="button"
+                    <button
+                        type="button"
                         class="rounded-md bg-[var(--error)] px-3 py-1.5 text-body-sm font-medium text-[var(--error-text)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        :disabled=$(deleting.get()) (delete_attrs)>
+                        :disabled=$(deleting.get())
+                        (delete_attrs)
+                    >
                         $(if deleting.get() { "Deleting..." } else { "Delete" })
                     </button>
-                    <button type="button"
+                    <button
+                        type="button"
                         class="rounded-md px-3 py-1.5 text-body-sm text-[var(--text-muted)] hover:bg-[var(--bg-subtle)]"
-                        (cancel_attrs)>"Cancel"</button>
+                        (cancel_attrs)
+                    >
+                        "Cancel"
+                    </button>
                 </div>
             </div>
-            <p data-native-module-delete-error="" class="mt-2 text-caption text-[var(--error)]" role="status"
-                :hidden=$(error.get().is_empty())>$(error.get())</p>
+            <p
+                data-native-module-delete-error=""
+                class="mt-2 text-caption text-[var(--error)]"
+                role="status"
+                :hidden=$(error.get().is_empty())
+            >
+                $(error.get())
+            </p>
         </div>
     }
     .boxed()
