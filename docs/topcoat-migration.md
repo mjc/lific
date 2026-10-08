@@ -18,12 +18,20 @@ Instance administration routes. Archive import uses a native form and streaming
 upload backed by the shared Rust service. These features still need the
 remaining Main interactions and parity checks recorded in their family tickets.
 
+Instance administration supports human roster promotion, demotion, deactivation,
+and reactivation. The native procedures and existing API share the same
+transactions, including last-active-admin protection, recent authentication for
+granting access, and credential/socket revocation after deactivation commits.
+Destructive row actions require inline confirmation; own-row actions are hidden.
+
 Pages and Plans have native private list and detail routes. Pages supports
 search, tabs and filters, creation, Markdown editing, lifecycle status changes,
-explicit save with sequence conflicts, and confirmed deletion. Status changes
-share the editor's sequence and busy state and preserve unsaved title/body drafts.
+pinning, explicit save with sequence conflicts, and confirmed deletion. Metadata
+changes share the editor's sequence and busy state and preserve unsaved
+title/body drafts.
 Plans supports status tabs, creation, nested steps, title and description edits,
-done toggles, issue links, anchor assignment and clearing, and deletion.
+done toggles, step issue linking and detaching, anchor assignment and clearing,
+and deletion. Shared plan actions ignore retired owners and late replies.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
