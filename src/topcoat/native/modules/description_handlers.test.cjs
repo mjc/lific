@@ -279,7 +279,7 @@ async function runLifecycle() {
   dispatch(fixture, input.owner, 'save');
   await flush();
   assert.equal(requests.length, 3, 'explicit Save commits exactly once');
-  assert.equal(requests[2].url, '/app/__native_modules/update');
+  assert.equal(requests[2].url, `${input.mount}/__native_modules/update`);
   assert.equal(requests[2].arguments[3], 'description');
   assert.equal(requests[2].arguments[4], 'Saved module body');
 

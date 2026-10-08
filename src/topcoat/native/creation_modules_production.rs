@@ -374,8 +374,8 @@ async fn native_module_save_handlers_keep_the_mounted_destination() {
                 .iter()
                 .map(|handler| handler["field"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            ["emoji", "description"],
-            "name and status use their separately tested inline handlers",
+            ["emoji"],
+            "description now uses the separately owned read/edit/preview workflow",
         );
         let mut child = std::process::Command::new("node")
             .arg("src/topcoat/native/module_mutations.test.cjs")
@@ -405,6 +405,62 @@ async fn native_module_save_handlers_keep_the_mounted_destination() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+
+        let description_owner = document
+            .select(&scraper::Selector::parse("[data-native-module-description-owner]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .expect("the durable description owner handles Edit and Save");
+        let entered = home_fixture::evaluate_handler(
+            "src/topcoat/native/modules/description_handlers.test.cjs",
+            &serde_json::json!({
+                "phase":"enter_edit",
+                "mount":mount,
+                "signals":home_fixture::page_signals(&html),
+                "owner":description_owner,
+            }),
+        );
+        assert_eq!(
+            entered["requests"], 0,
+            "entering Edit does not save the module"
+        );
+        let (status, edit_html) = home_fixture::document(
+            &fixture,
+            mount,
+            &path,
+            true,
+            Some(entered["signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let edit_document = scraper::Html::parse_document(&edit_html);
+        let edit_owner = edit_document
+            .select(&scraper::Selector::parse("[data-native-module-description-owner]").unwrap())
+            .next()
+            .unwrap();
+        let editor = edit_document
+            .select(&scraper::Selector::parse("[data-native-module-description-editor]").unwrap())
+            .next()
+            .expect("the emitted Edit action mounts the description editor");
+        let result = home_fixture::evaluate_handler(
+            "src/topcoat/native/modules/description_handlers.test.cjs",
+            &serde_json::json!({
+                "mount":mount,
+                "initial_description":"**Native module description**",
+                "signals":home_fixture::page_signals(&edit_html),
+                "owner":edit_owner.value().attr("data-topcoat-on:click").unwrap(),
+                "input":editor.value().attr("data-topcoat-on:input").unwrap(),
+            }),
+        );
+        assert_eq!(
+            result["explicit_save_url"],
+            format!("{mount}/__native_modules/update"),
+            "description Save uses the active mounted procedure at {mount}",
+        );
+        assert_eq!(result["explicit_save_arguments"][3], "description");
+        assert_eq!(result["explicit_save_arguments"][4], "Saved module body");
     }
 }
 
