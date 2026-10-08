@@ -3,12 +3,7 @@
 use super::super::super::runtime::whitespace::trim_ecmascript;
 use super::super::{browser, context, session};
 use super::module_assignment::ModuleAssignmentSnapshot;
-use crate::{
-    db::models::{CreateLabel, UpdateIssue},
-    error::LificError,
-    realtime::RealtimeHub,
-    services,
-};
+use crate::{db::models::CreateLabel, error::LificError, realtime::RealtimeHub, services};
 use topcoat::{
     context::{Cx, app_context},
     runtime::{Event, Signal, expr, procedure, record, shard},
@@ -22,7 +17,6 @@ pub(crate) struct LabelRequest {
     pub account_id: i64,
     pub issue_id: i64,
     pub identifier: String,
-    pub labels: Vec<String>,
     pub name: String,
     pub color: String,
 }
@@ -157,7 +151,6 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
     );
     let options_identity = identity.clone();
     let options_attached = attached.to_vec();
-    let chip_attached = options_attached.clone();
     let options_query = query.clone();
     let options = view! {
         cx =>
@@ -174,8 +167,7 @@ pub(crate) fn picker<'a>(cx: &'a Cx, props: PickerProps<'_>) -> BoxView<'a> {
     let chip_views = chips
         .into_iter()
         .map(|(name, tint)| {
-            let action =
-                can_edit.then(|| remove_button(cx, identity.clone(), &chip_attached, &name));
+            let action = can_edit.then(|| remove_button(cx, identity.clone(), &name));
             super::super::label_chip::render_with_action(cx, name, tint.as_deref(), action)
         })
         .collect::<Vec<_>>();
@@ -283,6 +275,7 @@ async fn native_label_options(
                 name,
                 color,
                 !can_create && filtered.len() == 1,
+                (query.clone(), query_snapshot.clone()),
             )
         })
         .collect::<Vec<_>>();
@@ -320,20 +313,34 @@ async fn native_label_options(
         account_id: identity.0,
         issue_id: identity.1,
         identifier: identity.2.clone(),
-        labels: attached.clone(),
         name: base_name.clone(),
         color: selected_color.clone(),
     };
     let create_error = error.clone();
     let create_busy = creating.clone();
+    let create_color = picked_color.clone();
     let browser = browser::bindings();
     let create = expr!(|event: Event| {
         if !browser.is_disposed() {
             if !create_busy.get() {
                 if query.get() == query_snapshot {
                     event.prevent_default();
+                    let picked = create_color.get();
+                    let request_color = if picked.is_empty() {
+                        default_color.clone()
+                    } else {
+                        picked
+                    };
+                    let _request = LabelRequest {
+                        mode: "create".to_owned(),
+                        account_id: create_request.account_id.clone(),
+                        issue_id: create_request.issue_id.clone(),
+                        identifier: create_request.identifier.clone(),
+                        name: create_request.name.clone(),
+                        color: request_color,
+                    };
                     let accepted = raw!(
-                        "cx.hydrate(!window.dispatchEvent(new CustomEvent('lific:native-issue-label-request',{detail:${create_request},cancelable:true})))",
+                        "cx.hydrate(!window.dispatchEvent(new CustomEvent('lific:native-issue-label-request',{detail:${_request},cancelable:true})))",
                         false
                     );
                     if accepted {
@@ -559,31 +566,28 @@ fn option<'a>(
     name: &str,
     color: &str,
     keyboard_default: bool,
+    filter: (Signal<String>, String),
 ) -> BoxView<'a> {
     let selected = attached.iter().any(|label| label == name);
-    let mut next = attached.to_vec();
-    if selected {
-        next.retain(|label| label != name);
-    } else {
-        next.push(name.to_owned());
-    }
     let request = LabelRequest {
-        mode: "update".into(),
+        mode: if selected { "remove" } else { "attach" }.into(),
         account_id: identity.0,
         issue_id: identity.1,
         identifier: identity.2,
-        labels: next,
-        name: "".to_owned(),
+        name: name.to_owned(),
         color: "".to_owned(),
     };
+    let (query, query_snapshot) = filter;
     let browser = browser::bindings();
     let handler = expr!(|event: Event| {
         if !browser.is_disposed() {
-            event.prevent_default();
-            raw!(
-                "window.dispatchEvent(new CustomEvent('lific:native-issue-label-request',{detail:${request},cancelable:true}))",
-                ()
-            );
+            if query.get() == query_snapshot {
+                event.prevent_default();
+                raw!(
+                    "window.dispatchEvent(new CustomEvent('lific:native-issue-label-request',{detail:${request},cancelable:true}))",
+                    ()
+                );
+            }
         }
     });
     let mut attrs = Attributes::with_capacity(1);
@@ -615,21 +619,13 @@ fn option<'a>(
     }.boxed()
 }
 
-fn remove_button<'a>(
-    cx: &'a Cx,
-    identity: (i64, i64, String),
-    attached: &[String],
-    name: &str,
-) -> BoxView<'a> {
-    let mut next = attached.to_vec();
-    next.retain(|label| label != name);
+fn remove_button<'a>(cx: &'a Cx, identity: (i64, i64, String), name: &str) -> BoxView<'a> {
     let request = LabelRequest {
-        mode: "update".into(),
+        mode: "remove".into(),
         account_id: identity.0,
         issue_id: identity.1,
         identifier: identity.2,
-        labels: next,
-        name: "".to_owned(),
+        name: name.to_owned(),
         color: "".to_owned(),
     };
     let browser = browser::bindings();
@@ -743,6 +739,11 @@ pub(crate) async fn update_labels(cx: &Cx, request: LabelRequest) -> topcoat::Re
     if user.id != request.account_id {
         return Ok(failed(&request, "Your account changed. Reload this page."));
     }
+    let change = match request.mode.as_str() {
+        "attach" => services::issues::IssueLabelChange::Attach(&request.name),
+        "remove" => services::issues::IssueLabelChange::Remove(&request.name),
+        _ => return Ok(failed(&request, "invalid label operation")),
+    };
     let db = context::db(cx);
     let issue = match services::issues::resolve_issue(db, &caller.identity, &request.identifier) {
         Ok(issue) if issue.id == request.issue_id => issue,
@@ -754,15 +755,12 @@ pub(crate) async fn update_labels(cx: &Cx, request: LabelRequest) -> topcoat::Re
     };
     let saved = match caller
         .scope(async {
-            services::issues::commit_issue_update(
+            services::issues::commit_issue_label_change(
                 db,
                 app_context::<RealtimeHub>(cx),
                 &caller.identity,
                 issue.id,
-                UpdateIssue {
-                    labels: Some(request.labels.clone()),
-                    ..Default::default()
-                },
+                change,
             )
         })
         .await
@@ -795,6 +793,9 @@ pub(crate) async fn create_label(cx: &Cx, request: LabelRequest) -> topcoat::Res
     if user.id != request.account_id {
         return Ok(failed(&request, "Your account changed. Reload this page."));
     }
+    if request.mode != "create" {
+        return Ok(failed(&request, "invalid label operation"));
+    }
     let db = context::db(cx);
     let issue = match services::issues::resolve_issue(db, &caller.identity, &request.identifier) {
         Ok(issue) if issue.id == request.issue_id => issue,
@@ -822,19 +823,14 @@ pub(crate) async fn create_label(cx: &Cx, request: LabelRequest) -> topcoat::Res
         Ok(label) => label,
         Err(error) => return Ok(failed(&request, error.client_message())),
     };
-    let mut labels = issue.labels.clone();
-    labels.push(label.name.clone());
     let saved = caller
         .scope(async {
-            services::issues::commit_issue_update(
+            services::issues::commit_issue_label_change(
                 db,
                 app_context::<RealtimeHub>(cx),
                 &caller.identity,
                 issue.id,
-                UpdateIssue {
-                    labels: Some(labels),
-                    ..Default::default()
-                },
+                services::issues::IssueLabelChange::Attach(&label.name),
             )
         })
         .await;

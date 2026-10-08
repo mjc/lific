@@ -607,7 +607,7 @@ pub(crate) fn handler_factory() -> Js {
                 account_id: request.account_id.clone(),
                 issue_id: request.issue_id.clone(),
                 seq: 0_i64,
-                labels: request.labels.clone(),
+                labels: raw!("cx.hydrate([])", Vec::<String>::new()),
                 canonical: None,
                 catalog_item: None,
             };
@@ -639,8 +639,10 @@ pub(crate) fn handler_factory() -> Js {
         let _label_accept = |request: LabelRequestValue| {
             let mode_valid = if request.mode == "create".to_owned() {
                 true
+            } else if request.mode == "attach".to_owned() {
+                true
             } else {
-                request.mode == "update".to_owned()
+                request.mode == "remove".to_owned()
             };
             if request.account_id != account_id {
                 false
@@ -995,13 +997,13 @@ mod tests {
                             canonical:None,account_id:7,issue_id:42,seq:0,
                             module_id:None,module_label:"None".into(),
                         }.into_surrogate(),
-                        "label_requests": (["update", "create", "unknown", "wrong_account"].into_iter().map(|mode| (
+                        "label_requests": (["attach", "remove", "create", "unknown", "wrong_account"].into_iter().map(|mode| (
                             mode,
                             LabelRequest {
-                                mode: if mode == "wrong_account" { "update" } else { mode }.into(),
+                                mode: if mode == "wrong_account" { "attach" } else { mode }.into(),
                                 account_id: if mode == "wrong_account" { 8 } else { 7 },
-                                issue_id:42,identifier:"ACC-42".into(),labels:vec!["bug".into()],
-                                name:if mode == "create" { "new label" } else { "" }.into(),color:"#2563EB".into(),
+                                issue_id:42,identifier:"ACC-42".into(),
+                                name:if mode == "create" { "new label" } else { "bug" }.into(),color:"#2563EB".into(),
                             }.into_surrogate(),
                         )).collect::<std::collections::BTreeMap<_,_>>()),
                         "label_replies": (["saved", "create_failed", "attach_failed"].into_iter().map(|outcome| (

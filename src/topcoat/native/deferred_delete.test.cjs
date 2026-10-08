@@ -78,7 +78,7 @@ function fixture() {
     window.dispatchEvent(event);
     assert.equal(event.defaultPrevented,accepted,'The durable Rust owner acknowledges accepted Module updates.');
   };
-  const updateLabels=(mode='update',accepted=true)=>{
+  const updateLabels=(mode='attach',accepted=true)=>{
     const event=new Event('lific:native-issue-label-request',{cancelable:true});
     event.detail=base.hydrate(input.label_requests[mode]);
     window.dispatchEvent(event);
@@ -118,15 +118,23 @@ test('Label writes start immediately without an Undo action',async()=>{
   assert.equal(f.calls.length,1);
   assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/update_labels'));
   assert.equal(f.calls[0].options.keepalive,true);
-  assert.deepEqual(JSON.parse(f.calls[0].options.body),[input.label_requests.update]);
+  assert.deepEqual(JSON.parse(f.calls[0].options.body),[input.label_requests.attach]);
   await f.finishLabels();
   assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
   f.click(f.owner.toasts[0].undo);await tick(f,10000);assert.equal(f.calls.length,1);
   assert.deepEqual(f.navigations,[]);
 });
+test('Label removals send an individual target through the durable procedure',async()=>{
+  const f=fixture();f.updateLabels('remove');await flush();
+  assert.equal(f.calls.length,1);
+  assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/update_labels'));
+  assert.deepEqual(JSON.parse(f.calls[0].options.body),[input.label_requests.remove]);
+  await f.finishLabels();
+  assert.ok(f.owner.toasts.every(toast=>toast.dataset.nativeToastId==='0'));
+});
 test('Label updates reject wrong accounts, unknown modes and duplicate pending writes',async()=>{
   const f=fixture();f.updateLabels('wrong_account',false);f.updateLabels('unknown',false);
-  assert.equal(f.calls.length,0);f.updateLabels();f.updateLabels('update',false);
+  assert.equal(f.calls.length,0);f.updateLabels();f.updateLabels('attach',false);
   assert.equal(f.calls.length,1);await f.finishLabels();f.updateLabels();assert.equal(f.calls.length,2);
 });
 test('Label results follow the transferred account owner on common routes',async()=>{
