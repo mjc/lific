@@ -2,7 +2,7 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{Event, StringSurrogate, Surrogated, expr},
+    runtime::{Event, StringSurrogate, expr},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -108,7 +108,7 @@ pub(crate) fn toolbar_fragments<'a>(
                     completed_exporting.set(false);
                 }
             };
-            browser.download(endpoint.clone().into_surrogate(), _completed);
+            browser.download(endpoint.clone(), _completed);
         }
     });
     let mut attributes = Attributes::with_capacity(1);
