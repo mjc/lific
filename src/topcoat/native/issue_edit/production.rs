@@ -231,6 +231,23 @@ async fn native_issue_breadcrumbs_preserve_scope_navigation_and_identifier_copy(
             .map(|item| item.text().collect::<String>().trim().to_owned())
             .collect::<Vec<_>>();
         assert_eq!(labels, ["ACC", "Issues", "ACC-1"]);
+        let items = breadcrumb
+            .select(&Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
+            .collect::<Vec<_>>();
+        for item in &items[..2] {
+            let classes = item.attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:flex"));
+        }
+        let separators = breadcrumb
+            .select(&Selector::parse("ol > li[aria-hidden='true']").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(separators.len(), 2);
+        for separator in separators {
+            let classes = separator.attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:flex"));
+        }
         let project = breadcrumb
             .select(&Selector::parse("a[title='ACC']").unwrap())
             .next()
@@ -253,6 +270,13 @@ async fn native_issue_breadcrumbs_preserve_scope_navigation_and_identifier_copy(
             .next()
             .unwrap();
         assert_eq!(current.text().collect::<String>().trim(), "ACC-1");
+        assert!(
+            !current
+                .ancestors()
+                .filter_map(scraper::ElementRef::wrap)
+                .any(|ancestor| ancestor.value().name() == "a"),
+            "the current identifier is never linked"
+        );
         let copy = breadcrumb_copy_input(&html, &document, "baseline");
         let copied = home_fixture::evaluate_handler(
             "src/topcoat/native/breadcrumbs_handler.test.cjs",
@@ -284,12 +308,16 @@ fn breadcrumb_copy_input(html: &str, document: &Html, phase: &str) -> serde_json
     };
     let project = button("ACC");
     let identifier = button("ACC-1");
-    let icon_bindings = identifier
-        .children()
-        .filter_map(scraper::ElementRef::wrap)
-        .filter(|child| child.value().name() == "span")
-        .map(|child| child.attr("data-topcoat-bind:hidden"))
-        .collect::<Vec<_>>();
+    let bindings = |button: scraper::ElementRef<'_>| {
+        button
+            .children()
+            .filter_map(scraper::ElementRef::wrap)
+            .filter(|child| child.value().name() == "span")
+            .map(|child| child.attr("data-topcoat-bind:hidden").map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let icon_bindings = bindings(identifier);
+    let project_bindings = bindings(project);
     serde_json::json!({
         "phase":phase,
         "signals":home_fixture::page_signals(html),
@@ -297,8 +325,10 @@ fn breadcrumb_copy_input(html: &str, document: &Html, phase: &str) -> serde_json
         "identifier_handler":identifier.attr("data-topcoat-on:click").unwrap(),
         "project_id":"ACC",
         "identifier":"ACC-1",
-        "copy_hidden_binding":icon_bindings.first().copied().flatten(),
-        "check_hidden_binding":icon_bindings.get(1).copied().flatten(),
+        "copy_hidden_binding":icon_bindings.first().cloned().flatten(),
+        "check_hidden_binding":icon_bindings.get(1).cloned().flatten(),
+        "project_copy_hidden_binding":project_bindings.first().cloned().flatten(),
+        "project_check_hidden_binding":project_bindings.get(1).cloned().flatten(),
     })
 }
 

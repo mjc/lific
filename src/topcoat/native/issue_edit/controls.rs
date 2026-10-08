@@ -894,11 +894,7 @@ fn document_topbar<'a>(
     can_edit: bool,
     delete_request: &super::delete_menu::Request,
 ) -> BoxView<'a> {
-    let project_label = project.to_owned();
-    let overview = format!("/{project}/overview");
     let identifier = controls.identifier.clone();
-    let copy_project = project.to_owned();
-    let copy_identifier = identifier.clone();
     let status = controls.status.clone();
     let header_status_open = controls.header_status_open.clone();
     let status_open = controls.status_open.clone();
@@ -914,7 +910,33 @@ fn document_topbar<'a>(
     let status_options = status_options(cx, controls);
     let edit_id = format!("native-issue-body-edit-{}", controls.identifier);
     let (export_error, export_button) = super::export::toolbar_fragments(cx, &controls.identifier);
-    let breadcrumb = super::list_return::breadcrumb(cx, project, &controls.identifier);
+    let list_return = super::list_return::breadcrumb(cx, project, &controls.identifier);
+    let breadcrumb = super::super::breadcrumbs::render(
+        cx,
+        delete_request.account_id,
+        vec![
+            super::super::breadcrumbs::Segment {
+                content: super::super::breadcrumbs::link(
+                    cx,
+                    project,
+                    &format!("/{project}/overview"),
+                    true,
+                ),
+                hide_below_sm: true,
+                copy: Some(project.to_owned()),
+            },
+            super::super::breadcrumbs::Segment {
+                content: list_return,
+                hide_below_sm: true,
+                copy: None,
+            },
+            super::super::breadcrumbs::Segment {
+                content: super::super::breadcrumbs::current(cx, &identifier, true),
+                hide_below_sm: false,
+                copy: Some(identifier),
+            },
+        ],
+    );
     let delete_menu = super::delete_menu::toolbar(cx, delete_request.clone(), can_edit, project);
     let keyboard = super::list_return::keyboard_mount(
         cx,
@@ -927,69 +949,7 @@ fn document_topbar<'a>(
         cx =>
         <div class="native-issue-detail__topbar" (keyboard)>
             <div class="native-issue-detail__scope">
-                <nav class="native-issue-detail__breadcrumbs" aria-label="Breadcrumb">
-                    <ol>
-                        <li data-hide-phone="">
-                            <a
-                                data-mono=""
-                                (super::super::navigation::attrs(cx, &overview))
-                                title=(project_label.clone())
-                            >
-                                <span data-label="">(project_label)</span>
-                            </a>
-                            <button
-                                class="native-issue-detail__copy"
-                                type="button"
-                                aria-label=(format!("Copy {copy_project}"))
-                                @click=$(|_event: Event| {
-                                    raw!(
-                                        "navigator.clipboard.writeText(${copy_project}.toString()).catch(() => {})",
-                                        (),
-                                    );
-                                })
-                            >
-                                (super::super::icons::ui_icon(cx, UiIcon::Copy, 12))
-                            </button>
-                        </li>
-                        <li data-separator="" data-hide-phone="" aria-hidden="true">
-                            (super::super::icons::ui_icon(
-                                cx,
-                                UiIcon::BreadcrumbSeparator,
-                                12,
-                            ))
-                        </li>
-                        <li data-hide-phone="">(breadcrumb)</li>
-                        <li data-separator="" data-hide-phone="" aria-hidden="true">
-                            (super::super::icons::ui_icon(
-                                cx,
-                                UiIcon::BreadcrumbSeparator,
-                                12,
-                            ))
-                        </li>
-                        <li>
-                            <span
-                                data-mono=""
-                                aria-current="page"
-                                title=(identifier.clone())
-                            >
-                                <span data-label="">(identifier)</span>
-                            </span>
-                            <button
-                                class="native-issue-detail__copy"
-                                type="button"
-                                aria-label=(format!("Copy {copy_identifier}"))
-                                @click=$(|_event: Event| {
-                                    raw!(
-                                        "navigator.clipboard.writeText(${copy_identifier}.toString()).catch(() => {})",
-                                        (),
-                                    );
-                                })
-                            >
-                                (super::super::icons::ui_icon(cx, UiIcon::Copy, 12))
-                            </button>
-                        </li>
-                    </ol>
-                </nav>
+                (breadcrumb)
                 <span aria-hidden="true">"/"</span>
                 <div class="native-issue-detail__picker">
                     if can_edit {
@@ -1088,7 +1048,8 @@ fn document_topbar<'a>(
                 </button>
             </div>
         </div>
-    }.boxed()
+    }
+    .boxed()
 }
 
 fn status_options<'a>(cx: &'a Cx, controls: &Controls) -> BoxView<'a> {

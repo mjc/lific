@@ -77,8 +77,16 @@ pub(crate) fn breadcrumb<'a>(cx: &'a Cx, project: &str, identifier: &str) -> Box
     attributes.insert(cx, "data-topcoat-on:mount", handler(project, &update));
     view! {
         cx =>
-        <a id=(id) :href=$(href.get()) :title=$(label.get()) (attributes)>
-            <span data-label="">$(label.get())</span>
+        <a
+            id=(id)
+            class=(super::super::breadcrumbs::LINK_CLASS)
+            :href=$(href.get())
+            :title=$(label.get())
+            (attributes)
+        >
+            <span class=(super::super::breadcrumbs::LABEL_CLASS) data-label="">
+                $(label.get())
+            </span>
         </a>
     }
     .boxed()
