@@ -212,6 +212,14 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
         .select(&scraper::Selector::parse("[data-native-module-name-editor]").unwrap())
         .next()
         .unwrap();
+    let details_toggle = document
+        .select(&scraper::Selector::parse("button[aria-label='Show details']").unwrap())
+        .next()
+        .expect("mobile details toggle is rendered");
+    let details_backdrop = document
+        .select(&scraper::Selector::parse("[data-native-module-details-backdrop]").unwrap())
+        .next()
+        .expect("the open mobile drawer has an outside-click backdrop");
     let status_options = document
         .select(&scraper::Selector::parse("[data-native-module-status-option]").unwrap())
         .map(|button| {
@@ -232,6 +240,12 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
         },
         "trigger": document.select(&scraper::Selector::parse("button[aria-label^='Edit module name']").unwrap()).next().unwrap().value().attr("data-topcoat-on:click").unwrap(),
         "status_options": status_options,
+        "details": {
+            "toggle": details_toggle.value().attr("data-topcoat-on:click").unwrap(),
+            "expanded_binding": details_toggle.value().attr("data-topcoat-bind:aria-expanded").unwrap(),
+            "backdrop": details_backdrop.value().attr("data-topcoat-on:click").unwrap(),
+            "backdrop_hidden_binding": details_backdrop.value().attr("data-topcoat-bind:hidden").unwrap(),
+        },
     });
     let output = home_fixture::evaluate_handler(
         "src/topcoat/native/modules/detail_interactions.test.cjs",
