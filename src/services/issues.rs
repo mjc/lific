@@ -217,18 +217,60 @@ pub(crate) fn commit_issue_update(
     realtime: &RealtimeHub,
     identity: &Option<ResolvedIdentity>,
     id: i64,
-    mut input: UpdateIssue,
+    input: UpdateIssue,
+) -> Result<Issue, LificError> {
+    commit_issue_update_with(db, realtime, identity, id, |_| input)
+}
+
+pub(crate) enum IssueLabelChange<'a> {
+    Attach(&'a str),
+    Remove(&'a str),
+}
+
+/// Apply one label intent to the current writer snapshot, preserving labels
+/// and unrelated fields that changed after the picker was rendered.
+pub(crate) fn commit_issue_label_change(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+    change: IssueLabelChange<'_>,
+) -> Result<Issue, LificError> {
+    commit_issue_update_with(db, realtime, identity, id, |current| {
+        let mut labels = current.labels.clone();
+        match change {
+            IssueLabelChange::Attach(name) => {
+                if !labels.iter().any(|label| label == name) {
+                    labels.push(name.to_owned());
+                }
+            }
+            IssueLabelChange::Remove(name) => labels.retain(|label| label != name),
+        }
+        UpdateIssue {
+            labels: Some(labels),
+            ..Default::default()
+        }
+    })
+}
+
+fn commit_issue_update_with(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+    patch: impl FnOnce(&Issue) -> UpdateIssue,
 ) -> Result<Issue, LificError> {
     let issue = db.transaction(|conn| {
         let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
         let user = crate::api::require_user(&identity)?;
-        input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         // Same recheck as the create path, against the issue's project as it
         // stands inside this transaction rather than as it read a moment ago.
         // An update cannot move an issue between projects, so reading it here
         // and writing below are the same project by construction.
-        let project_id = crate::db::queries::get_issue(conn, id)?.project_id;
-        authz::require_role_conn(conn, &identity, project_id, Role::Maintainer)?;
+        let current = crate::db::queries::get_issue(conn, id)?;
+        authz::require_role_conn(conn, &identity, current.project_id, Role::Maintainer)?;
+        let mut input = patch(&current);
+        input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         // LIF-262: `update_issue` re-scans the stored description and
         // reconciles links in the same savepoint as the edit.
         match crate::db::queries::update_issue(conn, id, &input) {
@@ -994,6 +1036,153 @@ mod tests {
         ] {
             assert_eq!(relations.len(), 2);
         }
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn label_intents_preserve_current_labels_and_unrelated_issue_fields() {
+        let (db, identity, before) = fixture();
+        for name in ["first", "concurrent", "second"] {
+            queries::create_label(
+                &db.write().unwrap(),
+                &CreateLabel {
+                    project_id: before.project_id,
+                    name: name.into(),
+                    color: "#123abc".into(),
+                },
+            )
+            .unwrap();
+        }
+        let concurrent = queries::update_issue(
+            &db.write().unwrap(),
+            before.id,
+            &UpdateIssue {
+                title: Some("Concurrent confirmed title".into()),
+                description: Some("Concurrent confirmed body".into()),
+                labels: Some(vec!["first".into(), "concurrent".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let attached = commit_issue_label_change(
+            &db,
+            &realtime,
+            &Some(identity.clone()),
+            before.id,
+            IssueLabelChange::Attach("second"),
+        )
+        .unwrap();
+        let mut attached_labels = attached.labels.clone();
+        attached_labels.sort();
+        assert_eq!(attached_labels, ["concurrent", "first", "second"]);
+        assert_eq!(attached.title, concurrent.title);
+        assert_eq!(attached.description, concurrent.description);
+        assert!(attached.seq > concurrent.seq);
+        let event = events.try_recv().unwrap();
+        assert_eq!(
+            event.event,
+            RealtimeEvent::IssueUpdated {
+                project_id: attached.project_id,
+                issue_id: attached.id,
+            }
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(event.message.to_text().unwrap()).unwrap();
+        assert_eq!(envelope["seq"], attached.seq);
+        assert!(events.try_recv().is_err());
+
+        let removed = commit_issue_label_change(
+            &db,
+            &realtime,
+            &Some(identity.clone()),
+            before.id,
+            IssueLabelChange::Remove("first"),
+        )
+        .unwrap();
+        let mut removed_labels = removed.labels.clone();
+        removed_labels.sort();
+        assert_eq!(removed_labels, ["concurrent", "second"]);
+        assert_eq!(removed.title, concurrent.title);
+        assert_eq!(removed.description, concurrent.description);
+        let repeated = commit_issue_label_change(
+            &db,
+            &realtime,
+            &Some(identity),
+            before.id,
+            IssueLabelChange::Attach("second"),
+        )
+        .unwrap();
+        let mut repeated_labels = repeated.labels;
+        repeated_labels.sort();
+        assert_eq!(repeated_labels, ["concurrent", "second"]);
+    }
+
+    #[test]
+    fn label_intents_recheck_current_role_and_do_not_publish_failed_writes() {
+        let (db, identity, before) = fixture();
+        for name in ["denied", "failed"] {
+            queries::create_label(
+                &db.write().unwrap(),
+                &CreateLabel {
+                    project_id: before.project_id,
+                    name: name.into(),
+                    color: "#123abc".into(),
+                },
+            )
+            .unwrap();
+        }
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        queries::members::upsert_member(
+            &db.write().unwrap(),
+            before.project_id,
+            identity.user.id,
+            Role::Viewer,
+        )
+        .unwrap();
+        assert!(matches!(
+            commit_issue_label_change(
+                &db,
+                &realtime,
+                &Some(identity.clone()),
+                before.id,
+                IssueLabelChange::Attach("denied")
+            ),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(events.try_recv().is_err());
+        assert_eq!(
+            queries::get_issue(&db.read().unwrap(), before.id)
+                .unwrap()
+                .seq,
+            before.seq
+        );
+
+        queries::members::upsert_member(
+            &db.write().unwrap(),
+            before.project_id,
+            identity.user.id,
+            Role::Maintainer,
+        )
+        .unwrap();
+        db.write().unwrap().execute_batch(
+            "CREATE TRIGGER fail_label_intent BEFORE INSERT ON issue_labels BEGIN SELECT RAISE(ABORT, 'forced label failure'); END;",
+        ).unwrap();
+        assert!(matches!(
+            commit_issue_label_change(
+                &db,
+                &realtime,
+                &Some(identity),
+                before.id,
+                IssueLabelChange::Attach("failed")
+            ),
+            Err(LificError::Database(_))
+        ));
+        let persisted = queries::get_issue(&db.read().unwrap(), before.id).unwrap();
+        assert_eq!(persisted.labels, before.labels);
+        assert_eq!(persisted.seq, before.seq);
         assert!(events.try_recv().is_err());
     }
 }
