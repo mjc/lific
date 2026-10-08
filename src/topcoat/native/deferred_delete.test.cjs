@@ -18,6 +18,14 @@ const source = decode(tag.match(/data-topcoat-on:mount="([^"]*)"/)[1]);
 const ownerKey = decode(tag.match(/data-native-delete-owner="([^"]*)"/)?.[1] || '7:ACC');
 const account = ownerKey.split(':')[0];
 const capturedHandles = decode(tag.match(/data-native-action-handles="([^"]*)"/)[1]);
+const toastIdBindings = [...html.matchAll(/<div\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)]
+  .map(match=>match[0]).filter(tag=>/\bdata-native-toast-slot=/.test(tag))
+  .map(tag=>decode(tag.match(/data-topcoat-bind:data-native-toast-id="([^"]*)"/)[1]));
+assert.equal(toastIdBindings.length,4,'All four actual toast ID projections are supplied.');
+const undoHiddenBindings = [...html.matchAll(/<button\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)]
+  .map(match=>match[0]).filter(tag=>/\bdata-native-toast-undo=/.test(tag))
+  .map(tag=>decode(tag.match(/data-topcoat-bind:hidden="([^"]*)"/)[1]));
+assert.equal(undoHiddenBindings.length,4,'All four actual Undo visibility projections are supplied.');
 class Node extends EventTarget {
   constructor(dataset={}) {super();this.dataset=dataset;this.isConnected=true;this.hovered=false;}
   contains(node) {return node===this||node===this.undo||node===this.close;}
@@ -57,6 +65,17 @@ function fixture() {
   for(const match of html.matchAll(/<!--::topcoat::signal\((.*?)\)-->/gs)){
     const signal=JSON.parse(decode(match[1]));registry.insert(signal.id,base.hydrate(signal.v));signalIds.push(signal.id);
   }
+  const toastIds=toastIdBindings.map(binding=>vm.runInNewContext(`cx => () => (${binding})`,context)(base));
+  const undoHidden=undoHiddenBindings.map(binding=>vm.runInNewContext(`cx => () => (${binding})`,context)(base));
+  const bindToastIds=()=>owner.toasts.forEach((toast,index)=>{
+    Object.defineProperty(toast.dataset,'nativeToastId',{
+      configurable:true,get:()=>toastIds[index]().toString(),
+    });
+    Object.defineProperty(toast.undo,'hidden',{
+      configurable:true,get:()=>undoHidden[index]().toString()==='true',
+    });
+  });
+  bindToastIds();
   const invoke=()=>{
     controller=new AbortController();require('node:events').setMaxListeners(0,controller.signal);
     const cx=Object.assign(Object.create(base),{abortSignal:controller.signal,navigate:href=>{navigations.push(href);return Promise.resolve();}});
@@ -99,6 +118,7 @@ function fixture() {
     if(!ordinary){const event=new Event('topcoat:before-page-replace');event.detail={nextDocument:{getElementById:()=>key===null?null:makeOwner(key)}};document.dispatchEvent(event);}
     controller.abort();owner.isConnected=false;
     owner=makeOwner(key);owner.toasts[0].hovered=hovered;
+    bindToastIds();
     if(mount)invoke();
   };
   const finish=async(ok)=>{
@@ -124,7 +144,7 @@ test('Account errors use the shared expiring toast without Undo or network work'
   assert.ok(f.texts().includes("Couldn't copy to clipboard"));
   assert.ok(f.texts().includes('error'));
   assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);
-  f.click(f.owner.toasts[0].undo);await flush();
+  assert.equal(f.owner.toasts[0].undo.hidden,true,'Error notifications never offer an Undo action.');
   assert.equal(f.calls.length,0);assert.deepEqual(f.navigations,[]);
   await tick(f,7999);
   assert.equal(f.owner.toasts.filter(toast=>toast.dataset.nativeToastId!=='0').length,1);

@@ -31,6 +31,7 @@ pub(crate) struct ToastErrorRequest {
 type OwnerHandlesSurrogate<'a> = <&'a OwnerHandles as Surrogated>::Surrogate;
 type ModuleRequestSurrogate = <ModuleRequest as Surrogated>::Surrogate;
 type ModuleAssignmentReplySurrogate = <ModuleAssignmentReply as Surrogated>::Surrogate;
+type ToastErrorRequestSurrogate = <ToastErrorRequest as Surrogated>::Surrogate;
 
 // Each owner supplies handles once; the shared factory contains the Rust-authored actions.
 #[record]
@@ -106,14 +107,14 @@ pub(crate) fn owner<'a>(
     state_cx: &Cx,
     account_id: i64,
     project: &str,
+    needs_notifications: bool,
     pending_issues: Signal<Vec<i64>>,
 ) -> BoxView<'a> {
     let owner_key = format!("{account_id}:{project}");
-    // Common routes cannot originate these actions. Carry only a small account
-    // sentinel until an issue route has mounted the durable owner; afterwards
-    // its activation signal keeps pending work and Undo alive on common routes.
+    // Carry only a small account sentinel until a route needs notifications.
+    // Afterwards activation keeps pending work and Undo alive on common routes.
     let activated = signal(state_cx, || false);
-    if project.is_empty() && !activated.get_untracked() {
+    if project.is_empty() && !needs_notifications && !activated.get_untracked() {
         return view! {
             cx =>
             <div
@@ -285,6 +286,9 @@ pub(crate) fn handler_factory() -> Js {
         let _label_failure_message = message.clone();
         let _label_failure_kind = kind.clone();
         let _label_failure_remaining = remaining.clone();
+        let _error_message = message.clone();
+        let _error_kind = kind.clone();
+        let _error_remaining = remaining.clone();
         let _allocate_module_request = module_request.clone();
         let _close_module_request = module_request.clone();
         let _undo_module_request = module_request;
@@ -670,6 +674,18 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
+        let _error_accept = |request: ToastErrorRequestSurrogate| {
+            if request.account_id != account_id {
+                false
+            } else {
+                let index = raw!("${_allocate}()", 0_usize);
+                _error_message.index(index).set(request.message);
+                _error_kind.index(index).set("error".to_owned());
+                _error_remaining.index(index).set(8_000.0_f64);
+                raw!("${_timer}(${index});", ());
+                true
+            }
+        };
         let _failure_toast = |label: StringSurrogate, _restore: StringSurrogate| {
             let index = raw!("${_allocate}()", 0_usize);
             _failure_toast_message
@@ -837,6 +853,9 @@ pub(crate) fn handler_factory() -> Js {
             owner.nativeModuleFailure = ${_module_failure};
             owner.nativeLabelFinish = ${_label_finish};
             owner.nativeLabelNetworkFailure = ${_label_network_failure};
+            window.addEventListener('lific:native-toast-error',event=>{
+                if (${_error_accept}(event.detail).toString()==='true') event.preventDefault();
+            },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-label-request',event=>{
                 if (${_label_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
@@ -930,7 +949,7 @@ mod tests {
     async fn owner_fixture(cx: &Cx) -> topcoat::Result<impl topcoat::view::View> {
         let owner_cx = cx.keyed((7_i64, "ACC"));
         let pending = signal(&owner_cx, Vec::<i64>::new);
-        Ok(view! { cx => (owner(cx, &owner_cx, 7, "ACC", pending)) })
+        Ok(view! { cx => (owner(cx, &owner_cx, 7, "ACC", false, pending)) })
     }
 
     async fn markup(mount: &str) -> String {
