@@ -449,6 +449,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_creation_rechecks_current_admin_authority_before_inserting() {
+        let (db, admin, _, _, _, _, project_id) = setup_membership_test();
+        let identity = Some(crate::auth::fresh_identity(&admin, crate::actor::Transport::Web));
+        db.write().unwrap().execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id]).unwrap();
+
+        let result = super::create_structure::<super::Folders>(
+            axum::extract::State(db.clone()),
+            axum::Extension(crate::realtime::RealtimeHub::new()),
+            axum::Extension(identity),
+            axum::Json(crate::db::models::CreateFolder {
+                project_id,
+                parent_id: None,
+                name: "Must not create".into(),
+            }),
+        ).await;
+
+        assert!(matches!(result, Err(crate::error::LificError::Forbidden(_))), "stale admin snapshot must not authorize folder creation");
+        assert!(crate::db::queries::list_folders(&db.read().unwrap(), project_id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn regular_cannot_create_folder() {
         let (db, _, _lead, regular, project_id) = setup_lead_test();
         let regular_app = app_as_user(db, &regular);

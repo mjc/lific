@@ -769,6 +769,60 @@ async fn native_pages_move_action_is_read_only_for_viewers() {
     );
 }
 
+#[tokio::test]
+async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
+    let fixture = home_fixture::fixture();
+    let _ = seed_page(&fixture, true);
+    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let new_menu = document
+        .select(&scraper::Selector::parse("button[aria-haspopup='menu']").unwrap())
+        .find(|button| button.text().collect::<String>().trim() == "New")
+        .expect("maintainers can open the Pages New menu");
+    let menu_handler = new_menu
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("opening New has an emitted Topcoat handler");
+    let menu_open = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "handlers": [menu_handler],
+    }));
+    let menu_signals = serde_json::from_value(menu_open["signals"].clone()).unwrap();
+    let (status, menu_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(menu_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let menu_document = scraper::Html::parse_document(&menu_html);
+    let new_folder = menu_document
+        .select(&scraper::Selector::parse("[role=menu] [role=menuitem]").unwrap())
+        .find(|item| item.text().collect::<String>().trim() == "New folder")
+        .expect("the New menu exposes the Main New folder action");
+    let create_handler = new_folder
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("New folder has an emitted Topcoat handler");
+    let composer_open = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&menu_html),
+        "handlers": [create_handler],
+    }));
+    let composer_signals = serde_json::from_value(composer_open["signals"].clone()).unwrap();
+    let (status, composer_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(composer_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let composer_document = scraper::Html::parse_document(&composer_html);
+    let folder_name = composer_document
+        .select(&scraper::Selector::parse("input[placeholder='Folder name']").unwrap())
+        .next()
+        .expect("New folder opens the inline Folder name creator");
+    assert!(
+        folder_name
+            .value()
+            .attr("data-topcoat-on:keydown")
+            .is_some(),
+        "the inline folder creator handles Enter and Escape through an emitted handler",
+    );
+}
+
 fn seed_page_with_folders(
     fixture: &home_fixture::Fixture,
     editable: bool,
@@ -825,6 +879,13 @@ fn seed_page_with_folders(
 
 fn run_move_handler(input: &serde_json::Value) -> serde_json::Value {
     home_fixture::evaluate_handler("src/topcoat/native/pages/move_handler.test.cjs", input)
+}
+
+fn run_folder_create_handler(input: &serde_json::Value) -> serde_json::Value {
+    home_fixture::evaluate_handler(
+        "src/topcoat/native/pages/folder_create_handler.test.cjs",
+        input,
+    )
 }
 
 fn seed_page(fixture: &home_fixture::Fixture, editable: bool) -> (i64, i64, i64) {
