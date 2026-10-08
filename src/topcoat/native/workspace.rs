@@ -35,6 +35,76 @@ pub(crate) enum NativeRoute {
 mod route_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn issue_collection_controls_execute_main_filter_sort_and_storage_contract() {
+        let fixture = super::super::home_fixture::fixture();
+        let (status, html) =
+            super::super::home_fixture::document(&fixture, "/app", "/ACC/issues", true, None).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let selector = scraper::Selector::parse("[data-native-issue-controls]").unwrap();
+        let owner = document
+            .select(&selector)
+            .next()
+            .expect("native issue controls");
+        let mut handlers = serde_json::Map::new();
+        for control in
+            owner.select(&scraper::Selector::parse("[data-native-issue-control]").unwrap())
+        {
+            let element = control.value();
+            let id = element.attr("data-native-issue-control").unwrap();
+            for event in ["click", "input", "keydown"] {
+                if let Some(handler) = element.attr(&format!("data-topcoat-on:{event}")) {
+                    handlers.insert(format!("{id}:{event}"), serde_json::json!(handler));
+                }
+            }
+        }
+        let result = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_collection/controls.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::home_fixture::page_signals(&html),
+                "mount_handler": owner.value().attr("data-topcoat-on:mount").unwrap(),
+                "handlers": handlers,
+            }),
+        );
+        assert_eq!(result["checked"], true);
+    }
+
+    #[test]
+    fn issue_list_and_board_admit_queries_ignored_by_main() {
+        for path in [
+            "/ACC/issues?status=done",
+            "/ACC/issues?source=sidebar",
+            "/ACC/board?assignee=me",
+            "/ACC/board?status=active&priority=urgent",
+        ] {
+            let route = ParsedRoute::parse(path);
+            assert!(
+                matches!(native_route(&route, true), Some(NativeRoute::Workspace)),
+                "Main strips the query before routing {path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_issue_queries_render_main_content_at_all_mounts() {
+        let fixture = super::super::home_fixture::fixture();
+        for mount in ["", "/app", "/team/lific"] {
+            for path in ["/ACC/issues?status=done", "/ACC/board?assignee=me"] {
+                let (status, html) =
+                    super::super::home_fixture::document(&fixture, mount, path, true, None).await;
+                assert_eq!(status, axum::http::StatusCode::OK, "{mount}{path}");
+                assert!(
+                    html.contains("Visible active initial work"),
+                    "{mount}{path}"
+                );
+                assert!(html.contains("Visible todo initial work"), "{mount}{path}");
+                assert!(!html.contains("Private hidden initial work"));
+                assert!(!html.contains("/api/issues"));
+            }
+        }
+    }
+
     #[test]
     fn files_and_graph_routes_admit_private_pages_and_exclude_public_pages() {
         for path in [
