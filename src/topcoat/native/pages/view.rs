@@ -1,8 +1,11 @@
 //! Native Pages list and editor, populated from the authorized shared service.
 use super::super::super::runtime::whitespace::{StrEcmaTrimExt, trim_ecmascript};
 use super::super::fuzzy::score as fuzzy_score;
-use super::super::{context, mascot, navigation, session, transport};
-use super::actions::{create as create_page, delete as delete_page, save as save_page};
+use super::super::{browser, context, icons, mascot, navigation, session, transport};
+use super::actions::{
+    create as create_page, delete as delete_page, move_to_folder as commit_move_page,
+    save as save_page,
+};
 use super::{pin, status};
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -55,10 +58,11 @@ async fn pages_list(
         cx,
         crate::services::pages::project_structure(context::db(cx), &caller.identity, project_id),
     )?;
-    let folder_names = structure
+    let folder_catalog = structure
         .folders
         .into_iter()
-        .map(|folder| (folder.id, folder.name));
+        .map(|folder| (folder.id, folder.name))
+        .collect::<Vec<_>>();
     let label_names = structure.labels.into_iter().map(|label| label.name);
     let query = signal(cx, || "".to_owned());
     let status = signal(cx, || "__active".to_owned());
@@ -69,6 +73,14 @@ async fn pages_list(
     let busy = signal(cx, || false);
     let error = signal(cx, || "".to_owned());
     let revision = signal(cx, || 0_usize);
+    let move_open = signal(cx, || false);
+    let move_page_id = signal(cx, || 0_i64);
+    let move_page_title = signal(cx, String::new);
+    let move_folder = signal(cx, String::new);
+    let move_busy = signal(cx, || false);
+    let move_error = signal(cx, String::new);
+    let move_error_prefix = signal(cx, String::new);
+    let move_browser = browser::bindings();
     let create = create_attributes(
         cx,
         account,
@@ -85,9 +97,43 @@ async fn pages_list(
     let label_options = label_names
         .map(|name| view! { cx => <option value=(name.clone())>(name)</option> }.boxed())
         .collect::<Vec<_>>();
-    let folder_options = folder_names
-        .map(|(id, name)| view! { cx => <option value=(id.to_string())>(name)</option> }.boxed())
+    let folder_options = folder_catalog
+        .iter()
+        .map(|(id, name)| {
+            let value = id.to_string();
+            let name = name.clone();
+            view! { cx => <option value=(value)>(name)</option> }.boxed()
+        })
         .collect::<Vec<_>>();
+    let picker_folder_options = folder_catalog
+        .iter()
+        .map(|(id, name)| {
+            let value = id.to_string();
+            let name = name.clone();
+            let selected = move_folder.clone();
+            view! {
+                cx =>
+                <option value=(value.clone()) :selected=$(selected.get() == value)>
+                    (name)
+                </option>
+            }
+            .boxed()
+        })
+        .collect::<Vec<_>>();
+    let picker_change = move_picker_change(
+        cx,
+        account,
+        MovePickerState {
+            open: move_open.clone(),
+            page_id: move_page_id.clone(),
+            page_title: move_page_title.clone(),
+            folder: move_folder.clone(),
+            busy: move_busy.clone(),
+            error: move_error.clone(),
+            error_prefix: move_error_prefix.clone(),
+            revision: revision.clone(),
+        },
+    );
     let status_tabs = [
         ("browse", "Browse"), ("recent", "Recent"),
         ("drafts", "Drafts"), ("archived", "Archived"),
@@ -216,13 +262,123 @@ async fn pages_list(
                     account: account,
                     project_id: project_id,
                     project: project.clone(),
+                    can_edit: can_edit,
                     query: $(query.get()),
                     status: $(status.get()),
                     label: $(label.get()),
                     tab: $(tab.get()),
                     folder: $(folder.get()),
-                    revision: $(revision.get())
+                    revision: $(revision.get()),
+                    move_state: (
+                        move_open.clone(),
+                        move_page_id.clone(),
+                        move_page_title.clone(),
+                        move_folder.clone(),
+                        move_busy.clone(),
+                        move_error.clone(),
+                        move_error_prefix.clone(),
+                    )
                 )
+                if can_edit {
+                    <div
+                        data-native-page-move-backdrop=""
+                        class="fixed inset-0 z-[100] flex items-start justify-center bg-black/25 px-2 pt-[14dvh]"
+                        :hidden=$(!move_open.get())
+                        @click=$(|_event: Event| {
+                            if !move_browser.is_disposed() {
+                                if !move_busy.get() {
+                                    if raw!(
+                                        "cx.hydrate(${_event}.inner.target === ${_event}.inner.currentTarget)",
+                                        false,
+                                    ) {
+                                        move_open.set(false);
+                                    }
+                                }
+                            }
+                        })
+                        @keydown=$(|event: Event| {
+                            if !move_browser.is_disposed() {
+                                if event.key == "Escape" {
+                                    if !move_busy.get() {
+                                        move_open.set(false);
+                                    }
+                                }
+                            }
+                        })
+                    >
+                        <div
+                            class="w-full max-w-[calc(100vw-1rem)] sm:max-w-[420px] rounded-xl border border-solid border-[var(--border)] bg-[var(--surface)] shadow-[0_16px_48px_rgba(0,0,0,0.28)]"
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Move page to folder"
+                            tabindex="-1"
+                        >
+                            <div
+                                class="flex items-center gap-3 px-4 py-3 border-b border-solid border-[var(--border)]"
+                            >
+                                <h2
+                                    class="m-0 flex-1 text-body-lg font-semibold text-[var(--text)]"
+                                >
+                                    "Move to folder"
+                                </h2>
+                                <span
+                                    class="truncate text-caption text-[var(--text-faint)]"
+                                >
+                                    $(move_page_title.get())
+                                </span>
+                                <button
+                                    type="button"
+                                    aria-label="Close move folder picker"
+                                    data-native-page-move-cancel=""
+                                    class="size-7 rounded-md border-0 bg-transparent text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] disabled:opacity-50"
+                                    :disabled=$(move_busy.get())
+                                    @click=$(|_event: Event| {
+                                        if !move_browser.is_disposed() {
+                                            if !move_busy.get() {
+                                                move_open.set(false);
+                                            }
+                                        }
+                                    })
+                                >
+                                    (icons::ui_icon(cx, icons::UiIcon::Close, 15))
+                                </button>
+                            </div>
+                            <div class="px-4 py-4">
+                                <label
+                                    for="native-page-move-folder"
+                                    class="mb-2 block text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                                >
+                                    "Folder"
+                                </label>
+                                <select
+                                    id="native-page-move-folder"
+                                    aria-label="Folder"
+                                    data-native-page-move-folder=""
+                                    class="w-full rounded-md border border-solid border-[var(--border)] bg-[var(--bg)] px-2.5 py-2 text-body-sm text-[var(--text)]"
+                                    :value=$(move_folder.get())
+                                    :disabled=$(move_busy.get())
+                                    (picker_change)
+                                >
+                                    <option value="" :selected=$(move_folder.get().is_empty())>
+                                        "No folder / root"
+                                    </option>
+                                    for option in picker_folder_options {
+                                        (option)
+                                    }
+                                </select>
+                                <p
+                                    data-native-page-move-error=""
+                                    role="alert"
+                                    class="mt-3 text-body-sm text-[var(--error)]"
+                                    :hidden=$(move_error.get().is_empty())
+                                >
+                                    $(move_error_prefix.get())
+                                    $(move_error.get())
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                }
             </main>
         </div>
     })
@@ -233,6 +389,119 @@ struct PageCreateState {
     busy: Signal<bool>,
     error: Signal<String>,
     revision: Signal<usize>,
+}
+
+#[derive(Clone)]
+struct MovePickerState {
+    open: Signal<bool>,
+    page_id: Signal<i64>,
+    page_title: Signal<String>,
+    folder: Signal<String>,
+    busy: Signal<bool>,
+    error: Signal<String>,
+    error_prefix: Signal<String>,
+    revision: Signal<usize>,
+}
+
+#[derive(Clone)]
+struct MovePickerTriggerState {
+    open: Signal<bool>,
+    page_id: Signal<i64>,
+    page_title: Signal<String>,
+    folder: Signal<String>,
+    busy: Signal<bool>,
+    error: Signal<String>,
+    error_prefix: Signal<String>,
+}
+
+fn move_picker_change(cx: &Cx, account: i64, state: MovePickerState) -> Attributes {
+    let MovePickerState {
+        open,
+        page_id,
+        page_title: _,
+        folder,
+        busy,
+        error,
+        error_prefix: _,
+        revision,
+    } = state;
+    let browser = browser::bindings();
+    let failed_page_id = page_id.clone();
+    let failed_folder = folder.clone();
+    let failed_busy = busy.clone();
+    let failed_error = error.clone();
+    let handler = expr!(async |event: Event| {
+        if !browser.is_disposed() {
+            if !busy.get() {
+                let next_folder = event.target.value.to_owned();
+                let previous_folder = folder.get();
+                if next_folder == previous_folder {
+                    open.set(false);
+                } else {
+                    let selected_page_id = page_id.get();
+                    if selected_page_id != 0_i64 {
+                        let request_folder = next_folder.clone();
+                        let target_page = selected_page_id;
+                        folder.set(next_folder.clone());
+                        busy.set(true);
+                        error.set("".to_owned());
+                        let failed_target_page = selected_page_id;
+                        let saved_target_page = selected_page_id;
+                        let failed_previous_folder = previous_folder.clone();
+                        let saved_previous_folder = previous_folder.clone();
+                        let _failed = || {
+                            if !browser.is_disposed() {
+                                if failed_page_id.get() == failed_target_page {
+                                    failed_busy.set(false);
+                                    failed_folder.set(failed_previous_folder.clone());
+                                    failed_error.set(
+                                        "Couldn't reach the server. Check your connection and try again."
+                                            .to_owned(),
+                                    );
+                                }
+                            }
+                        };
+                        let _save = async || {
+                            if browser.is_disposed() {
+                                return;
+                            }
+                            let outcome =
+                                commit_move_page(account, target_page, request_folder.clone())
+                                    .await;
+                            if !browser.is_disposed() {
+                                if page_id.get() == saved_target_page {
+                                    busy.set(false);
+                                    if outcome.status.is_ok() {
+                                        error.set("".to_owned());
+                                        open.set(false);
+                                        revision.increment();
+                                    } else {
+                                        folder.set(saved_previous_folder.clone());
+                                        error.set(outcome.status.unwrap_err());
+                                    }
+                                }
+                            }
+                        };
+                        browser.microtask(|| {
+                        if !browser.is_disposed() {
+                            raw!(
+                                "Promise.resolve().then(()=>${_save}()).catch(()=>${_failed}());",
+                                ()
+                            );
+                        }
+                    });
+                    }
+                }
+            }
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:change",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
 }
 
 fn create_attributes(
@@ -316,6 +585,98 @@ fn focus_create_attributes(cx: &Cx) -> Attributes {
     attrs
 }
 
+#[allow(clippy::too_many_arguments)]
+fn move_picker_trigger(
+    cx: &Cx,
+    page_id: i64,
+    title: String,
+    identifier: String,
+    folder_id: Option<i64>,
+    state: MovePickerTriggerState,
+    can_edit: bool,
+) -> Attributes {
+    if !can_edit {
+        return Attributes::with_capacity(0);
+    }
+    let folder = folder_id.map_or_else(String::new, |id| id.to_string());
+    let prefix = format!("Couldn't move {identifier}: ");
+    let browser = browser::bindings();
+    let MovePickerTriggerState {
+        open,
+        page_id: selected_page,
+        page_title: selected_title,
+        folder: selected_folder,
+        busy,
+        error,
+        error_prefix,
+    } = state;
+    let click_open = open.clone();
+    let click_page = selected_page.clone();
+    let click_title = selected_title.clone();
+    let click_folder = selected_folder.clone();
+    let click_error = error.clone();
+    let click_prefix = error_prefix.clone();
+    let click_busy = busy.clone();
+    let click_handler = expr!(|event: Event| {
+        if !browser.is_disposed() {
+            event.stop_propagation();
+            if !click_busy.get() {
+                click_page.set(page_id);
+                click_title.set(title.clone());
+                click_folder.set(folder.clone());
+                click_error.set("".to_owned());
+                click_prefix.set(prefix.clone());
+                click_open.set(true);
+            }
+        }
+    });
+    let key_page = selected_page;
+    let key_title = selected_title;
+    let key_folder = selected_folder;
+    let key_error = error;
+    let key_prefix = error_prefix;
+    let key_open = open;
+    let key_busy = busy;
+    let key_handler = expr!(|event: Event| {
+        if !browser.is_disposed() {
+            if event.key == "Enter" {
+                event.prevent_default();
+                event.stop_propagation();
+                if !key_busy.get() {
+                    key_page.set(page_id);
+                    key_title.set(title.clone());
+                    key_folder.set(folder.clone());
+                    key_error.set("".to_owned());
+                    key_prefix.set(prefix.clone());
+                    key_open.set(true);
+                }
+            }
+        }
+    });
+    let mut attrs = Attributes::with_capacity(2);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        click_handler.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:keydown",
+        key_handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+type MovePickerSignals = (
+    Signal<bool>,
+    Signal<i64>,
+    Signal<String>,
+    Signal<String>,
+    Signal<bool>,
+    Signal<String>,
+    Signal<String>,
+);
+
 use row_shards::native_pages_rows;
 
 #[allow(
@@ -331,14 +692,25 @@ mod row_shards {
         account: i64,
         project_id: i64,
         project: String,
+        can_edit: bool,
         query: String,
         status: String,
         label: String,
         tab: String,
         folder: String,
         revision: usize,
+        move_state: MovePickerSignals,
     ) -> topcoat::Result<impl View> {
         let _ = revision;
+        let (
+            move_open,
+            move_page_id,
+            move_page_title,
+            move_folder,
+            move_busy,
+            move_error,
+            move_error_prefix,
+        ) = move_state;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
         if user.id != account {
@@ -352,6 +724,7 @@ mod row_shards {
         let folder = folder.parse::<i64>().unwrap_or(0);
         let query_empty = trim_ecmascript(&query).is_empty();
         let searching = !query_empty;
+        let show_move = can_edit && !searching && tab == "browse";
         let rows = session::read(
             cx,
             crate::services::pages::list_project_pages(
@@ -387,9 +760,99 @@ mod row_shards {
                 (page, href, preview)
             })
             .collect::<Vec<_>>();
+        let has_pages = !pages.is_empty();
+        let page_rows = pages
+            .into_iter()
+            .map(|(page, href, preview)| {
+                let action = move_picker_trigger(
+                    cx,
+                    page.id,
+                    page.title.clone(),
+                    page.identifier.clone(),
+                    page.folder_id,
+                    MovePickerTriggerState {
+                        open: move_open.clone(),
+                        page_id: move_page_id.clone(),
+                        page_title: move_page_title.clone(),
+                        folder: move_folder.clone(),
+                        busy: move_busy.clone(),
+                        error: move_error.clone(),
+                        error_prefix: move_error_prefix.clone(),
+                    },
+                    can_edit,
+                );
+                view! {
+                    cx =>
+                    <li
+                        data-native-page-row=(page.id.to_string())
+                        class="border-b border-solid border-[var(--border)] last:border-b-0"
+                    >
+                        <div class="group flex items-center gap-2">
+                            <a
+                                class="native-pages__row flex min-w-0 flex-1 flex-col gap-1 rounded-md px-3 py-3 no-underline hover:bg-[var(--bg-subtle)]"
+                                (href)
+                            >
+                                <span
+                                    class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+                                >
+                                    <span
+                                        class="font-mono text-caption text-[var(--text-muted)]"
+                                    >
+                                        (page.identifier)
+                                    </span>
+                                    <span class="text-body font-medium text-[var(--text)]">
+                                        (page.title)
+                                    </span>
+                                    <span class="text-micro text-[var(--text-faint)]">
+                                        (status_label(&page.status))
+                                    </span>
+                                    if page.pinned {
+                                        <span class="text-micro text-[var(--accent)]">
+                                            "Pinned"
+                                        </span>
+                                    }
+                                </span>
+                                if !preview.is_empty() {
+                                    <span
+                                        class="text-body-sm text-[var(--text-muted)] line-clamp-2"
+                                    >
+                                        (preview)
+                                    </span>
+                                }
+                                if !page.labels.is_empty() {
+                                    <span class="mt-0.5 flex gap-1.5">
+                                        for item in page.labels {
+                                            <span
+                                                class="rounded bg-[var(--bg-subtle)] px-1.5 py-0.5 text-micro text-[var(--text-muted)]"
+                                            >
+                                                (item)
+                                            </span>
+                                        }
+                                    </span>
+                                }
+                            </a>
+                            if show_move {
+                                <span
+                                    data-native-page-move=""
+                                    role="button"
+                                    tabindex="0"
+                                    title="Move to folder…"
+                                    aria-label="Move to folder…"
+                                    class="shrink-0 cursor-pointer text-[var(--text-faint)] opacity-0 transition hover:text-[var(--accent)] group-hover:opacity-100 pointer-coarse:opacity-100"
+                                    (action)
+                                >
+                                    (icons::project_icon(cx, Some("lucide:FolderOpen"), 13))
+                                </span>
+                            }
+                        </div>
+                    </li>
+                }
+                .boxed()
+            })
+            .collect::<Vec<_>>();
         Ok(view! {
             cx =>
-            if pages.is_empty() {
+            if !has_pages {
                 if is_true_empty {
                     if query_empty {
                         if tab == "browse" {
@@ -451,55 +914,8 @@ mod row_shards {
                 }
             } else {
                 <ul class="native-pages__rows list-none p-0 m-0" aria-label="Pages">
-                    for (page, href, preview) in pages {
-                        <li
-                            data-native-page-row=(page.id.to_string())
-                            class="border-b border-solid border-[var(--border)] last:border-b-0"
-                        >
-                            <a
-                                class="native-pages__row flex flex-col gap-1 px-3 py-3 rounded-md no-underline hover:bg-[var(--bg-subtle)]"
-                                (href)
-                            >
-                                <span
-                                    class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
-                                >
-                                    <span
-                                        class="font-mono text-caption text-[var(--text-muted)]"
-                                    >
-                                        (page.identifier)
-                                    </span>
-                                    <span class="text-body font-medium text-[var(--text)]">
-                                        (page.title)
-                                    </span>
-                                    <span class="text-micro text-[var(--text-faint)]">
-                                        (status_label(&page.status))
-                                    </span>
-                                    if page.pinned {
-                                        <span class="text-micro text-[var(--accent)]">
-                                            "Pinned"
-                                        </span>
-                                    }
-                                </span>
-                                if !preview.is_empty() {
-                                    <span
-                                        class="text-body-sm text-[var(--text-muted)] line-clamp-2"
-                                    >
-                                        (preview)
-                                    </span>
-                                }
-                                if !page.labels.is_empty() {
-                                    <span class="flex gap-1.5 mt-0.5">
-                                        for item in page.labels {
-                                            <span
-                                                class="text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
-                                            >
-                                                (item)
-                                            </span>
-                                        }
-                                    </span>
-                                }
-                            </a>
-                        </li>
+                    for row in page_rows {
+                        (row)
                     }
                 </ul>
             }

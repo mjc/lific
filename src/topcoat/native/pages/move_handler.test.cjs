@@ -20,6 +20,7 @@ const fixture = handlerFixture(input.signals, async (url, options) => {
   return {ok: true, json: async () => ({t: 'Record', v: {status: {t: 'Result', ok: 'saved'}}})};
 }, input.browser_source);
 const {cx, context} = fixture;
+context.document.documentElement.getAttribute = () => input.mount || '';
 const referenced = new Set();
 const signal = cx.signal.bind(cx);
 cx.signal = id => {

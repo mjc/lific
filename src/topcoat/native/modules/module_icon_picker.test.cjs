@@ -77,7 +77,8 @@ async function mountedDetailSave() {
   fire(runtime, input.choice, 'click', {}, pane.cx);
   await flush();
   assert.equal(requests.length, 1, 'the mounted picker emits one icon update');
-  assert.ok(requests[0].url.endsWith('/__native_modules/update'));
+  assert.equal(requests[0].url, `${input.mount}/__native_modules/update`,
+    'the emitted update preserves the mounted procedure destination');
   assert.deepEqual(requests[0].arguments, input.expected_arguments,
     'the mounted picker update preserves account, project, module, field, and icon');
   pane.controller.abort();
