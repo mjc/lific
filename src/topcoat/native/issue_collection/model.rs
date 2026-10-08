@@ -86,9 +86,6 @@ impl ViewState {
 pub(super) struct Stats {
     pub total: usize,
     pub statuses: [usize; 5],
-    pub priorities: [usize; 5],
-    pub by_module: HashMap<i64, usize>,
-    pub no_module: usize,
 }
 
 #[derive(Debug)]
@@ -116,8 +113,6 @@ pub(super) struct Selection {
     pub lanes: Option<Vec<Lane>>,
     pub visible_statuses: Vec<Status>,
     pub count_label: String,
-    pub stats: Stats,
-    pub searching: bool,
     pub show_search_cap: bool,
     pub empty_filtered: bool,
     pub layout: String,
@@ -253,8 +248,6 @@ pub(super) fn select(collection: &Collection, state: &ViewState, layout: &str) -
         lanes,
         visible_statuses,
         count_label,
-        stats,
-        searching,
         layout: layout.to_owned(),
         density: state.density.clone(),
         collapsed_columns: state.collapsed_columns.clone(),
@@ -270,12 +263,6 @@ pub(super) fn statistics(issues: &[Issue]) -> Stats {
     for issue in issues {
         if let Some(index) = STATUSES.iter().position(|status| *status == issue.status) {
             stats.statuses[index] += 1;
-        }
-        stats.priorities[priority_rank(issue.priority)] += 1;
-        if let Some(module) = issue.module_id {
-            *stats.by_module.entry(module).or_default() += 1;
-        } else {
-            stats.no_module += 1;
         }
     }
     stats

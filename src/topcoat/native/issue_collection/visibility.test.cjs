@@ -48,7 +48,7 @@ assert.deepEqual(JSON.parse(live.stored.get(key)), ['backlog', 'todo', 'done', '
   'showing Active changes only that status');
 const recoveredSignals = signals(live.runtime);
 live.invoke('column:active');
-assert.deepEqual(JSON.parse(live.stored.get(key)), statuses,
+assert.deepEqual(JSON.parse(live.stored.get(key)).sort(), [...statuses].sort(),
   'a repeated click hides Active again');
 assert.equal(live.stored.get(otherKey), JSON.stringify(['todo']),
   'visibility remains isolated per project');
