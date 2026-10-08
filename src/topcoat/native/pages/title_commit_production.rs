@@ -426,8 +426,8 @@ async fn native_page_title_ignores_older_success_snapshot_after_newer_sequence()
         .next()
         .unwrap();
     let save_button = document
-        .select(&scraper::Selector::parse("button").unwrap())
-        .find(|button| button.text().collect::<String>().trim() == "Save changes")
+        .select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap())
+        .next()
         .unwrap();
     let input = serde_json::json!({
         "signals": home_fixture::page_signals(&html),

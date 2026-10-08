@@ -6,15 +6,16 @@ const {handlerFixture} = require('../handler_fixture.cjs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 let settle;
 let reject;
-let calls = 0;
-const fixture = handlerFixture(input.signals, () => {
-  calls += 1;
+const calls = [];
+const fixture = handlerFixture(input.signals, (url, options) => {
+  calls.push({url: new URL(url, 'http://localhost').pathname, args: JSON.parse(options.body)});
   return new Promise((resolve, fail) => { settle = resolve; reject = fail; });
 }, input.browser_source);
-const {cx, context, handler} = fixture;
+const {cx, context, controller, handler} = fixture;
 context.CustomEvent = class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } };
 context.document.documentElement.getAttribute = name => name === 'data-topcoat-runtime-prefix' ? input.mount : '';
 context.document.querySelector = () => null;
+context.document.getElementById = () => ({focus() {}});
 const fire = (source, event = {type: 'click', cancelable: true, preventDefault() {}}) => handler(source)(cx.event(event));
 const text = value => ({type: 'input', target: {value}, cancelable: true, preventDefault() {}});
 const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
@@ -28,7 +29,9 @@ const read = expression => {
   fire(input.textarea.input, text('Draft cancelled while pending'));
   fire(input.save);
   await flush();
-  assert.equal(calls, 1, 'one body request is pending');
+  assert.equal(calls.length, 1, 'one body request is pending');
+  assert.equal(calls[0].url, `${input.mount}/__native_pages/save_content`);
+  assert.deepEqual(calls[0].args, input.expected_args, 'pending request matches the real procedure reply arguments');
   fire(input.textarea.keydown, {type: 'keydown', key: 'Escape', cancelable: true, preventDefault() {}});
   assert.equal(read(input.textarea.hidden), true, 'Escape closes the editor while the request is pending');
   assert.equal(read(input.textarea.binding), 'Original body', 'Cancel restores the pre-request canonical draft');
@@ -42,6 +45,7 @@ const read = expression => {
   await flush();
   assert.equal(read(input.textarea.hidden), true, 'late completion never reopens the cancelled editor');
   assert.equal(read(input.textarea.binding), 'Original body', 'late completion preserves the cancelled draft');
-  assert.equal(calls, 1, 'settlement does not retry the write');
+  assert.equal(calls.length, 1, 'settlement does not retry the write');
+  controller.abort();
   process.stdout.write(JSON.stringify({passed: true}));
 })().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });

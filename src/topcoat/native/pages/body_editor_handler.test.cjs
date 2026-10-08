@@ -14,8 +14,6 @@ const fixture = handlerFixture(input.signals, (url, options) => {
 const {cx, context, controller, handler} = fixture;
 context.CustomEvent = class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } };
 context.document.documentElement.getAttribute = name => name === 'data-topcoat-runtime-prefix' ? input.mount : '';
-const listeners = new Map();
-context.window.addEventListener = (name, callback) => listeners.set(name, callback);
 context.document.querySelector = selector => {
   assert.ok(
     selector === '[data-native-page-body-save]' ||
@@ -58,10 +56,9 @@ assert.ok(canonicalBodyId, 'SSR exposes a distinct canonical body baseline');
   assert.equal(read(input.mode_preview_pressed), 'true', 'Preview is selected on initial render');
   assert.equal(read(input.mode_group_hidden), false, 'nonempty body shows the segmented mode control');
   assert.equal(read(input.save_label), 'Save', 'idle body Save label matches Main');
-  fire(input.keyboard);
-  listeners.get('keydown')({key: 'e', ctrlKey: false, metaKey: false, preventDefault() {}});
+  fire(input.mode_edit);
   await flush();
-  assert.equal(read(input.textarea.hidden), false, 'plain E enters body edit mode outside typing contexts');
+  assert.equal(read(input.textarea.hidden), false, 'the Edit control opens the body editor');
   fire(input.textarea.input, text('Updated body'));
   fire(input.textarea.keydown, key('Enter'));
   await flush();
@@ -143,5 +140,17 @@ assert.ok(canonicalBodyId, 'SSR exposes a distinct canonical body baseline');
   assert.equal(unbox(hidden && typeof hidden.dehydrate === 'function' ? hidden.dehydrate() : hidden), true,
     'Cancel closes body edit mode');
   controller.abort();
+  const snapshot = () => Object.fromEntries(Object.keys(input.signals)
+    .map(id => [id, JSON.parse(JSON.stringify(cx.signal(id).dehydrate()))]));
+  const retired = snapshot();
+  fire(input.textarea.input, text('Retired input'));
+  fire(input.mode_edit);
+  fire(input.cancel);
+  fire(input.mode_preview);
+  fire(input.save);
+  fire(input.textarea.keydown, key('s', {ctrlKey: true}));
+  await flush();
+  assert.deepEqual(snapshot(), retired, 'retained body controls cannot mutate a disposed Page');
+  assert.equal(calls.length, 4, 'retained controls cannot start another save after disposal');
   process.stdout.write(JSON.stringify({passed: true}));
 })().catch(error => { process.stderr.write(`${error.stack}\n`); process.exitCode = 1; });

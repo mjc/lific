@@ -1,5 +1,6 @@
 use super::super::home_fixture;
 use super::production::seed_page;
+use crate::db::queries;
 use axum::http::StatusCode;
 
 struct SaveFixture {
@@ -15,14 +16,8 @@ async fn save_fixture() -> SaveFixture {
     let (status, html) =
         home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
     assert_eq!(status, StatusCode::OK);
-    let expected_arguments = (
-        account,
-        page_id,
-        "Retired title".to_owned(),
-        "Retired body".to_owned(),
-        expected_seq,
-    )
-        .into_surrogate();
+    let expected_arguments =
+        (account, page_id, "Retired body".to_owned(), expected_seq).into_surrogate();
     let mut input = {
         let document = scraper::Html::parse_document(&html);
         let title = document
@@ -36,9 +31,13 @@ async fn save_fixture() -> SaveFixture {
             )
             .next()
             .unwrap();
+        let mode = document
+            .select(&scraper::Selector::parse("[data-native-page-body-mode]").unwrap())
+            .next()
+            .unwrap();
         let save = document
-            .select(&scraper::Selector::parse("button").unwrap())
-            .find(|button| button.text().collect::<String>().trim() == "Save changes")
+            .select(&scraper::Selector::parse("[data-native-page-body-save]").unwrap())
+            .next()
             .unwrap();
         let pin = document
             .select(&scraper::Selector::parse("button[data-native-page-pin]").unwrap())
@@ -56,6 +55,7 @@ async fn save_fixture() -> SaveFixture {
             "signals": home_fixture::page_signals(&html),
             "title_handler": title.value().attr("data-topcoat-on:input").unwrap(),
             "body_handler": body.value().attr("data-topcoat-on:input").unwrap(),
+            "mode_handler": mode.value().attr("data-topcoat-on:click").unwrap(),
             "save_handler": save.value().attr("data-topcoat-on:click").unwrap(),
             "busy_binding": pin.value().attr("data-topcoat-bind:disabled").unwrap(),
             "saving_binding": saving_feedback.value().attr("data-topcoat-bind:hidden").unwrap(),
@@ -71,12 +71,15 @@ async fn save_fixture() -> SaveFixture {
     };
     let reply = home_fixture::procedure(
         &fixture,
-        "/__native_pages/save",
+        "/__native_pages/save_content",
         serde_json::to_value(expected_arguments).unwrap(),
     )
     .await;
     assert_eq!(reply.0, StatusCode::OK);
     assert_eq!(reply.1["v"]["status"]["ok"], "saved");
+    let saved = queries::get_page(&fixture.db.read().unwrap(), page_id).unwrap();
+    assert_eq!(saved.title, "Page metadata test");
+    assert_eq!(saved.content, "Retired body");
     input["reply"] = reply.1;
     input["error_reply"] = serde_json::to_value(
         super::actions::Outcome {
@@ -176,7 +179,6 @@ async fn native_page_save_success_refreshes_the_real_activity_shard_from_committ
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(feed_html.contains("Retired title"));
     assert!(feed_html.contains("Retired body"));
 }
 
@@ -209,7 +211,6 @@ async fn native_page_save_keeps_newer_drafts_and_refreshes_activity_from_committ
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(feed_html.contains("Retired title"));
     assert!(feed_html.contains("Retired body"));
     assert!(!feed_html.contains("Newer title draft"));
     assert!(!feed_html.contains("Newer body draft"));
