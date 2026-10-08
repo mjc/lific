@@ -60,6 +60,44 @@ fn assert_native_logo_preload(headers: &axum::http::HeaderMap, prefix: &str) {
 }
 
 #[tokio::test]
+async fn native_home_keeps_dashboard_outside_notification_owner_before_and_after_hydration() {
+    let fixture = fixture();
+    for mount in ["", "/app", "/ACC"] {
+        let (status, initial) = home_fixture::document(&fixture, mount, "/", true, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let signals = home_fixture::page_signals(&initial);
+        let (status, hydrated) =
+            home_fixture::document(&fixture, mount, "/", true, Some(signals)).await;
+        assert_eq!(status, StatusCode::OK);
+        for html in [&initial, &hydrated] {
+            let document = scraper::Html::parse_document(html);
+            let selector = scraper::Selector::parse("#native-deferred-delete-owner").unwrap();
+            let owner = document.select(&selector).next().unwrap();
+            assert_eq!(
+                owner
+                    .children()
+                    .filter(|node| node.value().is_element())
+                    .count(),
+                0,
+                "dormant notifications must not contain the page at {mount}"
+            );
+            for selector in [
+                ".native-home-body > .native-home-topbar",
+                ".native-home-body > .native-home-panel-wrap > #main-content > [data-native-home]",
+            ] {
+                assert!(
+                    document
+                        .select(&scraper::Selector::parse(selector).unwrap())
+                        .next()
+                        .is_some(),
+                    "Home must retain its viewport flex layout at {mount}: {selector}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn native_document_preloads_logo_before_body_without_icon_hints_at_every_mount() {
     let fixture = fixture();
     let cookie = format!("lific_token={}", fixture.token);
