@@ -771,12 +771,69 @@ async fn native_pages_move_action_is_read_only_for_viewers() {
 
 #[tokio::test]
 async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
+    use topcoat::runtime::Surrogated;
+
     let fixture = home_fixture::fixture();
-    let _ = seed_page(&fixture, true);
+    let (_, account, _) = seed_page(&fixture, true);
+    let project_id =
+        queries::resolve_project_identifier(&fixture.db.read().unwrap(), "ACC").unwrap();
+    let parent_id = queries::create_folder(
+        &fixture.db.write().unwrap(),
+        &crate::db::models::CreateFolder {
+            project_id,
+            parent_id: None,
+            name: "Parent folder".into(),
+        },
+    )
+    .unwrap()
+    .id;
     let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
     assert_eq!(status, StatusCode::OK);
     let document = scraper::Html::parse_document(&html);
-    let new_menu = document
+    assert!(
+        document
+            .select(&scraper::Selector::parse("[role=menu]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("hidden")
+            .is_some()
+    );
+    assert!(
+        document
+            .select(&scraper::Selector::parse("[data-native-folder-create]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("hidden")
+            .is_some()
+    );
+    let filter_handler = document
+        .select(&scraper::Selector::parse("select[aria-label='Filter by folder']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:change")
+        .unwrap();
+    let folder_value_binding = document
+        .select(&scraper::Selector::parse("select[aria-label='Filter by folder']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:value")
+        .expect("the folder filter value is owned by its emitted binding");
+    let filtered = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&html),
+        "handlers": [],
+        "change_handler": filter_handler,
+        "folder_value": parent_id.to_string(),
+    }));
+    let filtered_signals = serde_json::from_value(filtered["signals"].clone()).unwrap();
+    let (status, filtered_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(filtered_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let filtered_document = scraper::Html::parse_document(&filtered_html);
+    let new_menu = filtered_document
         .select(&scraper::Selector::parse("button[aria-haspopup='menu']").unwrap())
         .find(|button| button.text().collect::<String>().trim() == "New")
         .expect("maintainers can open the Pages New menu");
@@ -785,7 +842,7 @@ async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
         .attr("data-topcoat-on:click")
         .expect("opening New has an emitted Topcoat handler");
     let menu_open = run_folder_create_handler(&serde_json::json!({
-        "signals": home_fixture::page_signals(&html),
+        "signals": home_fixture::page_signals(&filtered_html),
         "handlers": [menu_handler],
     }));
     let menu_signals = serde_json::from_value(menu_open["signals"].clone()).unwrap();
@@ -801,6 +858,20 @@ async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
         .value()
         .attr("data-topcoat-on:click")
         .expect("New folder has an emitted Topcoat handler");
+    let composer_hidden_binding = menu_document
+        .select(&scraper::Selector::parse("[data-native-folder-create]").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:hidden")
+        .expect("the composer visibility is a Topcoat binding");
+    let focus_probe = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&menu_html),
+        "handlers": [],
+        "focus_handler": create_handler,
+        "composer_hidden_binding": composer_hidden_binding,
+    }));
+    assert_eq!(focus_probe["focus_count"], 1);
     let composer_open = run_folder_create_handler(&serde_json::json!({
         "signals": home_fixture::page_signals(&menu_html),
         "handlers": [create_handler],
@@ -810,6 +881,15 @@ async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
         home_fixture::document(&fixture, "", "/ACC/pages", true, Some(composer_signals)).await;
     assert_eq!(status, StatusCode::OK);
     let composer_document = scraper::Html::parse_document(&composer_html);
+    assert!(
+        composer_document
+            .select(&scraper::Selector::parse("[data-native-folder-create]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("hidden")
+            .is_none()
+    );
     let folder_name = composer_document
         .select(&scraper::Selector::parse("input[placeholder='Folder name']").unwrap())
         .next()
@@ -820,6 +900,182 @@ async fn native_pages_new_folder_menu_opens_inline_folder_creator() {
             .attr("data-topcoat-on:keydown")
             .is_some(),
         "the inline folder creator handles Enter and Escape through an emitted handler",
+    );
+    let key_handler = folder_name.value().attr("data-topcoat-on:keydown").unwrap();
+    let blur_handler = folder_name.value().attr("data-topcoat-on:blur").unwrap();
+    for scenario in ["focus_closed", "focus_disposed"] {
+        let focus = run_folder_create_handler(&serde_json::json!({
+            "signals": home_fixture::page_signals(&menu_html),
+            "handlers": [],
+            "focus_handler": create_handler,
+            "close_handler": key_handler,
+            "scenario": scenario,
+            "composer_hidden_binding": composer_hidden_binding,
+        }));
+        assert_eq!(focus["focus_count"], 0, "{scenario} suppresses stale focus");
+    }
+    for (key, label) in [(Some("Escape"), "Escape"), (None, "empty blur")] {
+        let replay = run_folder_create_handler(&serde_json::json!({
+            "signals": home_fixture::page_signals(&composer_html),
+            "handlers": [],
+            "key_handler": if key.is_some() { Some(key_handler) } else { None },
+            "key": key,
+            "blur_handler": if key.is_none() { Some(blur_handler) } else { None },
+        }));
+        assert!(replay["requests"].as_array().unwrap().is_empty());
+        let replay_signals = serde_json::from_value(replay["signals"].clone()).unwrap();
+        let (status, cancelled_html) =
+            home_fixture::document(&fixture, "", "/ACC/pages", true, Some(replay_signals)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            scraper::Html::parse_document(&cancelled_html)
+                .select(&scraper::Selector::parse("[data-native-folder-create][hidden]").unwrap())
+                .next()
+                .is_some(),
+            "{label} cancels the empty inline folder composer",
+        );
+    }
+
+    let input_handler = folder_name
+        .value()
+        .attr("data-topcoat-on:input")
+        .expect("folder name updates through an emitted handler");
+    let create_button = composer_document
+        .select(&scraper::Selector::parse("#native-pages-create-folder-button").unwrap())
+        .next()
+        .expect("folder creation has a dedicated button");
+    let create_handler = create_button.value().attr("data-topcoat-on:click").unwrap();
+    let fake_folder_reply = serde_json::to_value(
+        super::actions::FolderOutcome {
+            status: Ok("saved".into()),
+            folder_id: Some(42),
+            folder_name: Some("Specs".into()),
+        }
+        .into_surrogate(),
+    )
+    .unwrap();
+    let emitted = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&composer_html),
+        "handlers": [],
+        "name_handler": input_handler,
+        "key_handler": key_handler,
+        "create_handler": create_handler,
+        "after_change_handler": filter_handler,
+        "folder_value_binding": folder_value_binding,
+        "after_folder_value": "0",
+        "name": "  Specs  ",
+        "mount": "/app",
+        "reply": fake_folder_reply,
+    }));
+    assert_eq!(
+        emitted["requests"][0]["path"],
+        "/app/__native_pages/create-folder"
+    );
+    let expected_arguments = (
+        account,
+        project_id,
+        "Specs".to_owned(),
+        parent_id.to_string(),
+    )
+        .into_surrogate();
+    assert_eq!(
+        emitted["requests"][0]["arguments"],
+        serde_json::to_value(expected_arguments).unwrap(),
+        "Enter creates under the folder captured when New folder opened",
+    );
+    let arguments = emitted["requests"][0]["arguments"].clone();
+    let (status, outcome) =
+        home_fixture::procedure(&fixture, "/__native_pages/create-folder", arguments).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["ok"], "saved");
+    let created = queries::list_folders(&fixture.db.read().unwrap(), project_id).unwrap();
+    let folder_id = created
+        .iter()
+        .find(|folder| folder.name == "Specs")
+        .expect("the authenticated procedure creates the folder")
+        .id;
+
+    let completion = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&composer_html),
+        "handlers": [],
+        "name_handler": input_handler,
+        "name": "Specs",
+        "create_handler": create_handler,
+        "after_change_handler": filter_handler,
+        "folder_value_binding": folder_value_binding,
+        "after_folder_value": "0",
+        "scenario": "pending",
+        "reply": outcome,
+    }));
+    assert_eq!(completion["requests"].as_array().unwrap().len(), 1);
+    let completion_signals = serde_json::from_value(completion["signals"].clone()).unwrap();
+    let (status, updated_html) =
+        home_fixture::document(&fixture, "", "/ACC/pages", true, Some(completion_signals)).await;
+    assert_eq!(status, StatusCode::OK);
+    let updated = scraper::Html::parse_document(&updated_html);
+    let folder_id_text = folder_id.to_string();
+    let folder_option = updated
+        .select(&scraper::Selector::parse("select[aria-label='Filter by folder'] option").unwrap())
+        .find(|option| option.value().attr("value") == Some(folder_id_text.as_str()))
+        .expect("the refreshed folder catalog includes the new folder");
+    assert_eq!(completion["filter_value"], "0");
+    assert_eq!(folder_option.text().collect::<String>(), "Specs");
+    assert_eq!(
+        folder_option.value().attr("value"),
+        Some(folder_id_text.as_str())
+    );
+    assert_eq!(
+        updated
+            .select(
+                &scraper::Selector::parse("select[data-native-page-move-folder] option").unwrap()
+            )
+            .find(|option| option.value().attr("value") == Some(folder_id_text.as_str()))
+            .map(|option| option.text().collect::<String>()),
+        Some("Specs".to_owned()),
+        "the refreshed Move catalog offers the newly created folder",
+    );
+    let disposed = run_folder_create_handler(&serde_json::json!({
+        "signals": home_fixture::page_signals(&composer_html),
+        "handlers": [],
+        "name_handler": input_handler,
+        "name": "Must not be sent",
+        "key_handler": key_handler,
+        "create_handler": create_handler,
+        "scenario": "disposed",
+    }));
+    assert!(disposed["requests"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn native_pages_folder_creation_requires_editor_authority() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = home_fixture::fixture();
+    let (_, account, _) = seed_page(&fixture, false);
+    let project_id =
+        queries::resolve_project_identifier(&fixture.db.read().unwrap(), "ACC").unwrap();
+    let arguments = (account, project_id, "Private".to_owned(), "0".to_owned()).into_surrogate();
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_pages/create-folder",
+        serde_json::to_value(arguments).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(outcome["v"]["status"]["err"], "forbidden");
+    assert!(
+        queries::list_folders(&fixture.db.read().unwrap(), project_id)
+            .unwrap()
+            .is_empty()
+    );
+
+    let (status, html) = home_fixture::document(&fixture, "", "/ACC/pages", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    assert!(
+        document
+            .select(&scraper::Selector::parse("button[aria-haspopup='menu']").unwrap())
+            .all(|button| button.text().collect::<String>().trim() != "New")
     );
 }
 
