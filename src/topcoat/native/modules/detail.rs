@@ -102,7 +102,7 @@ pub(super) fn content<'a>(
         account,
         project_id: project.id,
         module_id: module.id,
-        destination: route.clone(),
+        destination: route,
     };
     let description_owner =
         description_owner_attributes(cx, can_edit, mutation.clone(), description_controls.clone());
@@ -186,12 +186,7 @@ pub(super) fn content<'a>(
     );
     let module_icon_picker = if can_edit {
         Some(icon::detail_picker(
-            cx,
-            &owner,
-            account,
-            project.id,
-            module.id,
-            icon.clone(),
+            cx, &owner, account, project.id, module.id, icon,
         ))
     } else {
         None
