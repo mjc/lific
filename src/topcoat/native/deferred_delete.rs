@@ -129,7 +129,7 @@ pub(crate) fn owner<'a>(
                 id="native-deferred-delete-owner"
                 data-native-delete-owner=(owner_key)
                 data-native-action-account=(account_id.to_string())
-            />
+            ></div>
         }
         .boxed();
     }
