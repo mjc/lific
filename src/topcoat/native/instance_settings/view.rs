@@ -414,7 +414,16 @@ fn roster_action_attrs(
     let failure_row_error_id = row_error_id.clone();
     let failure_row_error = row_error.clone();
     let action = action.to_owned();
+    let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
+        if action == "pending" {
+            if pending_id.get() != user_id {
+                return;
+            }
+        }
         let operation = if action == "pending" {
             pending_action.get()
         } else {
@@ -451,8 +460,11 @@ fn roster_action_attrs(
             }
         };
         let _save = async || {
+            if browser.is_disposed() {
+                return;
+            }
             let result = mutate_member(account, user_id, operation.clone()).await;
-            if !raw!("${_live}()", false) {
+            if browser.is_disposed() {
                 return;
             }
             busy_id.set(0_i64);
@@ -526,7 +538,11 @@ fn request_confirmation_attrs(
     let row_error = state.row_error.clone();
     let row_error_id = state.row_error_id.clone();
     let action = action.to_owned();
+    let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
         if busy_id.get() != 0_i64 {
             return;
         }
@@ -563,7 +579,11 @@ fn confirm_member_reauth_attrs(
     let failure_reauth_id = reauth_id.clone();
     let failure_reauth_busy = reauth_busy.clone();
     let failure_reauth_error = reauth_error.clone();
+    let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
+        if browser.is_disposed() {
+            return;
+        }
         let action_user_id = user_id;
         let action = reauth_action.get();
         let password = reauth_password.get();
@@ -592,9 +612,12 @@ fn confirm_member_reauth_attrs(
             }
         };
         let _confirm = async || {
+            if browser.is_disposed() {
+                return;
+            }
             let result =
                 confirm_member_action(account, action_user_id, action.clone(), password).await;
-            if !raw!("${_live}()", false) {
+            if browser.is_disposed() {
                 return;
             }
             if reauth_id.get() != action_user_id {
@@ -644,17 +667,25 @@ fn confirm_member_reauth_attrs(
     attrs
 }
 
-fn cancel_member_reauth_attrs(cx: &Cx, state: &RosterState) -> Attributes {
+fn cancel_member_reauth_attrs(cx: &Cx, user_id: i64, state: &RosterState) -> Attributes {
     let reauth_id = state.reauth_id.clone();
     let reauth_password = state.reauth_password.clone();
     let reauth_error = state.reauth_error.clone();
     let reauth_busy = state.reauth_busy.clone();
+    let browser = super::super::browser::bindings();
     let handler = expr!(|_event: Event| {
-        if !reauth_busy.get() {
-            reauth_id.set(0_i64);
-            reauth_password.set("".to_owned());
-            reauth_error.set("".to_owned());
+        if browser.is_disposed() {
+            return;
         }
+        if reauth_busy.get() {
+            return;
+        }
+        if reauth_id.get() != user_id {
+            return;
+        }
+        reauth_id.set(0_i64);
+        reauth_password.set("".to_owned());
+        reauth_error.set("".to_owned());
     });
     let mut attrs = Attributes::with_capacity(1);
     attrs.insert(
@@ -1085,10 +1116,18 @@ fn roster_row<'a>(
     );
     let cancel_pending = state.pending_id.clone();
     let cancel_busy = state.busy_id.clone();
+    let cancel_browser = super::super::browser::bindings();
     let cancel = expr!(|_event: Event| {
-        if cancel_busy.get() == 0_i64 {
-            cancel_pending.set(0_i64);
+        if cancel_browser.is_disposed() {
+            return;
         }
+        if cancel_busy.get() != 0_i64 {
+            return;
+        }
+        if cancel_pending.get() != id {
+            return;
+        }
+        cancel_pending.set(0_i64);
     });
     let mut cancel_attrs = Attributes::with_capacity(1);
     cancel_attrs.insert(
@@ -1107,7 +1146,7 @@ fn roster_row<'a>(
     );
     let confirm_reauth =
         confirm_member_reauth_attrs(cx, account, id, is_admin.clone(), is_active.clone(), state);
-    let cancel_reauth = cancel_member_reauth_attrs(cx, state);
+    let cancel_reauth = cancel_member_reauth_attrs(cx, id, state);
     let when_busy = state.busy_id.clone();
     let when_pending = state.pending_id.clone();
     let when_action = state.pending_action.clone();
