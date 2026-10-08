@@ -982,6 +982,157 @@ mod tests {
         assert_eq!(row.labels, vec!["design".to_string(), "spec".to_string()]);
     }
 
+    fn assert_page_label_delta(
+        conn: &Connection,
+        project: i64,
+        page_id: i64,
+        cursor: i64,
+        labels: &[&str],
+    ) {
+        assert!(cursor > 0);
+        let page = crate::db::queries::get_page(conn, page_id).unwrap();
+        assert!(
+            page.seq > cursor,
+            "label changes must advance the parent page sequence"
+        );
+        let delta = list_changes(conn, project, cursor, 100).unwrap();
+        let rows: Vec<_> = delta
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Page(row) if row.id == page_id => Some(row),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].seq, page.seq);
+        assert_eq!(rows[0].labels, labels);
+        assert_eq!(delta.cursor, page.seq);
+    }
+
+    #[test]
+    fn page_label_only_attach_and_remove_advance_sequence_and_delta() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO labels (project_id, name) VALUES (?1, 'design')",
+            [project],
+        )
+        .unwrap();
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for labels in [vec!["design".to_owned()], vec![]] {
+            let cursor = get_index(&conn, project).unwrap().cursor;
+            crate::db::queries::update_page(
+                &conn,
+                page.id,
+                &UpdatePage {
+                    labels: Some(labels.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let names: Vec<_> = labels.iter().map(String::as_str).collect();
+            assert_page_label_delta(&conn, project, page.id, cursor, &names);
+        }
+    }
+
+    #[test]
+    fn page_label_merge_and_delete_cascade_advance_sequence_and_delta() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        for name in ["source", "target"] {
+            conn.execute(
+                "INSERT INTO labels (project_id, name) VALUES (?1, ?2)",
+                params![project, name],
+            )
+            .unwrap();
+        }
+        let label_id = |name: &str| {
+            conn.query_row(
+                "SELECT id FROM labels WHERE project_id = ?1 AND name = ?2",
+                params![project, name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let source = label_id("source");
+        let target = label_id("target");
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                labels: vec!["source".into(), "target".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        crate::db::queries::merge_label(&conn, source, target).unwrap();
+        assert_page_label_delta(&conn, project, page.id, cursor, &["target"]);
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        crate::db::queries::delete_label(&conn, target).unwrap();
+        assert_page_label_delta(&conn, project, page.id, cursor, &[]);
+    }
+
+    #[test]
+    fn page_label_ignored_insert_and_absent_delete_leave_sequence_unchanged() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO labels (project_id, name) VALUES (?1, 'design')",
+            [project],
+        )
+        .unwrap();
+        let label_id = conn.last_insert_rowid();
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                labels: vec!["design".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        assert_eq!(
+            conn.execute(
+                "INSERT OR IGNORE INTO page_labels (page_id, label_id) VALUES (?1, ?2)",
+                params![page.id, label_id]
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.execute(
+                "DELETE FROM page_labels WHERE page_id = ?1 AND label_id = -1",
+                [page.id]
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::db::queries::get_page(&conn, page.id).unwrap().seq,
+            page.seq
+        );
+        assert_eq!(get_index(&conn, project).unwrap().cursor, cursor);
+        assert!(
+            list_changes(&conn, project, cursor, 100)
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_tombstone_serializes_to_identity_and_nothing_else() {
         let (db, project, _) = seed();
