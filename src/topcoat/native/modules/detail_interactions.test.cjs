@@ -47,8 +47,29 @@ const handler = source => vm.runInNewContext(`cx => (${source})`, context)(cx);
 const fire = (source, event) => handler(source)(cx.event(event));
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 const snapshot = () => Object.fromEntries(Object.keys(input.signals).map(id => [id, cx.signal(id).dehydrate().v]));
+const unbox = value => {
+  while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
+  return value;
+};
+const readBinding = source => {
+  const result = vm.runInNewContext(`cx => (${source})`, context)(cx);
+  const wire = result && typeof result.dehydrate === 'function' ? result.dehydrate() : result;
+  return unbox(wire);
+};
 
 (async () => {
+  assert.equal(readBinding(input.details.expanded_binding), 'false');
+  assert.equal(readBinding(input.details.backdrop_hidden_binding), true,
+    'the mobile backdrop is hidden until the drawer opens');
+  fire(input.details.toggle, {type: 'click'});
+  assert.equal(readBinding(input.details.expanded_binding), 'true');
+  assert.equal(readBinding(input.details.backdrop_hidden_binding), false,
+    'opening Details shows the dismissible backdrop');
+  fire(input.details.backdrop, {type: 'click'});
+  assert.equal(readBinding(input.details.expanded_binding), 'false',
+    'tapping outside closes the mobile details drawer');
+  assert.equal(readBinding(input.details.backdrop_hidden_binding), true);
+
   fire(input.trigger, {type: 'click'});
   fire(input.input.keydown, {type: 'keydown', key: 'Escape'});
   fire(input.input.blur, {type: 'blur'});
