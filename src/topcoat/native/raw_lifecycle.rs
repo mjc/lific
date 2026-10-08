@@ -22,7 +22,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
-    sync::Notify,
+    sync::{Notify, watch},
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
@@ -40,6 +40,7 @@ use crate::{
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 const DEADLINE: Duration = Duration::from_secs(5);
+const SESSION_REVALIDATE_INTERVAL: Duration = Duration::from_secs(2);
 
 fn assert_send_buffer(actual: usize, requested: u32) {
     assert!(
@@ -319,6 +320,18 @@ impl Fixture {
     }
 
     fn with_send_buffer(policy: SocketPolicy, send_buffer: Option<u32>) -> Self {
+        Self::with_options(policy, send_buffer, None)
+    }
+
+    fn with_revalidation_interval(policy: SocketPolicy, interval: Duration) -> Self {
+        Self::with_options(policy, None, Some(interval))
+    }
+
+    fn with_options(
+        policy: SocketPolicy,
+        send_buffer: Option<u32>,
+        revalidation_interval: Option<Duration>,
+    ) -> Self {
         let seed = home_fixture::fixture();
         let user_id = queries::users::validate_session(&seed.db.read().unwrap(), &seed.token)
             .unwrap()
@@ -327,13 +340,19 @@ impl Fixture {
         config.auth.required = true;
         let store = tempfile::tempdir().unwrap();
         let proxies: Arc<[IpNetwork]> = vec![IpNetwork::parse("127.0.0.1").unwrap()].into();
+        let router = topcoat_app::router_builder().app_context(policy);
+        let router = if let Some(interval) = revalidation_interval {
+            router.app_context(super::session::SessionRevalidationInterval(interval))
+        } else {
+            router
+        };
         let app = build_app_with_store_and_frontend(
             &config,
             seed.db.clone(),
             seed.realtime.clone(),
             proxies,
             AttachmentStore::new(store.path().to_owned()),
-            topcoat_app::router_builder().app_context(policy),
+            router,
         );
         let listener = tokio::net::TcpSocket::new_v4().unwrap();
         if let Some(bytes) = send_buffer {
@@ -574,6 +593,11 @@ async fn snapshot(socket: &mut Socket, run: u64, title: &str) {
 #[test]
 fn native_raw_policy_preserves_existing_deadlines_and_rejects_invalid_intervals() {
     assert_eq!(SocketPolicy::default(), policy(30_000, 120_000, 5_000));
+    assert_eq!(
+        crate::realtime::SESSION_REVALIDATE_INTERVAL,
+        Duration::from_secs(60),
+        "the production session revalidation interval remains unchanged"
+    );
     for (ping, progress, send) in [(0, 100, 10), (10, 0, 10), (10, 100, 0), (100, 100, 10)] {
         assert!(
             SocketPolicy::new(
@@ -900,6 +924,30 @@ async fn passive_until(socket: &mut Socket, until: tokio::time::Instant) -> usiz
     }
 }
 
+async fn passive_until_retired(socket: &mut Socket, retired: &mut watch::Receiver<bool>) -> usize {
+    let mut pings = 0;
+    loop {
+        if *retired.borrow() {
+            return pings;
+        }
+        tokio::select! {
+            changed = retired.changed() => {
+                if changed.is_err() || *retired.borrow() {
+                    return pings;
+                }
+            }
+            message = socket.next() => match message.expect("valid raw canary remains connected").unwrap() {
+                Message::Ping(payload) => {
+                    pings += 1;
+                    socket.send(Message::Pong(payload)).await.unwrap();
+                }
+                Message::Pong(_) => {}
+                other => panic!("valid raw canary receives only protocol frames before expiry: {other:?}"),
+            }
+        }
+    }
+}
+
 async fn protocol_canary(socket: &mut Socket) {
     let marker = b"raw-authority-canary".to_vec();
     socket
@@ -1034,7 +1082,10 @@ async fn native_raw_authority_one_receiver_survives_page_rerenders_and_peer_clos
 
 #[tokio::test]
 async fn native_raw_authority_real_interval_expires_db_only_sessions_at_all_mounts() {
-    let fixture = Fixture::new(SocketPolicy::default());
+    let fixture = Fixture::with_revalidation_interval(
+        policy(100, 120_000, 5_000),
+        SESSION_REVALIDATE_INTERVAL,
+    );
     let (valid_id, valid_token) = {
         let conn = fixture.seed.db.write().unwrap();
         let admin = queries::users::get_user_by_username(&conn, "admin").unwrap();
@@ -1051,7 +1102,7 @@ async fn native_raw_authority_real_interval_expires_db_only_sessions_at_all_moun
     }
     assert!(
         opened_at.elapsed() < DEADLINE,
-        "handshake setup leaves the real periodic check in the future"
+        "the idle socket fixtures are connected before the DB-only expiry mutation"
     );
     {
         let conn = fixture.seed.db.write().unwrap();
@@ -1071,29 +1122,38 @@ async fn native_raw_authority_real_interval_expires_db_only_sessions_at_all_moun
             valid_id
         );
     }
-    // Real elapsed time, no paused clock, revocation broadcast, render or application input.
-    // Five seconds is the existing default send bound, followed by a cleanup allowance.
-    let deadline = crate::realtime::SESSION_REVALIDATE_INTERVAL + DEADLINE + DEADLINE;
-    let until = tokio::time::Instant::now() + deadline;
-    let started = std::time::Instant::now();
-    let retirement = futures_util::future::join_all(expired.into_iter().map(|(prefix, socket)| async move {
-        retire_to_home(socket, prefix, deadline).await;
-        assert!(
-            started.elapsed() >= crate::realtime::SESSION_REVALIDATE_INTERVAL
-                .checked_sub(DEADLINE)
-                .expect("session interval exceeds the fixture scheduling allowance"),
-            "DB-only idle expiry is retired at the existing periodic check, without another trigger",
-        );
+    // Real time, DB-only expiry, and no broadcast, render, or application input.
+    // The short ping belongs only to this fixture; production defaults are asserted above.
+    let completion_bound = DEADLINE;
+    let (retired_tx, retired_rx) = watch::channel(false);
+    let retirement = async move {
+        futures_util::future::join_all(expired.into_iter().map(|(prefix, socket)| async move {
+            retire_to_home(socket, prefix, completion_bound).await;
+        }))
+        .await;
+        retired_tx.send_replace(true);
+    };
+    let canaries = futures_util::future::join_all(valid.iter_mut().map(|socket| {
+        let mut retired = retired_rx.clone();
+        async move {
+            assert!(
+                tokio::time::timeout(
+                    completion_bound,
+                    passive_until_retired(socket, &mut retired),
+                )
+                .await
+                .expect("expired sockets finish and release the valid canaries")
+                    >= 1,
+                "short fixture ping establishes valid-session liveness during DB-only expiry"
+            );
+            protocol_canary(socket).await;
+        }
     }));
-    let canaries = futures_util::future::join_all(valid.iter_mut().map(|socket| async move {
-        assert!(
-            passive_until(socket, until).await >= 1,
-            "real default ping establishes liveness"
-        );
-        protocol_canary(socket).await;
-    }));
-    tokio::join!(retirement, canaries);
-    assert!(started.elapsed() >= crate::realtime::SESSION_REVALIDATE_INTERVAL);
+    tokio::time::timeout(completion_bound, async {
+        tokio::join!(retirement, canaries);
+    })
+    .await
+    .expect("real interval retires invalid sockets and completes bounded canaries");
     fixture
         .authority_counts(
             &[(fixture.user_id, 0), (valid_id, 3)],
