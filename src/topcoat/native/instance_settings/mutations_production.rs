@@ -202,7 +202,7 @@ async fn native_member_deactivation_revokes_human_and_owned_bot_sessions_and_soc
     assert!(revocations.try_recv().is_err());
 }
 
-fn signal_id<'a>(binding: &'a str) -> &'a str {
+fn signal_id(binding: &str) -> &str {
     binding
         .split("\"id\":\"")
         .nth(1)
@@ -253,6 +253,25 @@ async fn native_member_emitted_confirmation_handlers_apply_demote_then_deactivat
         .select(&scraper::Selector::parse("button[data-native-instance-member-confirm]").unwrap())
         .next()
         .unwrap();
+    let pending = confirm
+        .parent()
+        .and_then(scraper::ElementRef::wrap)
+        .unwrap();
+    let pending_cancel = pending
+        .select(&scraper::Selector::parse("button").unwrap())
+        .nth(1)
+        .unwrap();
+    let reauth = row
+        .select(&scraper::Selector::parse("[data-native-instance-member-reauth]").unwrap())
+        .next()
+        .unwrap();
+    let password = reauth
+        .select(&scraper::Selector::parse("input").unwrap())
+        .next()
+        .unwrap();
+    let reauth_buttons = reauth
+        .select(&scraper::Selector::parse("button").unwrap())
+        .collect::<Vec<_>>();
     let admins_signal_id = signal_id(demote.value().attr("data-topcoat-bind:hidden").unwrap());
     let active_signal_id = signal_id(deactivate.value().attr("data-topcoat-bind:hidden").unwrap());
     let signals = home_fixture::page_signals(&html);
@@ -284,6 +303,13 @@ async fn native_member_emitted_confirmation_handlers_apply_demote_then_deactivat
             "demote_handler": demote.value().attr("data-topcoat-on:click").unwrap(),
             "deactivate_handler": deactivate.value().attr("data-topcoat-on:click").unwrap(),
             "confirm_handler": confirm.value().attr("data-topcoat-on:click").unwrap(),
+            "pending_cancel_handler": pending_cancel.value().attr("data-topcoat-on:click").unwrap(),
+            "reauth_confirm_handler": reauth_buttons[0].value().attr("data-topcoat-on:click").unwrap(),
+            "reauth_cancel_handler": reauth_buttons[1].value().attr("data-topcoat-on:click").unwrap(),
+            "pending_signal_id": signal_id(pending.value().attr("data-topcoat-bind:hidden").unwrap()),
+            "reauth_signal_id": signal_id(reauth.value().attr("data-topcoat-bind:hidden").unwrap()),
+            "password_signal_id": signal_id(password.value().attr("data-topcoat-bind:value").unwrap()),
+            "member_id": member_id,
             "admin_signal_id": admins_signal_id,
             "active_signal_id": active_signal_id,
             "admin_after_demote": false,
