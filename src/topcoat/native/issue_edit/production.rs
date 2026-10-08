@@ -23,7 +23,7 @@ use tower::ServiceExt;
 
 use super::super::home_fixture::{self, Fixture};
 use crate::db::{
-    models::{CreateLabel, Issue, Priority, Role, UpdateIssue},
+    models::{CreateLabel, CreateModule, Issue, Priority, Role, UpdateIssue},
     queries,
 };
 
@@ -278,6 +278,116 @@ async fn native_issue_production_viewer_get_renders_scoped_content_without_edit_
             );
         }
     }
+}
+
+#[tokio::test]
+async fn native_issue_detail_module_assignment_picker_matches_main_for_both_roles() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let (issue, assigned, inactive) = {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Maintainer)
+            .unwrap();
+        let assigned = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Assigned module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let inactive = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Inactive module".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                module_id: Some(Some(assigned.id)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (queries::get_issue(&conn, issue.id).unwrap(), assigned, inactive)
+    };
+
+    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let maintainer = Html::parse_document(&html(response).await);
+    let module_section = maintainer
+        .select(&Selector::parse("section").unwrap())
+        .find(|section| {
+            section
+                .select(&Selector::parse("h2").unwrap())
+                .any(|heading| heading.text().collect::<String>() == "Module")
+        })
+        .expect("IssueDetail renders its Module metadata section");
+    assert!(
+        module_section
+            .select(&Selector::parse("button").unwrap())
+            .any(|button| button.text().collect::<String>().contains("Assigned module")),
+        "Maintainers get an assignment control showing the current module"
+    );
+    assert!(
+        maintainer
+            .select(&Selector::parse("button[title='Open module']").unwrap())
+            .next()
+            .is_some(),
+        "the separate Open module affordance remains available to maintainers"
+    );
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        issue.seq,
+        "rendering the assignment picker does not mutate the issue"
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Viewer).unwrap();
+    }
+    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let viewer = Html::parse_document(&html(response).await);
+    let module_section = viewer
+        .select(&Selector::parse("section").unwrap())
+        .find(|section| {
+            section
+                .select(&Selector::parse("h2").unwrap())
+                .any(|heading| heading.text().collect::<String>() == "Module")
+        })
+        .expect("Viewer keeps the Module metadata section");
+    assert_eq!(
+        module_section
+            .select(&Selector::parse("button").unwrap())
+            .count(),
+        0,
+        "Viewers see the assigned module without an assignment control"
+    );
+    assert!(
+        viewer
+            .select(&Selector::parse("button[title='Open module']").unwrap())
+            .next()
+            .is_some(),
+        "Viewers retain the separate Open module affordance"
+    );
+    assert_eq!(inactive.project_id, issue.project_id);
 }
 
 #[tokio::test]

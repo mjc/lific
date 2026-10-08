@@ -67,6 +67,12 @@ function fixture() {
     event.detail={account_id:account,issue_id:issue,identifier:`ACC-${issue}`,list_path:'/ACC/issues',detail_path:`/ACC/issues/ACC-${issue}`};
     window.dispatchEvent(event);assert.ok(event.defaultPrevented,'The owning Rust handler accepts deletion.');
   };
+  const assignModule=(issue=42,next='9',previous=null)=>{
+    const event=new Event('lific:native-issue-module-request',{cancelable:true});
+    event.detail={account_id:account,issue_id:String(issue),identifier:`ACC-${issue}`,previous_module_id:previous,next_module_id:next,next_label:next===null?'No module':'Release'};
+    window.dispatchEvent(event);
+    assert.ok(event.defaultPrevented,'The durable Rust owner accepts the Module update.');
+  };
   const advance=amount=>{
     const target=now+amount;
     while(true){const next=[...timers].filter(([,timer])=>timer.at<=target).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;timers.delete(next[0]);now=next[1].at;next[1].callback();}
@@ -82,8 +88,14 @@ function fixture() {
     pending.shift()({ok,status:403,statusText:'Forbidden',json:async()=>[{t:'i64',bits:64,v:'42'},{t:'i64',bits:64,v:'1'},{t:'i64',bits:64,v:'2'}]});
     for(let i=0;i<8;i++)await Promise.resolve();
   };
-  return {schedule,advance,replace,finish,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
+  return {schedule,assignModule,advance,replace,finish,click,calls,navigations,legacy,timers,window,get owner(){return owner;}};
 }
+test('Module updates start immediately from the durable owner',async()=>{
+  const f=fixture();f.assignModule();await flush();
+  assert.equal(f.calls.length,1);
+  assert.ok(f.calls[0].url.endsWith('/__native_issue_edit/assign_module'));
+  assert.deepEqual(f.navigations,[],'Updating metadata does not navigate.');
+});
 test('native same-workspace replacement preserves Undo and its original deadline',async()=>{
   const f=fixture();f.schedule();assert.equal(f.legacy.length,0,'Delete actions delegate to native navigation.');assert.deepEqual(f.navigations,[`${mount}/ACC/issues`]);
   await tick(f,2000);f.replace();assert.equal(f.calls.length,0);assert.equal(f.timers.size,1);
