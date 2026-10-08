@@ -1,5 +1,6 @@
 //! Native Pages browsing and project page detail.
 mod actions;
+mod activity;
 mod editor_state;
 mod folder_create;
 mod folder_tree;

@@ -5,7 +5,8 @@ use super::super::fuzzy::score as fuzzy_score;
 use super::super::{context, icons, mascot, navigation, session, transport};
 use super::actions::{create as create_page, delete as delete_page, save as save_page};
 use super::{
-    editor_state::EditorState, folder_create, folder_tree, labels, move_picker, pin, status,
+    activity, editor_state::EditorState, folder_create, folder_tree, labels, move_picker, pin,
+    status,
 };
 use crate::{db::models::Page as PageModel, error::LificError};
 use topcoat::{
@@ -1009,6 +1010,7 @@ async fn page_detail(
     } else {
         None
     };
+    let activity_identity = (account, page.id);
     let created_at = super::super::dates::absolute_time_view(cx, &page.created_at);
     let updated_at = super::super::dates::absolute_time_view(cx, &page.updated_at);
     Ok(view! {
@@ -1195,6 +1197,10 @@ async fn page_detail(
                         source: $(body.get())
                     )
                 }
+                activity::native_page_activity(
+                    identity: activity_identity,
+                    revision: $(seq.get())
+                )
                 <div
                     class="mt-10 pt-6 border-t border-solid border-[var(--border)] flex gap-8"
                 >
