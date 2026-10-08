@@ -200,24 +200,44 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
     };
     let (origin, server) = home_fixture::serve(&fixture).await;
     let client = reqwest::Client::new();
-    let save = |account, title: &str, sequence| {
+    let save_title = |account, title: &str, sequence| {
         client
-            .post(format!("{origin}/__native_pages/save"))
+            .post(format!("{origin}/__native_pages/save_title"))
             .header("origin", &origin)
             .header("cookie", format!("lific_token={}", fixture.token))
-            .json(
-                &(
-                    account,
-                    page_id,
-                    title.to_owned(),
-                    "Native updated body".to_owned(),
-                    sequence,
-                )
-                    .into_surrogate(),
-            )
+            .json(&(account, page_id, title.to_owned(), sequence).into_surrogate())
     };
+    let obsolete = client
+        .post(format!("{origin}/__native_pages/save"))
+        .header("origin", &origin)
+        .header("cookie", format!("lific_token={}", fixture.token))
+        .json(
+            &(
+                account,
+                page_id,
+                "Legacy edit".to_owned(),
+                "Legacy body".to_owned(),
+                original.seq,
+            )
+                .into_surrogate(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        obsolete.status(),
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the retired POST has no procedure and only matches the GET page catch-all"
+    );
+    {
+        let conn = fixture.db.read().unwrap();
+        let unchanged = queries::get_page(&conn, page_id).unwrap();
+        assert_eq!(unchanged.title, original.title);
+        assert_eq!(unchanged.content, original.content);
+        assert_eq!(unchanged.seq, original.seq);
+    }
     for denied_account in [account + 1000, account] {
-        let response = save(denied_account, "Denied edit", original.seq)
+        let response = save_title(denied_account, "Denied edit", original.seq)
             .send()
             .await
             .unwrap();
@@ -236,7 +256,7 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
         let conn = fixture.db.write().unwrap();
         queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
     }
-    let response = save(account, "Saved natively", original.seq)
+    let response = save_title(account, "Saved natively", original.seq)
         .send()
         .await
         .unwrap();
@@ -244,7 +264,7 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
     let outcome: serde_json::Value = response.json().await.unwrap();
     assert_eq!(outcome["t"], "Record");
     assert_eq!(outcome["v"]["status"]["ok"], "saved");
-    let response = save(account, "Stale edit", original.seq)
+    let response = save_title(account, "Stale edit", original.seq)
         .send()
         .await
         .unwrap();
@@ -257,6 +277,10 @@ async fn native_knowledge_page_writes_enforce_account_role_conflicts_and_web_act
         let conn = fixture.db.read().unwrap();
         let saved = queries::get_page(&conn, page_id).unwrap();
         assert_eq!(saved.title, "Saved natively");
+        assert_eq!(
+            saved.content, original.content,
+            "sparse title write preserves the original body"
+        );
         assert!(saved.seq > original.seq);
         let actor: (i64, String) = conn.query_row(
             "SELECT actor_user_id, transport FROM audit_log WHERE entity_type = 'page' AND entity_id = ?1 AND action = 'update' ORDER BY id DESC LIMIT 1",

@@ -310,29 +310,6 @@ pub(super) async fn save_content(
     .await
 }
 
-#[procedure("/__native_pages/save")]
-pub(super) async fn save(
-    cx: &Cx,
-    account: i64,
-    page_id: i64,
-    title: String,
-    content: String,
-    expected_seq: i64,
-) -> topcoat::Result<Outcome> {
-    commit_page_save(
-        cx,
-        account,
-        page_id,
-        UpdatePage {
-            title: Some(title),
-            content: Some(content),
-            expected_seq: Some(expected_seq),
-            ..Default::default()
-        },
-    )
-    .await
-}
-
 #[procedure("/__native_pages/status")]
 pub(super) async fn set_status(
     cx: &Cx,
