@@ -63,6 +63,16 @@ if (input.scenario !== 'capture') {
 handler(cx.event({type: 'click', target: {}}));
 
 async function run() {
+  const disposed = handlerFixture(input.signals, () => {
+    assert.fail('a disposed pin control must not submit a request');
+  }, input.browser_source);
+  disposed.controller.abort();
+  const snapshot = () => Object.fromEntries(Object.keys(input.signals)
+    .map(id => [id, disposed.cx.signal(id).dehydrate()]));
+  const before = snapshot();
+  disposed.handler(input.handler)(disposed.cx.event({type: 'click', target: {}}));
+  for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
+  assert.deepEqual(snapshot(), before, 'a disposed pin control cannot change shared editor state');
   for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
   assert.equal(requests.length, 1, 'one pin click sends one typed procedure request');
   if (input.scenario === 'capture') {
