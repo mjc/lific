@@ -203,16 +203,9 @@ pub(crate) fn commit_issue_label_create(
     identity: &Option<ResolvedIdentity>,
     input: CreateLabel,
 ) -> Result<Label, LificError> {
-    authz::require_structure_role(db, identity, input.project_id)?;
-    let label = db.transaction(|conn| {
-        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
-        authz::require_structure_role_conn(conn, &identity, input.project_id)?;
+    crate::services::structure::commit_create(db, realtime, identity, input.project_id, |conn| {
         crate::db::queries::create_label(conn, &input)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated {
-        project_id: input.project_id,
-    });
-    Ok(label)
+    })
 }
 
 /// Commit an authenticated issue edit through the shared domain transaction.

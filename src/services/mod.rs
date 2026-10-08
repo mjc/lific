@@ -9,6 +9,7 @@ pub(crate) mod project_authority;
 pub(crate) mod project_form;
 pub(crate) mod projects;
 pub(crate) mod sessions;
+pub(crate) mod structure;
 
 pub(crate) mod instance_admin;
 
