@@ -46,6 +46,7 @@ pub(crate) mod icons;
 pub(crate) mod insights;
 pub(crate) mod instance_settings;
 pub(crate) mod issue_create;
+pub(crate) mod issue_collection;
 pub(crate) mod issue_edit;
 pub(crate) mod issue_peek;
 mod label_chip;
