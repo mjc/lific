@@ -2,6 +2,7 @@
 mod actions;
 mod folder_create;
 mod folder_tree;
+pub(crate) mod labels_action;
 mod metadata;
 mod move_picker;
 mod pin;
