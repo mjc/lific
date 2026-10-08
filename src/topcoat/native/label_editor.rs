@@ -1,5 +1,6 @@
 //! Shared label presentation; callers own selection, writes, and picker state.
 
+use super::icons::{self, UiIcon};
 use topcoat::{
     context::Cx,
     view::{Attributes, BoxView, ViewExt, view},
@@ -15,7 +16,7 @@ pub(crate) fn add_button(cx: &Cx, attrs: Attributes) -> BoxView<'_> {
             class="touch-target flex size-5 items-center justify-center rounded border border-dashed border-[var(--border)] text-[var(--text-faint)] transition-colors hover:border-[var(--accent)] hover:text-[var(--accent)]"
             (attrs)
         >
-            "+"
+            (icons::ui_icon(cx, UiIcon::Add, 12))
         </button>
     }.boxed()
 }
@@ -31,7 +32,7 @@ pub(crate) fn remove_button(cx: &Cx, name: String, attrs: Attributes) -> BoxView
             class="inline-flex size-3 items-center justify-center rounded-full opacity-60 transition-opacity hover:bg-[var(--bg-subtle)] hover:opacity-100"
             (attrs)
         >
-            "×"
+            (icons::ui_icon(cx, UiIcon::Close, 10))
         </button>
     }.boxed()
 }
@@ -45,6 +46,11 @@ pub(crate) fn option<'a>(
 ) -> BoxView<'a> {
     let color = color.map_or("#6B7280", super::project_overview::label_color);
     let style = format!("background-color: {color}");
+    let name_class = if selected {
+        "flex-1 min-w-0 truncate font-medium"
+    } else {
+        "flex-1 min-w-0 truncate"
+    };
     view! {
         cx =>
         <button
@@ -52,12 +58,14 @@ pub(crate) fn option<'a>(
             role="option"
             :aria-selected=$(if selected { "true" } else { "false" })
             data-label-name=(name.clone())
-            class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm hover:bg-[var(--bg-subtle)]"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-body-sm transition-colors hover:bg-[var(--bg-subtle)]"
             (attrs)
         >
-            <span class="size-2.5 rounded-full" style=(style)></span>
-            <span>(name)</span>
-            <span class="ml-auto" :hidden=$(!selected)>"✓"</span>
+            <span class="size-2.5 shrink-0 rounded-full" style=(style)></span>
+            <span class=(name_class)>(name)</span>
+            <span class="shrink-0 text-[var(--accent)]" :hidden=$(!selected)>
+                (icons::ui_icon(cx, UiIcon::Selected, 14))
+            </span>
         </button>
     }.boxed()
 }
@@ -97,6 +105,5 @@ pub(crate) fn popover<'a>(
     let class = format!(
         "absolute left-0 top-full z-20 mt-1 {width_class} max-w-[calc(100vw-2rem)] rounded-md border border-[var(--border)] bg-[var(--surface)] py-1 shadow-lg"
     );
-    view! { cx => <div class=(class) (attrs)>(children)</div> }
-    .boxed()
+    view! { cx => <div class=(class) (attrs)>(children)</div> }.boxed()
 }
