@@ -1,6 +1,8 @@
 //! Native plan list and step-tree detail surfaces.
 mod detail;
 mod list;
+#[cfg(test)]
+mod list_tab_production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, navigation, session};
