@@ -19,6 +19,9 @@ function deferred() {
 
 function fixture(testCase, fetch) {
   const f = handlerFixture(testCase.signals, fetch, input.browser_source);
+  // Browser I/O and its errors share the window's realm. The fake I/O lives
+  // in Node, so expose its constructor to the evaluated browser primitive.
+  f.context.Error = Error;
   const signal = f.cx.signal.bind(f.cx);
   const referenced = new Set();
   f.cx.signal = id => { referenced.add(id); return signal(id); };
