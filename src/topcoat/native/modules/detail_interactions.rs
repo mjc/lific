@@ -1,8 +1,25 @@
 use super::super::super::home_fixture;
+use super::module_delete_body;
 use crate::db::{
     models::{CreateModule, Role},
     queries,
 };
+
+#[test]
+fn module_delete_confirmation_copy_matches_main_issue_counts() {
+    assert_eq!(
+        module_delete_body(0),
+        "This module is empty. It will be removed."
+    );
+    assert_eq!(
+        module_delete_body(1),
+        "1 issue will be unassigned from this module but not deleted."
+    );
+    assert_eq!(
+        module_delete_body(3),
+        "3 issues will be unassigned from this module but not deleted."
+    );
+}
 
 #[tokio::test]
 async fn native_module_detail_maintainer_name_has_inline_edit_trigger() {

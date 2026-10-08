@@ -1,6 +1,8 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 use super::super::mascot::Mascot;
-use super::super::{context, icons, mascot, navigation, project_authority, session, transport};
+use super::super::{
+    browser, context, icons, mascot, navigation, project_authority, session, transport,
+};
 use crate::{
     db::models::{CreateModule, Project},
     services::modules::{ModuleList, ModuleSummary},
@@ -37,7 +39,7 @@ enum Tab {
 }
 
 impl Tab {
-    fn parse(query: &str, summaries: &[ModuleSummary]) -> Self {
+    fn requested(query: &str) -> Option<Self> {
         let requested = serde_urlencoded::from_str::<Vec<(String, String)>>(query)
             .ok()
             .and_then(|pairs| {
@@ -47,18 +49,25 @@ impl Tab {
                     .map(|(_, value)| value)
             });
         match requested.as_deref() {
-            Some("backlog") => Self::Backlog,
-            Some("archive") => Self::Archive,
-            Some("all") => Self::All,
-            Some("active") => Self::Active,
-            _ if !summaries.is_empty()
-                && !summaries.iter().any(|item| {
-                    matches!(item.module.status.as_str(), "active" | "planned" | "paused")
-                }) =>
-            {
-                Self::All
-            }
-            _ => Self::Active,
+            Some("backlog") => Some(Self::Backlog),
+            Some("archive") => Some(Self::Archive),
+            Some("all") => Some(Self::All),
+            Some("active") => Some(Self::Active),
+            _ => None,
+        }
+    }
+
+    fn parse(query: &str, summaries: &[ModuleSummary]) -> Self {
+        if let Some(requested) = Self::requested(query) {
+            requested
+        } else if !summaries.is_empty()
+            && !summaries
+                .iter()
+                .any(|item| matches!(item.module.status.as_str(), "active" | "planned" | "paused"))
+        {
+            Self::All
+        } else {
+            Self::Active
         }
     }
 
@@ -173,10 +182,11 @@ pub(super) fn content<'a>(
     } else {
         data.done_issues as f64 / data.total_issues as f64
     };
-    let active_url = navigation::attrs(cx, &format!("/{project_name}/modules?tab=active"));
-    let backlog_url = navigation::attrs(cx, &format!("/{project_name}/modules?tab=backlog"));
-    let archive_url = navigation::attrs(cx, &format!("/{project_name}/modules?tab=archive"));
-    let all_url = navigation::attrs(cx, &format!("/{project_name}/modules?tab=all"));
+    let active_url = tab_attributes(cx, &project_name, Tab::Active);
+    let backlog_url = tab_attributes(cx, &project_name, Tab::Backlog);
+    let archive_url = tab_attributes(cx, &project_name, Tab::Archive);
+    let all_url = tab_attributes(cx, &project_name, Tab::All);
+    let tabs_mount = tab_restore_attributes(cx, &project_name, tab, query);
     let active_modules = data.active_modules.to_string();
     let issue_total = data.total_issues.to_string();
     let done_total = data.done_issues.to_string();
@@ -238,6 +248,7 @@ pub(super) fn content<'a>(
         <main
             data-native-modules=(project_name.clone())
             data-native-project-authority=(aria_authority)
+            (tabs_mount)
             class="h-full overflow-y-auto"
         >
             <div class="max-w-[1100px] mx-auto px-6 py-6">
@@ -363,6 +374,71 @@ pub(super) fn content<'a>(
             </div>
         </main>
     }.boxed()
+}
+
+fn tab_attributes(cx: &Cx, project: &str, tab: Tab) -> Attributes {
+    let browser = browser::bindings();
+    let storage_key = format!("lific:subtab:modules:{project}");
+    let value = tab.as_str();
+    let mut attrs = navigation::attrs(cx, &format!("/{project}/modules?tab={value}"));
+    attrs.insert(cx, "data-native-module-tab", value);
+    let handler = expr!(|_event: Event| {
+        if !browser.is_disposed() {
+            browser.store(storage_key.clone(), value.to_owned());
+        }
+    });
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn tab_restore_attributes(cx: &Cx, project: &str, current: Tab, query: &str) -> Attributes {
+    let browser = browser::bindings();
+    let storage_key = format!("lific:subtab:modules:{project}");
+    let explicit = Tab::requested(query).is_some();
+    let current_value = current.as_str();
+    let active_route = transport::mounted_url(cx, &format!("/{project}/modules?tab=active"));
+    let backlog_route = transport::mounted_url(cx, &format!("/{project}/modules?tab=backlog"));
+    let archive_route = transport::mounted_url(cx, &format!("/{project}/modules?tab=archive"));
+    let all_route = transport::mounted_url(cx, &format!("/{project}/modules?tab=all"));
+    let handler = expr!(|_mount: Event| {
+        if browser.is_disposed() {
+            return;
+        }
+        if explicit {
+            browser.store(storage_key.clone(), current_value.to_owned());
+        } else {
+            let stored = browser.stored(storage_key.clone());
+            if stored == "active" {
+                if current_value != "active" {
+                    browser.navigate(active_route.clone());
+                }
+            } else if stored == "backlog" {
+                if current_value != "backlog" {
+                    browser.navigate(backlog_route.clone());
+                }
+            } else if stored == "archive" {
+                if current_value != "archive" {
+                    browser.navigate(archive_route.clone());
+                }
+            } else if stored == "all" {
+                if current_value != "all" {
+                    browser.navigate(all_route.clone());
+                }
+            }
+        }
+    });
+    let mut attrs = Attributes::with_capacity(1);
+    attrs.insert(cx, "data-native-module-tabs", "");
+    attrs.insert(
+        cx,
+        "data-topcoat-on:mount",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
 }
 
 fn status_group<'a>(

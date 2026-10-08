@@ -71,6 +71,21 @@ async fn module_delete_matches_main_inline_confirmation_and_consequence_copy() {
             node.value().attr("data-topcoat-on:click").unwrap()
         })
         .collect::<Vec<_>>();
+    let error_selector = Selector::parse("[data-native-module-delete-error]").unwrap();
+    let error_slot = owner
+        .select(&error_selector)
+        .next()
+        .expect("the visible failure slot is rendered outside both popovers");
+    let confirmation = owner
+        .select(&Selector::parse("[data-native-module-delete-confirm-panel]").unwrap())
+        .next()
+        .unwrap();
+    let menu = owner
+        .select(&Selector::parse("[data-native-module-delete-menu-panel]").unwrap())
+        .next()
+        .unwrap();
+    assert!(confirmation.select(&error_selector).next().is_none());
+    assert!(menu.select(&error_selector).next().is_none());
     assert!(
         !owner.html().contains("window.confirm"),
         "module removal uses Main's inline confirmation, not a browser dialog"
@@ -81,11 +96,13 @@ async fn module_delete_matches_main_inline_confirmation_and_consequence_copy() {
             "signals": home_fixture::page_signals(&html),
             "handlers": handlers,
             "destination": "/app/ACC/modules",
+            "error_slot_available_outside_panels": error_slot.value().attr("data-native-module-delete-error").is_some(),
         }),
     );
     assert_eq!(result["cancel_requests"], 0);
     assert_eq!(result["delete_requests"], 1);
     assert_eq!(result["destination"], "/app/ACC/modules");
+    assert_eq!(result["error_visible"], true);
 }
 
 #[tokio::test]
@@ -145,7 +162,7 @@ async fn module_tabs_persist_per_project_and_run_through_emitted_browser_handler
     );
     let args = serde_json::json!({
         "mount": "/app",
-        "project_id": project_id,
+        "project_identifier": "ACC",
         "signals": home_fixture::page_signals(&html),
         "mount_handler": mount_handler,
         "tabs": tabs,
