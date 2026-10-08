@@ -1385,7 +1385,7 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
     assert_eq!(status, StatusCode::OK);
     assert!(nested_html.contains(&format!("data-native-folder-page=\"{page_id}\"")));
     let nested_document = scraper::Html::parse_document(&nested_html);
-    let _grandchild = nested_document
+    let grandchild = nested_document
         .select(
             &scraper::Selector::parse(&format!(
                 "[data-native-page-folder-toggle='{grandchild_folder}']"
@@ -1406,6 +1406,7 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
         "toggle_handler": grandchild_click,
         "target_kind": "toggle",
         "folder_id": grandchild_folder,
+        "expanded_binding": grandchild.value().attr("data-topcoat-bind:aria-expanded").unwrap(),
     }));
     assert_eq!(grandchild_close["expanded_after"], false);
     let grandchild_signals = serde_json::from_value(grandchild_close["signals"].clone()).unwrap();
@@ -1427,6 +1428,18 @@ async fn native_pages_folder_tree_expands_nested_rows_from_emitted_handlers() {
             .unwrap(),
         "target_kind": "toggle",
         "folder_id": grandchild_folder,
+        "expanded_binding": grandchild_closed_document
+            .select(
+                &scraper::Selector::parse(&format!(
+                    "[data-native-page-folder-toggle='{grandchild_folder}']"
+                ))
+                .unwrap(),
+            )
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:aria-expanded")
+            .unwrap(),
     }));
     assert_eq!(grandchild_reopened["expanded_after"], true);
     let grandchild_reopened_signals =
