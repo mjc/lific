@@ -112,13 +112,17 @@ const image = new FakeImage({
 }, root);
 const before = values(cx);
 assert.equal(evaluate(input.hidden_binding), true, 'the SSR preview dialog starts hidden');
+assert.equal(evaluate(input.source_binding), null, 'the closed preview has no image source');
 const clickEvent = new FakeEvent('click', image, root);
 click(cx.event(clickEvent));
 const opened = values(cx);
 const retainedOpenSignals = signalSnapshot(cx);
 assert.equal(evaluate(input.source_binding), `${input.mount}/api/attachments/9007199254740999`, 'the opened dialog uses the original URL');
 assert.equal(evaluate(input.alt_binding), 'Page image', 'the opened dialog preserves authored alt text');
-assert.match(evaluate(input.class_binding), /fixed inset-0 z-\[1200\].*bg-black/, 'the open binding preserves the complete overlay class');
+for (const token of ['fixed', 'inset-0', 'z-[1200]', 'bg-black/[0.78]']) {
+  assert.ok(evaluate(input.class_binding).split(/\s+/).includes(token),
+    `the open overlay class preserves ${token}`);
+}
 const openId = Object.keys(before).find(id => before[id] === false && opened[id] === true);
 assert.ok(openId, 'the emitted image click opens its Rust-owned preview signal');
 assert.equal(evaluate(input.hidden_binding), false, 'the emitted binding makes the preview visible');
@@ -152,6 +156,7 @@ const overlayImage = new FakeImage({src: '/app/api/attachments/9007199254740999'
 click(cx.event(new FakeEvent('click', overlayImage, root)));
 assert.equal(values(cx)[openId], false, 'the overlay click closes the preview');
 assert.equal(evaluate(input.hidden_binding), true, 'the preview binding hides it again');
+assert.equal(evaluate(input.source_binding), null, 'closing the preview removes its image source');
 const failed = new FakeImage({
   src: '/app/api/attachments/11/thumbnail',
   'data-native-attachment-image': '',
@@ -208,7 +213,6 @@ const retained = new FakeImage({
 }, root);
 click(cx.event(new FakeEvent('click', image, root)));
 assert.equal(values(cx)[openId], true, 'the preview can be open before owner retirement');
-click(cx.event(new FakeEvent('click', overlayImage, root)));
 const beforeDispose = values(cx);
 controller.abort();
 const retainedEscape = new FakeEvent('keydown', root, root, 'Escape');
@@ -216,7 +220,9 @@ keydown.callback(retainedEscape);
 assert.equal(retainedEscape.defaultPrevented, false, 'a retained Escape callback is inert after owner retirement');
 assert.equal(values(cx)[openId], beforeDispose[openId], 'retained callbacks cannot write modal state after retirement');
 errorListener.callback(new FakeEvent('error', retained, root));
-click(cx.event(new FakeEvent('click', image, root)));
+click(cx.event(new FakeEvent('click', retained, root)));
+assert.deepEqual(values(cx), beforeDispose, 'a retained image click cannot replace preview content after disposal');
+click(cx.event(new FakeEvent('click', overlayImage, root)));
 assert.deepEqual(values(cx), beforeDispose, 'retained click and Escape callbacks cannot write after disposal');
 assert.equal(retained.getAttribute('src'), '/app/api/attachments/14/thumbnail', 'retained fallback callbacks are inert after disposal');
 

@@ -51,13 +51,24 @@ const canonicalBodyId = Object.keys(input.signals).find(id =>
   id !== bodyDraftId && unbox(input.signals[id]) === 'Original body'
 );
 assert.ok(canonicalBodyId, 'SSR exposes a distinct canonical body baseline');
+const assertModeClasses = () => {
+  for (const binding of [input.mode_edit_class, input.mode_preview_class]) {
+    const classes = read(binding).split(/\s+/);
+    for (const token of ['inline-flex', 'items-center', 'rounded-full', 'px-2.5', 'py-1',
+      'text-body-sm', 'hover:bg-[var(--bg-subtle)]', 'focus-visible:outline']) {
+      assert.ok(classes.includes(token), `mode class binding preserves ${token}`);
+    }
+  }
+};
 (async () => {
+  assertModeClasses();
   assert.equal(read(input.mode_edit_pressed), 'false', 'Edit is not selected on initial Preview');
   assert.equal(read(input.mode_preview_pressed), 'true', 'Preview is selected on initial render');
   assert.equal(read(input.mode_group_hidden), false, 'nonempty body shows the segmented mode control');
   assert.equal(read(input.save_label), 'Save', 'idle body Save label matches Main');
   fire(input.mode_edit);
   await flush();
+  assertModeClasses();
   assert.equal(read(input.textarea.hidden), false, 'the Edit control opens the body editor');
   fire(input.textarea.input, text('Updated body'));
   fire(input.textarea.keydown, key('Enter'));
@@ -93,6 +104,7 @@ assert.ok(canonicalBodyId, 'SSR exposes a distinct canonical body baseline');
   assert.equal(calls[1].args[2], 'Preview body');
   resolveSaves[1]();
   await flush();
+  assertModeClasses();
   assert.equal(unbox(cx.signal(canonicalBodyId).get().dehydrate()), 'Preview body',
     'the second real procedure reply advances the canonical body baseline');
   assert.equal(readInput(), 'Preview body', 'Preview completion adopts the submitted body');

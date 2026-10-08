@@ -4257,6 +4257,7 @@ async fn native_page_markdown_emitted_image_handlers_obey_owner_lifetime_and_fal
         .select(&scraper::Selector::parse("img").unwrap())
         .next()
         .expect("the dialog keeps one reactive image element mounted");
+    assert!(preview_image.value().attr("src").is_none());
     let source_binding = preview_image
         .value()
         .attr("data-topcoat-bind:src")
