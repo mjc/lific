@@ -9,15 +9,15 @@ const {handlerFixture} = require('../handler_fixture.cjs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const requests = [];
 let finishRequest;
-const fixture = handlerFixture(input.signals, (url, options) => {
+const fixture = handlerFixture(input.signals, async (url, options) => {
   requests.push({url, options, arguments: JSON.parse(options.body)});
   if (input.scenario === 'failure') return Promise.reject(new Error('offline'));
   if (input.scenario === 'retired' || input.scenario === 'pending') {
     return new Promise(resolve => {
-      finishRequest = () => resolve({ok: true, json: async () => ({t: 'Record', v: {status: {ok: 'saved'}}})});
+      finishRequest = () => resolve({ok: true, json: async () => ({t: 'Record', v: {status: {t: 'Result', ok: 'saved'}}})});
     });
   }
-  return {ok: true, json: async () => ({t: 'Record', v: {status: {ok: 'saved'}}})};
+  return {ok: true, json: async () => ({t: 'Record', v: {status: {t: 'Result', ok: 'saved'}}})};
 }, input.browser_source);
 const {cx, context} = fixture;
 const referenced = new Set();
@@ -30,14 +30,45 @@ const unbox = value => {
   while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
   return value;
 };
+const makeEvent = fields => ({
+  type: 'click',
+  target: {},
+  currentTarget: {},
+  stopPropagation() {},
+  preventDefault() {},
+  ...fields,
+});
 const snapshot = () => Object.fromEntries(Object.keys(input.signals)
-  .map(id => [id, cx.signal(id).dehydrate()]));
+  .map(id => [id, cx.signal(id).get().dehydrate()]));
 
 async function run() {
+  if (input.scenario === 'filter') {
+    fixture.handler(input.filter_handler)(cx.event(makeEvent({
+      type: input.filter_type,
+      target: input.filter_target,
+    })));
+    process.stdout.write(JSON.stringify({signals: snapshot()}));
+    return;
+  }
   if (input.scenario === 'open') {
-    fixture.handler(input.open_handler)(cx.event({type: 'click', target: {}}));
+    let clickStopped = false;
+    let enterStopped = false;
+    let enterPrevented = false;
+    fixture.handler(input.open_handler)(cx.event(makeEvent({
+      type: 'click', target: {}, stopPropagation() { clickStopped = true; },
+    })));
+    fixture.handler(input.key_handler)(cx.event(makeEvent({
+      type: 'keydown', key: 'Enter', target: {},
+      stopPropagation() { enterStopped = true; },
+      preventDefault() { enterPrevented = true; },
+    })));
     const signals = snapshot();
-    process.stdout.write(JSON.stringify({signals}));
+    process.stdout.write(JSON.stringify({
+      signals,
+      click_stopped: clickStopped,
+      enter_stopped: enterStopped,
+      enter_prevented: enterPrevented,
+    }));
     return;
   }
 
@@ -51,24 +82,44 @@ async function run() {
   const cancel = fixture.handler(input.cancel_handler);
   const select = fixture.handler(input.select_handler);
   const dialog = readBinding(input.open_binding);
-  assert.equal(dialog.value, false, 'the server-rendered picker is open after row-action replay');
+  assert.equal(dialog.value, false, 'the shared backdrop is visible after row-action replay');
+  const hiddenBinding = vm.runInNewContext(`cx => (${input.open_binding})`, context);
+  const readHidden = () => unbox(hiddenBinding(cx));
 
-  cancel(cx.event({type: 'click', target: {}}));
-  assert.equal(unbox(cx.signal(dialog.id).dehydrate()), true,
+  cancel(cx.event(makeEvent({type: 'click'})));
+  assert.equal(readHidden(), true,
     'the close action cancels the move');
   assert.equal(requests.length, 0, 'cancelling never sends a move request');
-  open(cx.event({type: 'click', target: {}}));
-  select(cx.event({type: 'change', target: {value: String(input.current_folder_id)}}));
+  open(cx.event(makeEvent({type: 'click'})));
+  select(cx.event(makeEvent({type: 'change', target: {value: String(input.current_folder_id)}})));
   assert.equal(requests.length, 0, 'selecting the current folder does not write');
-  assert.equal(unbox(cx.signal(dialog.id).dehydrate()), true,
+  assert.equal(readHidden(), true,
     'the unchanged selection closes the picker');
-  open(cx.event({type: 'click', target: {}}));
+  open(cx.event(makeEvent({type: 'click'})));
 
+  if (input.scenario === 'overlay') {
+    const backdrop = {};
+    fixture.handler(input.backdrop_handler)(cx.event(makeEvent({
+      type: 'click', target: backdrop, currentTarget: backdrop,
+    })));
+    assert.equal(readHidden(), true, 'clicking the backdrop closes the picker');
+    open(cx.event(makeEvent({type: 'click'})));
+    const backdropOwner = {};
+    fixture.handler(input.backdrop_handler)(cx.event(makeEvent({
+      type: 'click', target: {}, currentTarget: backdropOwner,
+    })));
+    assert.equal(readHidden(), false, 'clicking inside the dialog leaves it open');
+    process.stdout.write(JSON.stringify({ok: true}));
+    return;
+  }
+
+  const beforeSelection = snapshot();
   if (input.scenario === 'disposed') fixture.controller.abort();
-  select(cx.event({type: 'change', target: {value: String(input.folder_id)}}));
+  select(cx.event(makeEvent({type: 'change', target: {value: String(input.folder_id)}})));
   if (input.scenario === 'disposed') {
     for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
     assert.equal(requests.length, 0, 'a retired list cannot queue a move request');
+    assert.deepEqual(snapshot(), beforeSelection, 'a retired list cannot mutate picker state');
     process.stdout.write(JSON.stringify({ok: true, requests: requests.length}));
     return;
   }
@@ -76,13 +127,13 @@ async function run() {
   if (input.scenario === 'pending') {
     for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
     assert.equal(requests.length, 1, 'the first folder choice starts one request');
-    cancel(cx.event({type: 'click', target: {}}));
-    fixture.handler(input.escape_handler)(cx.event({type: 'keydown', key: 'Escape', target: {}, currentTarget: {}}));
+    cancel(cx.event(makeEvent({type: 'click'})));
+    fixture.handler(input.escape_handler)(cx.event(makeEvent({type: 'keydown', key: 'Escape'})));
     const backdrop = {};
-    fixture.handler(input.backdrop_handler)(cx.event({type: 'click', target: backdrop, currentTarget: backdrop}));
-    select(cx.event({type: 'change', target: {value: String(input.current_folder_id)}}));
+    fixture.handler(input.backdrop_handler)(cx.event(makeEvent({type: 'click', target: backdrop, currentTarget: backdrop})));
+    select(cx.event(makeEvent({type: 'change', target: {value: String(input.current_folder_id)}})));
     assert.equal(requests.length, 1, 'pending choices cannot submit twice');
-    assert.equal(unbox(cx.signal(dialog.id).dehydrate()), false,
+    assert.equal(readHidden(), false,
       'close, Escape, and backdrop cannot dismiss a pending move');
     process.stdout.write(JSON.stringify({ok: true, requests: requests.length}));
     return;
@@ -95,7 +146,7 @@ async function run() {
   assert.equal(path, `${input.mount}/__native_pages/move`);
   assert.equal(request.options.method, 'POST');
   if (input.scenario === 'failure') {
-    assert.equal(unbox(cx.signal(dialog.id).dehydrate()), false,
+    assert.equal(readHidden(), false,
       'a failed request leaves the picker open for retry');
     process.stdout.write(JSON.stringify({signals: snapshot()}));
     return;
@@ -108,7 +159,7 @@ async function run() {
     for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
     assert.deepEqual(snapshot(), before, 'a retired list owner ignores a late move reply');
   } else {
-    assert.equal(unbox(cx.signal(dialog.id).dehydrate()), true,
+    assert.equal(readHidden(), true,
       'a successful move closes the picker');
   }
   process.stdout.write(JSON.stringify({url: path, arguments: request.arguments}));

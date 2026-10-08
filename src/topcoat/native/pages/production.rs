@@ -422,32 +422,88 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
         .await;
         assert_eq!(status, StatusCode::OK);
         let document = scraper::Html::parse_document(&html);
+        let signals = home_fixture::page_signals(&html);
+        let recent_handler = document
+            .select(&scraper::Selector::parse("[role=tablist] button").unwrap())
+            .find(|button| button.text().collect::<String>() == "Recent")
+            .and_then(|button| button.value().attr("data-topcoat-on:click"))
+            .expect("the recent view has an emitted tab handler");
+        let search_handler = document
+            .select(&scraper::Selector::parse("input[aria-label='Search pages']").unwrap())
+            .next()
+            .and_then(|input| input.value().attr("data-topcoat-on:input"))
+            .expect("search has an emitted input handler");
+        for (filter_type, filter_handler, filter_target) in [
+            ("click", recent_handler, serde_json::json!({})),
+            (
+                "input",
+                search_handler,
+                serde_json::json!({"value": "Page metadata"}),
+            ),
+        ] {
+            let filtered = run_move_handler(&serde_json::json!({
+                "scenario": "filter",
+                "signals": signals.clone(),
+                "filter_type": filter_type,
+                "filter_handler": filter_handler,
+                "filter_target": filter_target,
+            }));
+            let filtered_signals = serde_json::from_value(filtered["signals"].clone()).unwrap();
+            let (status, filtered_html) =
+                home_fixture::document(&fixture, mount, "/ACC/pages", true, Some(filtered_signals))
+                    .await;
+            assert_eq!(status, StatusCode::OK);
+            let filtered_document = scraper::Html::parse_document(&filtered_html);
+            assert!(
+                filtered_document
+                    .select(
+                        &scraper::Selector::parse("[role=button][title='Move to folder…']")
+                            .unwrap()
+                    )
+                    .next()
+                    .is_none(),
+                "Main only shows Move in unfiltered Browse, not Recent or search results",
+            );
+        }
         let move_button = document
-            .select(&scraper::Selector::parse("button[data-native-page-move]").unwrap())
-            .find(|button| {
-                button
-                    .text()
-                    .collect::<String>()
-                    .contains("Move to folder…")
-            })
+            .select(&scraper::Selector::parse("[role=button][title='Move to folder…']").unwrap())
+            .find(|button| button.value().attr("tabindex") == Some("0"))
             .expect("maintainers can move a page from its accessible row action");
         assert_eq!(
             move_button.value().attr("aria-label"),
             Some("Move to folder…")
         );
+        assert!(
+            move_button
+                .select(&scraper::Selector::parse("svg[aria-hidden=true]").unwrap())
+                .next()
+                .is_some(),
+            "the row action uses the compact folder icon",
+        );
         let open_handler = move_button.value().attr("data-topcoat-on:click").unwrap();
-        let signals = home_fixture::page_signals(&html);
+        let key_handler = move_button.value().attr("data-topcoat-on:keydown").unwrap();
         let opened = run_move_handler(&serde_json::json!({
             "scenario": "open",
             "signals": signals,
             "open_handler": open_handler,
+            "key_handler": key_handler,
             "page_id": page_id,
         }));
+        assert_eq!(opened["click_stopped"], true);
+        assert_eq!(opened["enter_stopped"], true);
+        assert_eq!(opened["enter_prevented"], true);
         let opened_signals = serde_json::from_value(opened["signals"].clone()).unwrap();
         let (status, opened_html) =
             home_fixture::document(&fixture, mount, "/ACC/pages", true, Some(opened_signals)).await;
         assert_eq!(status, StatusCode::OK);
         let opened_document = scraper::Html::parse_document(&opened_html);
+        assert!(
+            opened_document
+                .select(&scraper::Selector::parse("[data-native-page-move-backdrop]").unwrap())
+                .next()
+                .is_some_and(|backdrop| backdrop.value().attr("hidden").is_none()),
+            "replaying the row action opens the shared picker",
+        );
         let initial_dialogs = document
             .select(
                 &scraper::Selector::parse("[role=dialog][aria-label='Move page to folder']")
@@ -455,10 +511,12 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
             )
             .collect::<Vec<_>>();
         assert!(initial_dialogs.len() <= 1, "the page list owns one picker");
+        let initial_backdrop = document
+            .select(&scraper::Selector::parse("[data-native-page-move-backdrop]").unwrap())
+            .next()
+            .expect("the list owns one move backdrop");
         assert!(
-            initial_dialogs
-                .first()
-                .is_none_or(|dialog| dialog.value().attr("hidden").is_some()),
+            initial_backdrop.value().attr("hidden").is_some(),
             "the global picker starts closed",
         );
         let dialogs = opened_document
@@ -469,7 +527,12 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
             .collect::<Vec<_>>();
         assert_eq!(dialogs.len(), 1, "the list owns one shared move dialog");
         let dialog = dialogs[0];
-        assert!(dialog.text().collect::<String>().contains("No folder"));
+        assert!(
+            dialog
+                .text()
+                .collect::<String>()
+                .contains("No folder / root")
+        );
         assert!(dialog.text().collect::<String>().contains("Move to folder"));
         assert!(
             dialog
@@ -484,7 +547,14 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
                 .contains("Research folder")
         );
         assert!(dialog.text().collect::<String>().contains("Archive folder"));
-        let open_binding = dialog.value().attr("data-topcoat-bind:hidden").unwrap();
+        assert!(!dialog.text().collect::<String>().contains("Private folder"));
+        let open_binding = opened_document
+            .select(&scraper::Selector::parse("[data-native-page-move-backdrop]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:hidden")
+            .unwrap();
         let cancel_handler = dialog
             .select(&scraper::Selector::parse("button[data-native-page-move-cancel]").unwrap())
             .next()
@@ -498,8 +568,6 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
             .expect("the picker has an Escape and backdrop owner");
         let escape_handler = overlay.value().attr("data-topcoat-on:keydown").unwrap();
         let backdrop_handler = overlay.value().attr("data-topcoat-on:click").unwrap();
-        let escape_handler = dialog.value().attr("data-topcoat-on:keydown").unwrap();
-        let backdrop_handler = dialog.value().attr("data-topcoat-on:click").unwrap();
         let picker = dialog
             .select(&scraper::Selector::parse("select[data-native-page-move-folder]").unwrap())
             .next()
@@ -514,12 +582,14 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
         );
         let select_handler = picker.value().attr("data-topcoat-on:change").unwrap();
         let expected_error = format!(
-            "Couldn't move {}: offline",
+            "Couldn't move {}: Couldn't reach the server. Check your connection and try again.",
             queries::get_page(&fixture.db.read().unwrap(), page_id)
                 .unwrap()
                 .identifier
         );
-        for scenario in ["success", "failure", "retired", "pending", "disposed"] {
+        for scenario in [
+            "success", "failure", "retired", "pending", "disposed", "overlay",
+        ] {
             let result = run_move_handler(&serde_json::json!({
                 "scenario": scenario,
                 "signals": home_fixture::page_signals(&opened_html),
@@ -536,7 +606,7 @@ async fn native_pages_move_picker_matches_main_and_runs_emitted_handlers() {
                 "page_id": page_id,
             }));
             if scenario == "success" {
-                let expected = (account, page_id, Some(destination_folder)).into_surrogate();
+                let expected = (account, page_id, destination_folder.to_string()).into_surrogate();
                 assert_eq!(result["arguments"], serde_json::to_value(expected).unwrap());
                 assert!(result["url"].as_str().unwrap().starts_with(mount));
                 assert!(
@@ -578,7 +648,7 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
     let fixture = home_fixture::fixture();
     let (page_id, account, folder_id, destination_folder, other_project_folder) =
         seed_page_with_folders(&fixture, true);
-    let arguments = (account, page_id, Some(destination_folder)).into_surrogate();
+    let arguments = (account, page_id, destination_folder.to_string()).into_surrogate();
     let (status, outcome) = home_fixture::procedure(
         &fixture,
         "/__native_pages/move",
@@ -599,7 +669,7 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
     assert_eq!(moved.status, "active");
     assert!(!moved.pinned);
 
-    let wrong_account = (account + 100, page_id, Some(folder_id)).into_surrogate();
+    let wrong_account = (account + 100, page_id, folder_id.to_string()).into_surrogate();
     let (status, outcome) = home_fixture::procedure(
         &fixture,
         "/__native_pages/move",
@@ -609,7 +679,7 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(outcome["v"]["status"]["err"], "forbidden");
 
-    let cross_project = (account, page_id, Some(other_project_folder)).into_surrogate();
+    let cross_project = (account, page_id, other_project_folder.to_string()).into_surrogate();
     let (status, outcome) = home_fixture::procedure(
         &fixture,
         "/__native_pages/move",
@@ -630,7 +700,7 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
         Some(destination_folder),
         "cross-project validation leaves the saved location untouched",
     );
-    let arguments = (account, page_id, None::<i64>).into_surrogate();
+    let arguments = (account, page_id, String::new()).into_surrogate();
     let (status, outcome) = home_fixture::procedure(
         &fixture,
         "/__native_pages/move",
@@ -654,7 +724,7 @@ async fn native_page_move_procedure_updates_folder_and_checks_scope() {
             rusqlite::params![account, page_id],
         )
         .unwrap();
-    let viewer_arguments = (account, page_id, Some(folder_id)).into_surrogate();
+    let viewer_arguments = (account, page_id, folder_id.to_string()).into_surrogate();
     let (status, outcome) = home_fixture::procedure(
         &fixture,
         "/__native_pages/move",
@@ -684,7 +754,7 @@ async fn native_pages_move_action_is_read_only_for_viewers() {
         .next()
         .expect("viewers still see the page row");
     assert!(
-        row.select(&scraper::Selector::parse("button[data-native-page-move]").unwrap())
+        row.select(&scraper::Selector::parse("[role=button][title='Move to folder…']").unwrap(),)
             .next()
             .is_none(),
         "viewers have no move action",
