@@ -167,9 +167,7 @@ pub(super) async fn delete_folder(
         Err(LificError::Forbidden(message)) if message == "authentication required" => {
             return Ok(failed_folder("reauth"));
         }
-        Err(error) => {
-            return Ok(failed_folder(&classify(error).status.unwrap_err()));
-        }
+        Err(error) => return Ok(failed_folder(error.client_message())),
     }
     let result = caller
         .scope(async {
@@ -191,7 +189,7 @@ pub(super) async fn delete_folder(
         })
         .await;
     Ok(result.map_or_else(
-        |error| failed_folder(&classify(error).status.unwrap_err()),
+        |error| failed_folder(error.client_message()),
         |_| FolderOutcome {
             status: Ok("deleted".into()),
             folder_id: None,

@@ -101,37 +101,54 @@ async function run() {
 
   const delegateHandler = input.toggle_handler || input.delete_handler || input.keydown_handler;
   if (delegateHandler) {
-    const diagnostic = handlerFixture(input.signals, async () => ({
-      ok: true,
-      json: async () => input.reply,
-    }), input.browser_source);
-    const largeFolderId = '9007199254740993';
-    const largeTarget = {
-      getAttribute(name) {
-        if (name === 'data-folder-id') return largeFolderId;
-        if (name === 'data-folder-revision') return String(input.folder_revision || 0);
-        return null;
-      },
-      closest(selector) {
-        return selector === '[data-native-page-folder-toggle]' ? this : null;
-      },
+    const dispatchFolderId = async (folderId, handler = delegateHandler, type = 'click') => {
+      const diagnostic = handlerFixture(input.signals, async () => ({
+        ok: true,
+        json: async () => input.reply,
+      }), input.browser_source);
+      const snapshot = () => Object.fromEntries(Object.keys(input.signals)
+        .map(id => [id, diagnostic.cx.signal(id).get().dehydrate()]));
+      const before = JSON.stringify(snapshot());
+      const target = {
+        getAttribute(name) {
+          if (name === 'data-folder-id') return folderId;
+          if (name === 'data-folder-revision') return String(input.folder_revision || 0);
+          return null;
+        },
+        closest(selector) {
+          return selector === '[data-native-page-folder-toggle]' ? this : null;
+        },
+      };
+      const nativeEvent = new diagnostic.context.Event(type);
+      Object.assign(nativeEvent, {
+        key: 'Enter',
+        target,
+        currentTarget: target,
+        stopPropagation() {},
+        preventDefault() {},
+      });
+      await diagnostic.handler(delegateHandler)(diagnostic.cx.event(nativeEvent));
+      return {before, after: JSON.stringify(snapshot())};
     };
-    const largeEvent = new diagnostic.context.Event('click');
-    Object.assign(largeEvent, {
-      target: largeTarget,
-      currentTarget: largeTarget,
-      stopPropagation() {},
-      preventDefault() {},
-    });
-    await diagnostic.handler(delegateHandler)(diagnostic.cx.event(largeEvent));
-    const largeSignals = Object.fromEntries(Object.keys(input.signals)
-      .map(id => [id, diagnostic.cx.signal(id).get().dehydrate()]));
-    const largeState = JSON.stringify(largeSignals);
-    if (!largeState.includes('"v":"9007199254740993"')) {
+    const largeState = await dispatchFolderId('9007199254740993');
+    if (!largeState.after.includes('"v":"9007199254740993"')) {
       throw new Error('folder row IDs must cross the DOM boundary without JavaScript Number rounding');
     }
-    if (largeState.includes('"v":"9007199254740992"')) {
+    if (largeState.after.includes('"v":"9007199254740992"')) {
       throw new Error('large folder row IDs were rounded before updating the expanded state');
+    }
+    if (input.keydown_handler) {
+      const largeKeyboardState = await dispatchFolderId(
+        '9007199254740993', input.keydown_handler, 'keydown');
+      if (!largeKeyboardState.after.includes('"v":"9007199254740993"')) {
+        throw new Error('keyboard folder activation must preserve the exact i64 row ID');
+      }
+    }
+    for (const invalidId of ['0', '-1', '01', '9223372036854775808']) {
+      const invalidState = await dispatchFolderId(invalidId);
+      if (invalidState.after !== invalidState.before) {
+        throw new Error(`invalid folder row id ${invalidId} must not change expansion state`);
+      }
     }
   }
 

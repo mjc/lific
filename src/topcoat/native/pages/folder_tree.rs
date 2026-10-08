@@ -26,9 +26,9 @@ pub(super) struct Render<'data, 'view> {
     pub(super) parent: Option<i64>,
 }
 
-pub(super) fn state(cx: &Cx, revision: Signal<usize>) -> State {
+pub(super) fn state(cx: &Cx, revision: Signal<usize>, initially_expanded: Vec<i64>) -> State {
     (
-        topcoat::runtime::signal(cx, Vec::<i64>::new),
+        topcoat::runtime::signal(cx, move || initially_expanded.clone()),
         topcoat::runtime::signal(cx, || false),
         topcoat::runtime::signal(cx, String::new),
         revision,
@@ -43,14 +43,14 @@ pub(super) fn handlers(cx: &Cx, account: i64, project_id: i64, state: &State) ->
     let done_error = error.clone();
     let done_revision = revision.clone();
     let browser = browser::bindings();
-    let id_zero = 0_i64;
     let revision_zero = 0_usize;
     let click = expr!(async |_event: Event| {
         if !browser.is_disposed() {
-            let delete_id = raw!(
-                "cx.hydrate((()=>{const el=${_event}.inner.target?.closest('[data-native-page-folder-delete]');const id=Number(el?.getAttribute('data-folder-id'));return {...${id_zero}.dehydrate(),v:String(Number.isSafeInteger(id)&&id>0?id:0)}})())",
-                0_i64
+            let delete_id_value = raw!(
+                "cx.hydrate(${_event}.inner.target?.closest('[data-native-page-folder-delete]')?.getAttribute('data-folder-id') || '')",
+                "".to_owned()
             );
+            let delete_id = browser.positive_i64(delete_id_value, 0_i64);
             if delete_id > 0_i64 {
                 raw!("${_event}.inner.stopPropagation()", ());
                 if !busy.get() {
@@ -102,10 +102,11 @@ pub(super) fn handlers(cx: &Cx, account: i64, project_id: i64, state: &State) ->
                     }
                 }
             } else {
-                let id = raw!(
-                    "cx.hydrate((()=>{const el=${_event}.inner.target?.closest('[data-native-page-folder-toggle]');const id=Number(el?.getAttribute('data-folder-id'));return {...${id_zero}.dehydrate(),v:String(Number.isSafeInteger(id)&&id>0?id:0)}})())",
-                    0_i64
+                let folder_id_value = raw!(
+                    "cx.hydrate(${_event}.inner.target?.closest('[data-native-page-folder-toggle]')?.getAttribute('data-folder-id') || '')",
+                    "".to_owned()
                 );
+                let id = browser.positive_i64(folder_id_value, 0_i64);
                 if id > 0_i64 {
                     let row_revision = raw!(
                         "cx.hydrate({...${revision_zero}.dehydrate(),v:String(Number(${_event}.inner.target.closest('[data-native-page-folder-toggle]')?.getAttribute('data-folder-revision')))})",
@@ -132,10 +133,11 @@ pub(super) fn handlers(cx: &Cx, account: i64, project_id: i64, state: &State) ->
             );
             if !delete_control {
                 if event.key == "Enter" {
-                    let id = raw!(
-                        "cx.hydrate((()=>{const el=${event}.inner.target?.closest('[data-native-page-folder-toggle]');const id=Number(el?.getAttribute('data-folder-id'));return {...${id_zero}.dehydrate(),v:String(Number.isSafeInteger(id)&&id>0?id:0)}})())",
-                        0_i64
+                    let folder_id_value = raw!(
+                        "cx.hydrate(${event}.inner.target?.closest('[data-native-page-folder-toggle]')?.getAttribute('data-folder-id') || '')",
+                        "".to_owned()
                     );
+                    let id = browser.positive_i64(folder_id_value, 0_i64);
                     if id > 0_i64 {
                         let row_revision = raw!(
                             "cx.hydrate({...${revision_zero}.dehydrate(),v:String(Number(${event}.inner.target.closest('[data-native-page-folder-toggle]')?.getAttribute('data-folder-revision')))})",
