@@ -1640,6 +1640,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn production_plan_issue_links_emit_shift_peek_handlers() {
+        use crate::db::{models::CreatePlan, queries};
+        use scraper::{Html, Selector};
+
+        let fixture = super::super::super::home_fixture::fixture();
+        let (plan, issue_identifier) = {
+            let conn = fixture.db.write().unwrap();
+            let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+            let issue = queries::get_issue(&conn, issue_id).unwrap();
+            let plan = queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id: issue.project_id,
+                    title: "Peek-linked plan".into(),
+                    issue_id: Some(issue_id),
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap();
+            queries::plans::add_step(&conn, plan.id, None, "Linked step", "", Some(issue_id))
+                .unwrap();
+            (plan, issue.identifier)
+        };
+
+        let path = format!("/ACC/plans/{}", plan.id);
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture, "/app", &path, true, None,
+        ).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = Html::parse_document(&html);
+        let links = document
+            .select(&Selector::parse(&format!("a[href*=\"/issues/{issue_identifier}\"]")).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(links.len(), 2, "plan and step issue links are both rendered");
+        let cases = links.iter().map(|link| {
+            serde_json::json!({
+                "href": link.value().attr("href").unwrap(),
+                "handler": link.value().attr("data-topcoat-on:click").unwrap(),
+            })
+        }).collect::<Vec<_>>();
+        let result = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/issue_peek_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "links": cases,
+                "identifier": issue_identifier,
+            }),
+        );
+        assert_eq!(result["peek_events"], serde_json::json!([
+            {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
+            {"type":"lific:native-issue-peek-request", "identifier":issue_identifier},
+        ]));
+        assert_eq!(result["normal_clicks"], 2);
+    }
+
+    #[tokio::test]
     async fn native_plan_detail_renders_the_latest_hundred_activity_rows_and_emitted_toggles() {
         use crate::db::{models::CreatePlan, queries};
         use scraper::{Html, Selector};
