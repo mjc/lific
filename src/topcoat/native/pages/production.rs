@@ -3290,3 +3290,213 @@ async fn assert_remounted_label_reply_preserves_current_state(
     );
     assert_eq!(output["passed"], true);
 }
+#[tokio::test]
+async fn native_page_detail_renders_latest_100_authorized_activity_before_page_metadata() {
+    let fixture = home_fixture::fixture();
+    let (page_id, account, _) = seed_page(&fixture, true);
+    let (other_id, _, _) = seed_page(&fixture, true);
+    {
+        let conn = fixture.db.write().unwrap();
+        for index in 0..101 {
+            queries::update_page(
+                &conn,
+                page_id,
+                &UpdatePage {
+                    content: Some(format!("Page revision {index:03}")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        queries::update_page(
+            &conn,
+            other_id,
+            &UpdatePage {
+                content: Some("Foreign page activity sentinel".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        conn.execute(
+            "UPDATE project_members SET role='viewer' WHERE project_id=?1 AND user_id=?2",
+            rusqlite::params![project_id, account],
+        )
+        .unwrap();
+    }
+
+    for (mount, path) in [
+        ("", format!("/ACC/pages/{page_id}")),
+        ("/app", format!("/app/ACC/pages/{page_id}")),
+        ("/ACC", format!("/ACC/ACC/pages/{page_id}")),
+    ] {
+        let (status, html) = home_fixture::document(&fixture, mount, &path, true, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let activity = document
+            .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .expect("PageDetail includes the shared Activity timeline for viewers");
+        let rows = activity
+            .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 100, "Main caps Page activity at the newest 100");
+        let ids = rows
+            .iter()
+            .map(|row| {
+                row.value()
+                    .attr("data-activity-id")
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            ids.windows(2).all(|pair| pair[0] > pair[1]),
+            "activity is newest-first"
+        );
+        let newest = rows[0].text().collect::<String>();
+        let oldest = rows[99].text().collect::<String>();
+        assert!(
+            newest.contains("Page revision 100"),
+            "newest content update is retained: {newest}"
+        );
+        assert!(
+            oldest.contains("Page revision 001"),
+            "100-row boundary excludes revision 000: {oldest}"
+        );
+        assert!(
+            oldest.contains("Page revision 000"),
+            "the oldest retained update still shows its old value: {oldest}"
+        );
+        assert!(
+            rows[..6]
+                .iter()
+                .all(|row| row.value().attr("hidden").is_none())
+        );
+        assert!(
+            rows[6].value().attr("hidden").is_some(),
+            "only six entries start open"
+        );
+        assert!(
+            !activity
+                .text()
+                .collect::<String>()
+                .contains("Foreign page activity sentinel")
+        );
+        let activity_offset = html.find("data-native-issue-activity").unwrap();
+        let body_offset = html.find("<article class=\"markdown-body").unwrap();
+        let created_offset = html.find("Created</span>").unwrap();
+        assert!(
+            body_offset < activity_offset,
+            "activity follows the page body"
+        );
+        assert!(
+            activity_offset < created_offset,
+            "activity precedes the page dates"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_page_activity_omits_an_empty_feed() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, true);
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute("DELETE FROM audit_log WHERE page_id=?1", [page_id])
+        .unwrap();
+    let (status, html) =
+        home_fixture::document(&fixture, "", &format!("/ACC/pages/{page_id}"), true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    assert_eq!(
+        document
+            .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
+            .count(),
+        0,
+        "Main omits the Activity section when the feed is empty",
+    );
+}
+
+#[tokio::test]
+async fn native_page_activity_shared_timeline_replays_emitted_recent_and_diff_handlers() {
+    let fixture = home_fixture::fixture();
+    let (page_id, _, _) = seed_page(&fixture, true);
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute("DELETE FROM audit_log WHERE page_id=?1", [page_id])
+            .unwrap();
+        for index in 0..7 {
+            queries::update_page(
+                &conn,
+                page_id,
+                &UpdatePage {
+                    content: Some(format!("Distinct page body revision {index}")),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    for (mount, path) in [
+        ("", format!("/ACC/pages/{page_id}")),
+        ("/app", format!("/app/ACC/pages/{page_id}")),
+        ("/ACC", format!("/ACC/ACC/pages/{page_id}")),
+    ] {
+        let (status, html) = home_fixture::document(&fixture, mount, &path, true, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let document = scraper::Html::parse_document(&html);
+        let activity = document
+            .select(&scraper::Selector::parse("[data-native-issue-activity]").unwrap())
+            .next()
+            .unwrap();
+        let rows = activity
+            .select(&scraper::Selector::parse("li[data-activity-id]").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 7);
+        let newest_text = rows[0].text().collect::<String>();
+        assert!(newest_text.contains("Distinct page body revision 5"));
+        assert!(newest_text.contains("Distinct page body revision 6"));
+        let recent_handler = activity
+            .select(&scraper::Selector::parse("button.native-issue-activity__all").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap();
+        let content_row = rows.first().unwrap();
+        let change_handler = content_row
+            .select(&scraper::Selector::parse("button").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap();
+        let hidden_rows = [rows[0], rows[6]]
+            .iter()
+            .map(|row| row.value().attr("data-topcoat-bind:hidden").unwrap())
+            .collect::<Vec<_>>();
+        let values_hidden = content_row
+            .select(&scraper::Selector::parse(".native-issue-activity__values").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:hidden")
+            .unwrap();
+        let result = home_fixture::evaluate_handler(
+            "src/topcoat/native/pages/activity_handler.test.cjs",
+            &serde_json::json!({
+                "signals": home_fixture::page_signals(&html),
+                "recent_handler": recent_handler,
+                "hidden_rows": hidden_rows,
+                "change_handler": change_handler,
+                "values_hidden": values_hidden,
+            }),
+        );
+        assert_eq!(result["ok"], true);
+    }
+}
