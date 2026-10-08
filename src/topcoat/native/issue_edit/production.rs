@@ -26,7 +26,7 @@ use crate::db::{
     models::{CreateLabel, CreateModule, Issue, Priority, Role, UpdateIssue},
     queries,
 };
-use topcoat::runtime::Surrogated;
+use topcoat::runtime::{Surrogate, Surrogated};
 
 const TITLE: &str = "Production issue initial title";
 const DESCRIPTION: &str = "# Production markdown\n\nExact initial description.";
@@ -639,6 +639,7 @@ async fn native_issue_module_procedure_returns_coherent_snapshot_and_rechecks_sc
             relates_to: vec!["ACC-2".to_owned()],
             duplicates: saved.duplicates.clone(),
             duplicated_by: saved.duplicated_by.clone(),
+            labels: saved.labels.clone(),
         }),
     };
     assert_eq!(
@@ -821,13 +822,7 @@ async fn native_issue_label_picker_matches_main_for_both_roles() {
             queries::members::upsert_member(&conn, issue.project_id, actor.id, role).unwrap();
         }
         for prefix in MOUNTS {
-            let response = get(
-                &fixture,
-                "/ACC/issues/ACC-1",
-                Some(&cookie),
-                prefix,
-            )
-            .await;
+            let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), prefix).await;
             assert_eq!(response.status(), StatusCode::OK);
             let document = Html::parse_document(&html(response).await);
             let section = named_section(&document, "Labels");
@@ -845,14 +840,211 @@ async fn native_issue_label_picker_matches_main_for_both_roles() {
                 section.text().collect::<String>().contains(&attached.name),
                 "the current label remains visible to {role:?}"
             );
-            assert!(
-                section
-                    .select(&chips)
-                    .any(|chip| chip.text().collect::<String>() == attached.name.as_str()),
-                "the current label renders as a visible chip for {role:?}"
-            );
+            let chip = section
+                .select(&chips)
+                .find(|chip| chip.text().collect::<String>().starts_with(&attached.name))
+                .unwrap_or_else(|| panic!("the current label renders as a chip for {role:?}"));
+            let label_text = chip
+                .children()
+                .filter_map(|child| match child.value() {
+                    scraper::Node::Text(text) => Some(text.to_string()),
+                    _ => None,
+                })
+                .collect::<String>();
+            assert_eq!(label_text, attached.name, "chip label text remains distinct");
+            if editable {
+                assert!(
+                    chip.select(&remove_label).next().is_some(),
+                    "Maintainers get the separate Remove label control"
+                );
+            }
         }
     }
+}
+
+#[tokio::test]
+async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_every_mount() {
+    let fixture = fixture();
+    let (account, issue, label) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let label = queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Available label".into(),
+                color: "#16A34A".into(),
+            },
+        )
+        .unwrap();
+        (account, issue, label)
+    };
+    for (index, mount) in MOUNTS.into_iter().enumerate() {
+        let (status, source) =
+            home_fixture::document(&fixture, mount, "/ACC/issues/ACC-1", true, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let document = Html::parse_document(&source);
+        let section = named_section(&document, "Labels");
+        let open_handler = section
+            .select(&Selector::parse("button[title='Add label']").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap();
+        let query_input = section
+            .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
+            .next()
+            .unwrap();
+        let query_handler = query_input.value().attr("data-topcoat-on:input").unwrap();
+        let query_binding = query_input.value().attr("data-topcoat-bind:value").unwrap();
+        let filter_keydown_handler = query_input.value().attr("data-topcoat-on:keydown").unwrap();
+        let open_binding = section
+            .select(&Selector::parse("[data-native-issue-label-picker]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:hidden")
+            .unwrap();
+        let option = section
+            .select(
+                &Selector::parse("button[role='option'][data-label-name='Available label']")
+                    .unwrap(),
+            )
+            .next()
+            .expect("catalog labels render in the picker");
+        let option_handler = option.value().attr("data-topcoat-on:click").unwrap();
+        let enter_action = section
+            .select(&Selector::parse("[data-native-label-enter='true']").unwrap())
+            .next()
+            .expect("the sole filtered label is the Enter action");
+        assert_eq!(
+            enter_action.value().attr("data-label-name"),
+            Some("Available label")
+        );
+        let input_id = query_input.value().attr("id").unwrap();
+        let before = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        let next_labels = if before.labels.iter().any(|name| name == &label.name) {
+            Vec::new()
+        } else {
+            vec![label.name.clone()]
+        };
+        let request = super::labels::LabelRequest {
+            mode: "update".into(),
+            account_id: account,
+            issue_id: issue.id,
+            identifier: issue.identifier.clone(),
+            labels: next_labels.clone(),
+            name: String::new(),
+            color: String::new(),
+        };
+        let output = home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+            &serde_json::json!({
+                "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                "phases": [{
+                    "name": "toggle",
+                    "signals": home_fixture::page_signals(&source),
+                    "open_binding": open_binding,
+                    "query_binding": query_binding,
+                    "open_handler": open_handler,
+                    "query_handler": query_handler,
+                    "option_handler": option_handler,
+                    "option_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+                }, {
+                    "name": "filter_enter",
+                    "signals": home_fixture::page_signals(&source),
+                    "filter_keydown_handler": filter_keydown_handler,
+                    "enter_action_handler": enter_action.value().attr("data-topcoat-on:click").unwrap(),
+                    "has_enter_action": true,
+                    "query_binding": query_binding,
+                    "query": "",
+                    "expected_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+                }, {
+                    "name": "focus",
+                    "signals": home_fixture::page_signals(&source),
+                    "open_handler": open_handler,
+                    "open_binding": open_binding,
+                    "input_id": input_id,
+                }, {
+                    "name": "disposed_callbacks",
+                    "signals": home_fixture::page_signals(&source),
+                    "stale_value": "must not filter a disposed picker",
+                    "callbacks": [
+                        {"source": open_handler, "event_type": "click"},
+                        {"source": query_handler, "event_type": "input"},
+                        {"source": option_handler, "event_type": "click"},
+                    ],
+                }],
+            }),
+        );
+        assert_eq!(output["query_id"].as_str().is_some(), true);
+        assert_eq!(
+            output["enter_request"],
+            serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+            "Enter invokes the real currently projected label action"
+        );
+
+        // A concurrent title write must not conflict with a sparse label-only
+        // commit or get overwritten by that commit.
+        if index == 0 {
+            let conn = fixture.db.write().unwrap();
+            queries::update_issue(
+                &conn,
+                issue.id,
+                &UpdateIssue {
+                    title: Some("Concurrent title survives label update".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let (write_status, reply) = home_fixture::procedure(
+            &fixture,
+            "/__native_issue_edit/update_labels",
+            serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(write_status, StatusCode::OK, "label reply: {reply}");
+        let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        assert_eq!(
+            saved.labels, next_labels,
+            "mount {mount} label toggle persists"
+        );
+        if index == 0 {
+            assert_eq!(saved.title, "Concurrent title survives label update");
+        }
+        let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
+        canonical.relates_to = vec!["ACC-2".into()];
+        assert!(saved.relates_to.contains(&"HIDE-1".to_owned()),
+            "the database retains the hidden relation while the reply filters it");
+        let expected = super::labels::LabelReply {
+            status: Ok("saved".into()),
+            account_id: account,
+            issue_id: saved.id,
+            seq: saved.seq,
+            labels: saved.labels.clone(),
+            canonical: Some(canonical),
+            catalog_item: None,
+        };
+        assert_eq!(
+            reply,
+            serde_json::to_value(expected.into_surrogate()).unwrap(),
+            "the real procedure returns the complete typed canonical reply"
+        );
+    }
+    assert!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .labels
+            .contains(&label.name)
+    );
 }
 
 #[tokio::test]
@@ -1007,6 +1199,305 @@ async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_b
 
         assert!(issue.labels.iter().any(|name| name == "MiXeD API"));
     }
+}
+
+#[tokio::test]
+async fn native_issue_label_procedures_create_attach_and_recheck_current_authority() {
+    let fixture = fixture();
+    let (account, issue) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        (account, issue)
+    };
+    let create = super::labels::LabelRequest {
+        mode: "create".into(),
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        labels: issue.labels.clone(),
+        name: "Picker-created label".into(),
+        color: "#aabbcc".into(),
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((create.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create reply: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.labels, ["Picker-created label"]);
+    let created = queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+        .unwrap()
+        .into_iter()
+        .find(|label| label.name == "Picker-created label")
+        .unwrap();
+        let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
+        canonical.relates_to = vec!["ACC-2".into()];
+        let expected = super::labels::LabelReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        labels: saved.labels.clone(),
+            canonical: Some(canonical),
+        catalog_item: Some(super::labels::LabelCatalogItem {
+            name: created.name.clone(),
+            color: created.color.clone(),
+        }),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap(),
+        "successful create returns the canonical attached issue and catalog item"
+    );
+
+    let wrong_account = super::labels::LabelRequest {
+        account_id: account + 1000,
+        name: "Must not create".into(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((wrong_account.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "scope denial is a typed reply: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("Your account changed. Reload this page.".into()),
+        account_id: wrong_account.account_id,
+        issue_id: wrong_account.issue_id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+    assert!(
+        queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .all(|label| label.name != "Must not create")
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied_update = super::labels::LabelRequest {
+        mode: "update".into(),
+        labels: vec!["Denied label".into()],
+        name: String::new(),
+        color: String::new(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::to_value((denied_update.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "role denial is a typed reply: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        // Match the normal API's safe authorization copy from client_message.
+        status: Err("requires at least 'maintainer' access to this project".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    let denied_create = super::labels::LabelRequest {
+        mode: "create".into(),
+        name: "Viewer create must not appear".into(),
+        color: "#112233".into(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((denied_create.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "viewer create denial is typed: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("requires at least 'maintainer' access to this project".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    let mismatched_identity = super::labels::LabelRequest {
+        identifier: "ACC-2".into(),
+        ..denied_update.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::to_value((mismatched_identity.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "stale route identity is typed: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("not found".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((wrong_account.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the switched account remains denied: {reply}"
+    );
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.labels, ["Picker-created label"]);
+    assert!(
+        !queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .any(|label| {
+                label.name == "Must not create" || label.name == "Viewer create must not appear"
+            })
+    );
+}
+
+#[tokio::test]
+async fn native_issue_label_create_keeps_catalog_entry_when_attachment_fails() {
+    let fixture = fixture();
+    let (account, issue) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        (account, issue)
+    };
+    let request = super::labels::LabelRequest {
+        mode: "create".into(),
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        labels: issue.labels.clone(),
+        name: "Catalog survives attach failure".into(),
+        color: "#123abc".into(),
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_native_label_attach BEFORE INSERT ON issue_labels
+             WHEN NEW.issue_id = {}
+             BEGIN SELECT RAISE(ABORT, 'label attach forced to fail'); END;",
+            issue.id
+        ))
+        .unwrap();
+    }
+    let (status, wire_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((request,).into_surrogate()).unwrap(),
+    )
+    .await;
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute_batch("DROP TRIGGER fail_native_label_attach")
+            .unwrap();
+    }
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "partial create is a typed result: {wire_reply}"
+    );
+    let reply: super::labels::LabelReply =
+        serde_json::from_value::<super::labels::LabelReplyValue>(wire_reply)
+            .unwrap()
+            .into_real();
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert!(
+        reply.status.as_ref().is_err(),
+        "the failed attachment reports an error"
+    );
+    assert_eq!(
+        reply.status.as_ref().unwrap_err(),
+        "internal server error",
+        "the native reply uses the same masked database error copy as the API"
+    );
+    assert_eq!(reply.account_id, account);
+    assert_eq!(reply.issue_id, issue.id);
+    assert_eq!(reply.seq, issue.seq);
+    assert_eq!(reply.labels, issue.labels);
+    assert!(reply.canonical.is_none());
+    assert_eq!(
+        reply.catalog_item.map(|item| (item.name, item.color)),
+        Some(("Catalog survives attach failure".into(), "#123abc".into())),
+        "the independently committed catalog entry remains available for retry"
+    );
+    assert_eq!(
+        saved.labels, issue.labels,
+        "attachment failure rolls back the issue write"
+    );
+    assert_eq!(saved.title, issue.title);
+    assert_eq!(saved.seq, issue.seq);
+    assert!(
+        queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .any(|label| label.name == "Catalog survives attach failure")
+    );
 }
 
 #[tokio::test]
