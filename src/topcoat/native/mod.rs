@@ -19,6 +19,7 @@ pub(crate) mod context;
 pub(crate) mod dates;
 pub(crate) mod deferred_delete;
 pub(crate) mod dependency_graph;
+pub(crate) mod document_export;
 pub(crate) mod error_state;
 pub(crate) mod files;
 pub(crate) mod fuzzy;
