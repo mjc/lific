@@ -26,9 +26,10 @@ Destructive row actions require inline confirmation; own-row actions are hidden.
 
 Pages and Plans have native private list and detail routes. Pages supports
 search, tabs and filters, creation, Markdown editing, lifecycle status changes,
-pinning, explicit save with sequence conflicts, and confirmed deletion. Metadata
-changes share the editor's sequence and busy state and preserve unsaved
-title/body drafts.
+pinning, folder moves from Browse, explicit save with sequence conflicts, and
+confirmed deletion. Folder moves use a single list-owned picker and update only
+the selected page's folder. Metadata changes share the editor's sequence and busy
+state and preserve unsaved title/body drafts.
 Plans supports status tabs, creation, nested steps, title and description edits,
 done toggles, step issue linking and detaching, anchor assignment and clearing,
 and deletion. Nested steps have independent collapse controls for viewers and
@@ -43,9 +44,12 @@ title, description, status, priority, module assignment, labels, and inline labe
 creation. Modules supports lifecycle tabs, unbounded issue counts, progress,
 creation, detail, scalar edits, and inline-confirmed deletion. Descriptions start
 in Markdown read mode, with Main's Edit/Preview, Save, and Cancel transitions.
-Lifecycle tabs persist under Main's project-identifier storage key. Both use shared
-Rust services and the workspace/sidebar. Viewers receive read-only content. Cached navigation
-checks the destination's rendered project permissions against current records.
+Creation and detail reuse the shared icon picker: creation retains the choice
+locally until submit, while detail saves each choice immediately and restores
+the saved icon on failure. Lifecycle tabs persist under Main's project-identifier
+storage key. Both use shared Rust services and the workspace/sidebar. Viewers
+receive read-only content. Cached navigation checks the destination's rendered
+project permissions against current records.
 
 The intermediate JavaScript frontend is deleted, including controllers,
 frontend API clients, vendor libraries used by those controllers, generated
@@ -90,9 +94,9 @@ workflow and realtime recovery. Keep the family
 tickets open until their remaining main assertions and visual parity are met.
 
 Issue creation still needs the attachment composer and Main's picker and input
-interactions. Modules still needs the shared icon picker and
-Markdown editor, realtime updates, and remaining mobile,
-keyboard, error, and visual parity. These family tickets remain open.
+interactions. Modules still needs the full Markdown editor, realtime updates,
+and remaining mobile, keyboard, error, and visual parity. These family tickets
+remain open.
 
 Main has no step reordering controls. The backend's reordering operations do
 not establish a missing frontend interaction.
@@ -118,6 +122,12 @@ previews, search candidates, initial hydration, mounted URLs, hidden records,
 revoked membership, mutation permissions, conflicts, and audit attribution.
 No browser is run for this batch.
 
+Folder-move tests execute the rendered Browse action and picker at each mount,
+check the current folder and root choice, and cover immediate saves, same-folder
+no-ops, pending cancellation, failure feedback, and owner disposal. Real writes
+preserve unrelated page fields and reject changed accounts, revoked roles, and
+folders outside the page's project. Search and other tabs omit the action.
+
 Issue creation and Modules tests cover fresh permissions, account changes,
 module ownership, complete scalar payloads, Web audit attribution, post-commit
 events, tombstones, and counts beyond 500 issues. Production-router tests cover
@@ -125,6 +135,9 @@ read-only and editable initial hydration, hidden resources, revoked membership,
 query defaults, mounted navigation, and permission changes during cached
 navigation. Node executes the emitted module-save handlers with the packaged
 runtime to check mounted procedure and navigation URLs without a browser.
+Shared icon-picker regressions cover local creation choices, immediate detail
+saves, clearing, failures, duplicate pending choices, and Viewer output. Saves
+survive picker retirement while disposing their parent suppresses late results.
 
 Collection tests cover composed filters, fuzzy search ranking and limits,
 stable sorting, tabs, grouping, swimlanes, candidate sets beyond 500 records,
