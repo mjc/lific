@@ -9,11 +9,7 @@ const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged bootstrap');
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
-assert.ok(eventClass, 'packaged Event surrogate');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 
 const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
 class Element {}
@@ -60,8 +56,7 @@ function fixture(delayed = false, responses = input.responses) {
       return Promise.resolve({ok: true, json: async () => response});
     },
   };
-  vm.runInNewContext(runtime.replace(bootstrap,
-    `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass},Element};`), context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event'], 'fixture', {Element: 'Element'}), context);
   const registry = new context.fixture.Registry();
   const cx = Object.assign(new context.fixture.Context(registry), {
     abortSignal: controller.signal,

@@ -4,10 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder, isDeepStrictEqual} = require('node:util');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1);
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const listeners = new Map();
 const controller = new AbortController();
 let prevented = 0, stopped = 0;
@@ -30,8 +27,7 @@ const context = {
   matchMedia: () => ({matches:true}),
   fetch() {throw new Error('Peek entrypoint must not use the API');},
 };
-vm.runInNewContext(runtime.replace(bootstrap,
-  `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass}};`), context);
+vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event']), context);
 const registry = new context.fixture.Registry();
 const cx = Object.assign(new context.fixture.Context(registry), {
   abortSignal: controller.signal,

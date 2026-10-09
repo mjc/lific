@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 const {factory, mount} = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
+const {fixtureRuntime} = require('./runtime_fixture.cjs');
 const flush = async () => {for(let i=0;i<12;i++)await Promise.resolve();};
 
 function fixture() {
@@ -14,9 +14,7 @@ function fixture() {
   const context = {TextEncoder, TextDecoder, AbortController, Event, document, queueMicrotask,
     location: {href:'http://localhost/old', assign: href => loads.push(href)},
     fetch: (url, options) => {calls.push({url, options});return new Promise((resolve,reject) => pending.push({resolve,reject}));}};
-  const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length-1, 1);
-  vm.runInNewContext(runtime.replace(bootstrap, 'globalThis.fixture={Context:fe,Registry:ve};'), context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry']), context);
   const cx = Object.assign(new context.fixture.Context(new context.fixture.Registry()), {abortSignal:controller.signal});
   vm.runInNewContext(`cx=>(${factory})`, context)(cx)({});
   const before = ({account='9007199254740993', admin=true, shell=true, authority=''}={}) => {

@@ -4,6 +4,19 @@ use crate::db::{models::CreateProjectGroup, queries};
 use serde::Deserialize;
 use std::{process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+#[test]
+fn native_sidebar_dispatch_cancels_events_and_updates_menu_synchronously() {
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/project_sidebar/dispatch_handler.test.cjs",
+        &serde_json::json!({
+            "handler_source": super::handler_source(),
+        }),
+    );
+    assert_eq!(result["initial_cancelled"], true);
+    assert_eq!(result["delegated_menu"], "project");
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 enum Control {

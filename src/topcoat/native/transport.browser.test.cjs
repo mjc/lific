@@ -1,12 +1,10 @@
 const {launchBrowser} = require('./browser_fixture.cjs');
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
+const {runtimeSource: runtime, fixtureRuntime, startedRuntimeWith} = require('./runtime_fixture.cjs');
 const http = require('node:http');
 const {wsServer: WebSocketServer} = require('../../../e2e/node_modules/playwright-core/lib/utilsBundle.js');
 
-const runtime = fs.readFileSync(path.join(__dirname, '../assets/runtime.js'), 'utf8');
 const escape = value => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const procedure = endpoint => ({t: 'Procedure', path: endpoint});
 
@@ -354,13 +352,10 @@ test('generic keepalive procedures retain mounted cookie transport and ordinary 
 });
 
 test('packaged vector signal writes preserve typed snapshots and notify subscribers', async () => {
-  const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length - 1, 1);
-  const fixtureRuntime = runtime.replace(bootstrap,
-    'globalThis.vectorFixture={Context:fe,Registry:ve,Effect:te,flush:St};');
+  const vectorFixtureRuntime = fixtureRuntime(['Context', 'Registry', 'Effect', 'flush'], 'vectorFixture');
   const server = http.createServer((request, response) => {
     if (request.url === '/runtime.js') {
-      response.setHeader('Content-Type', 'text/javascript'); response.end(fixtureRuntime); return;
+      response.setHeader('Content-Type', 'text/javascript'); response.end(vectorFixtureRuntime); return;
     }
     response.setHeader('Content-Type', 'text/html');
     response.end('<html><body><script type="module" src="/runtime.js"></script></body></html>');
@@ -436,9 +431,7 @@ test('expression context adapts real keyboard events using the framework Event v
 });
 
 test('packaged render failure notifications retain logging and owning DOM scope',async()=>{
-  const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length-1,1);
-  const instrumented=runtime.replace(bootstrap,bootstrap+'globalThis.fixtureRuntime=et;');
+  const instrumented=startedRuntimeWith(runtimeInstance => `globalThis.fixtureRuntime=${runtimeInstance};`);
   const server=http.createServer((request,response)=>{
     if(new URL(request.url,'http://fixture').pathname.endsWith('/runtime.js'))return response.writeHead(200,{'content-type':'text/javascript'}).end(instrumented);
     const prefix=new URL(request.url,'http://fixture').pathname.replace(/\/page$/, '');

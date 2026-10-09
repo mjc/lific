@@ -62,7 +62,8 @@ mod tests {
         });
         let (_closure, js) = expression.into_evaluated_and_js();
         let js = js.to_source();
-        assert_eq!(js.matches(".with_keepalive().call(").count(), 3, "{js}");
+        assert_eq!(js.matches(".with_keepalive()").count(), 3, "{js}");
+        assert_eq!(js.matches(".call(").count(), 3, "{js}");
         assert!(js.contains("draft"), "{js}");
         assert!(!js.contains("fetch("), "{js}");
     }

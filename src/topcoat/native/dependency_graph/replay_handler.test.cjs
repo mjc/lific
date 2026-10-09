@@ -7,10 +7,7 @@ const vm = require('node:vm');
 const {isDeepStrictEqual} = require('node:util');
 const {TextEncoder, TextDecoder} = require('node:util');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
-if (!eventClass) throw new Error('packaged Event surrogate not found');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const context = {
   TextEncoder,
   TextDecoder,
@@ -18,8 +15,7 @@ const context = {
   document: {documentElement: {getAttribute: () => ''}},
   fetch: async () => { throw new Error('view controls must not make a request'); },
 };
-vm.runInNewContext(runtime.replace(bootstrap,
-  `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass}};`), context);
+vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event']), context);
 const registry = new context.fixture.Registry();
 const cx = Object.assign(new context.fixture.Context(registry), {
   event: event => new context.fixture.Event(event),

@@ -6,7 +6,7 @@ const {setMaxListeners} = require('node:events');
 const {TextEncoder, TextDecoder} = require('node:util');
 const input = JSON.parse(fs.readFileSync(0,'utf8'));
 const {mount,source} = input;
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js','utf8');
+const {fixtureRuntime} = require('./runtime_fixture.cjs');
 const decode = text => text.replace(/&(?:quot|apos|amp|lt|gt|#39);/g,value=>({'&quot;':'"','&apos;':"'",'&amp;':'&','&lt;':'<','&gt;':'>' ,'&#39;':"'"})[value]);
 const attrs = tag => Object.fromEntries([...tag.matchAll(/([\w:-]+)="([^"]*)"/g)].map(([,key,value])=>[key,decode(value)]));
 // Rust-generated expressions can contain a literal > inside quoted attributes.
@@ -71,14 +71,12 @@ function fixture(markup,{domProjection=true,missingIds=new Set(),storage=null,hi
   class FixtureStorageEvent extends Event { constructor(name,options){super(name);Object.assign(this,options);} }
   const context={StorageEvent:FixtureStorageEvent,TextEncoder,TextDecoder,AbortController,DOMException,Event,Element:FixtureElement,document,window,location,queueMicrotask,
     history,crypto:require('node:crypto').webcrypto,localStorage:storage||{getItem:()=>null},setTimeout,clearTimeout};
-  const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length-1,1);
-  vm.runInNewContext(runtime.replace(bootstrap,'globalThis.fixture={Context:fe,Registry:ve};'),context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry']),context);
   const registry=new context.fixture.Registry(),cx=Object.assign(new context.fixture.Context(registry),{
     abortSignal:scope.signal,navigate:href=>{navigations.push(href);return Promise.resolve();}
   });
   for(const match of markup.html.matchAll(/<!--::topcoat::signal\((.*?)\)-->/gs)){
-    const value=JSON.parse(decode(match[1]));registry.insert(value.id,cx.hydrate(value.v));
+    const value=JSON.parse(match[1]);registry.insert(value.id,cx.hydrate(value.v));
   }
   // The logical path remains server-side; query and pending focus are shared with the projection.
   const state=markup.state.map(value=>cx.hydrate(value));
@@ -86,7 +84,7 @@ function fixture(markup,{domProjection=true,missingIds=new Set(),storage=null,hi
   const signal=value=>{const id=`extra-${++nextId}`;registry.insert(id,cx.hydrate(value));return cx.signal(id);};
   const usize=value=>({t:'usize',bits:64,v:String(value)});
   const chrome=[signal(false),signal('system'),signal(false),signal(false),signal('root'),signal(''),signal(''),signal(location.href),signal(pendingPalette),signal(''),signal(false),signal('')];
-  const palette=[state[9],state[11],signal(''),state[0],signal(usize(0)),state[5],state[1],state[2],state[3],state[4],state[6],state[7],state[12]];
+  const palette=[state[9],state[11],signal(''),state[0],signal(usize(0)),state[5],state[1],state[2],state[3],state[4],state[6],cx.tuple([state[7],state[12]])];
   const status=[state[8],signal(''),signal('native-home-palette-open')];
   vm.runInNewContext(source.replace(/export const (\w+)=/g,'globalThis.$1='),context);
   context.__lificNativeMounts={browser:context.browser,[input.handlerUrl+'#palette-projection']:context.paletteProjection};

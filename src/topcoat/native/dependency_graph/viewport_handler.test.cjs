@@ -8,11 +8,7 @@ const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged bootstrap');
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
-assert.ok(eventClass, 'packaged Event surrogate');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const viewport = {clientWidth: 800, clientHeight: 600};
 const transform = {offsetWidth: input.width, offsetHeight: input.height};
 viewport.querySelector = selector => selector === '[data-native-graph-transform]' ? transform : null;
@@ -54,8 +50,7 @@ const context = {
   window: {addEventListener(type, listener, options) { listen(windowListeners, type, listener, options); }},
   fetch: async () => { throw new Error('viewport controls must not make a request'); },
 };
-vm.runInNewContext(runtime.replace(bootstrap,
-  `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass}};`), context);
+vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event']), context);
 const registry = new context.fixture.Registry();
 const cx = Object.assign(new context.fixture.Context(registry), {
   abortSignal: abortController.signal,

@@ -5,9 +5,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const source = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(source.split(bootstrap).length - 1, 1);
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const settle = async () => {for (let i = 0; i < 40; i++) await Promise.resolve();};
 
 async function run(authorityLost, check = input.check, disposed = false) {
@@ -34,7 +32,7 @@ async function run(authorityLost, check = input.check, disposed = false) {
       return Promise.resolve({ok: true, json: async () => authorityLost === 'missing' ? input.absent_authority : authorityLost ? {t: 'Result', err: 'Your account changed.'} : input.authority});
     },
   };
-  vm.runInNewContext(source.replace(bootstrap, 'globalThis.fixture={Runtime:ye};'), context);
+  vm.runInNewContext(fixtureRuntime(['Runtime']), context);
   runtime = new context.fixture.Runtime();
   runtime.connection.open = () => {
     const listeners = {};

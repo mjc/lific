@@ -1,7 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 const input = process.argv[2] ? {html:fs.readFileSync(process.argv[2], 'utf8')} : JSON.parse(fs.readFileSync(0, 'utf8'));
@@ -9,7 +8,7 @@ const {html} = input;
 const mount = input.mount ?? html.match(/data-topcoat-runtime-prefix="([^"]*)"/)?.[1] ?? '';
 const flush = async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
 const tick = async(f,amount)=>{f.advance(amount);await flush();};
-const runtime = fs.readFileSync(path.join(process.cwd(), 'src/topcoat/assets/runtime.js'), 'utf8');
+const {fixtureRuntime} = require('./runtime_fixture.cjs');
 const decode = text => text.replace(/&(?:quot|apos|amp|lt|gt|#39);/g, value => ({'&quot;':'"','&apos;':"'",'&#39;':"'",'&amp;':'&','&lt;':'<','&gt;':'>'})[value]);
 const tag = [...html.matchAll(/<div\b(?:[^"'>]|"[^"]*"|'[^']*')*>/g)]
   .map(match=>match[0]).find(tag=>/\bid="native-deferred-delete-owner"/.test(tag));
@@ -56,14 +55,12 @@ function fixture() {
     clearTimeout:id=>timers.delete(id),
     history:{pushState(_state,_title,href){legacy.push(href);}},
     fetch:(url,options)=>{calls.push({url,options});return new Promise((resolve,reject)=>pending.push({resolve,reject}));}};
-  const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length-1,1);
-  vm.runInNewContext(runtime.replace(bootstrap,'globalThis.fixture={Context:fe,Registry:ve};'),context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry']),context);
   vm.runInNewContext(input.handler_source.replace(/export const (\w+)=/g,'globalThis.$1='),context);
   context.__lificNativeMounts={[input.handler_url+'#durable-actions']:context.durableActions};
   const registry=new context.fixture.Registry(), base=new context.fixture.Context(registry), signalIds=[];
   for(const match of html.matchAll(/<!--::topcoat::signal\((.*?)\)-->/gs)){
-    const signal=JSON.parse(decode(match[1]));registry.insert(signal.id,base.hydrate(signal.v));signalIds.push(signal.id);
+    const signal=JSON.parse(match[1]);registry.insert(signal.id,base.hydrate(signal.v));signalIds.push(signal.id);
   }
   const toastIds=toastIdBindings.map(binding=>vm.runInNewContext(`cx => () => (${binding})`,context)(base));
   const undoHidden=undoHiddenBindings.map(binding=>vm.runInNewContext(`cx => () => (${binding})`,context)(base));

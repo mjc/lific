@@ -288,10 +288,18 @@ async fn native_home_initial_html_serializes_the_sidebar_catalog_once() {
         .unwrap();
     let html = std::str::from_utf8(&body).unwrap();
     assert_eq!(
-        html.matches("\\&quot;catalog\\&quot;").count(),
+        html.matches(r#"\"catalog\""#).count(),
         1,
         "Only the retained model value should contain the catalog; stale mount checks use its revision"
     );
+    let signals = home_fixture::page_signals(html);
+    let catalogs = signals
+        .values()
+        .filter_map(serde_json::Value::as_str)
+        .filter_map(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        .filter(|value| value.get("catalog").is_some())
+        .count();
+    assert_eq!(catalogs, 1, "One hydration signal owns the sidebar catalog");
 }
 
 #[tokio::test]

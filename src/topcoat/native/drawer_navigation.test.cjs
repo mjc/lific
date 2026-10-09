@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const {getEventListeners, setMaxListeners} = require('node:events');
 const {TextEncoder, TextDecoder} = require('node:util');
 const {source, mount} = JSON.parse(fs.readFileSync(0,'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js','utf8');
+const {fixtureRuntime} = require('./runtime_fixture.cjs');
 const flush = async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 class CustomEvent extends Event {constructor(type,options={}){super(type,options);this.detail=options.detail;}}
 
@@ -23,9 +23,7 @@ function fixture() {
   const context={TextEncoder,TextDecoder,AbortController,Event,CustomEvent,DOMException,document,window,location,history,
     crypto:require('node:crypto').webcrypto,queueMicrotask,localStorage:{getItem:()=>null},
     setTimeout:(callback,delay)=>{const id=++timerId;timers.set(id,{callback,delay});return id;},clearTimeout:id=>timers.delete(id)};
-  const bootstrap='var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-  assert.equal(runtime.split(bootstrap).length-1,1);
-  vm.runInNewContext(runtime.replace(bootstrap,'globalThis.fixture={Context:fe,Registry:ve,before:topcoatBeforeNavigationCommit};'),context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'beforeNavigationCommit']),context);
   const registry=new context.fixture.Registry(), cx=Object.assign(new context.fixture.Context(registry),{abortSignal:scope.signal});
   let nextId=0;
   const hydrate=value=>cx.hydrate(value);
@@ -44,7 +42,7 @@ function fixture() {
   };
   const navigate=(mode='push',path='/ACC/board')=>{
     const controller=new AbortController();let current=true;
-    const completion=context.fixture.before({signal:controller.signal,mode,url:new URL(`http://localhost${mount}${path}`),nextDocument:{}},()=>current)
+    const completion=context.fixture.beforeNavigationCommit({signal:controller.signal,mode,url:new URL(`http://localhost${mount}${path}`),nextDocument:{}},()=>current)
       .then(ready=>{if(ready)commits.push(path);return ready;});
     return {controller,completion,supersede:()=>{current=false;controller.abort();}};
   };
