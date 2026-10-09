@@ -79,7 +79,7 @@ fn password_attrs(
                     }
                     let _read = async || profile_session(account).await;
                     let fresh = raw!(
-                        "await ${_read}().catch(()=>${unavailable})",
+                        "await Promise.resolve(${_read}()).catch(()=>${unavailable})",
                         Result::<Option<String>, String>::Err(String::new())
                     );
                     if raw!("cx.hydrate(cx.abortSignal.aborted)", false) {

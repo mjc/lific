@@ -3,7 +3,7 @@
 use super::{browser, deferred_delete::ToastErrorRequest, icons, navigation};
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Signal, expr, signal},
+    runtime::{Event, Signal, expr, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -129,7 +129,7 @@ fn copy_button(cx: &Cx, account_id: i64, index: usize, value: String) -> BoxView
         if !browser.is_disposed() {
             event.prevent_default();
             event.stop_propagation();
-            let _completed = |success: BoolSurrogate| {
+            let _completed = |success: bool| {
                 if success {
                     completed_copied.set(true);
                     browser.clear_timeout(timer.get());

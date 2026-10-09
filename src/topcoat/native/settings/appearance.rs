@@ -1,7 +1,7 @@
 use super::super::icons::{UiIcon, ui_icon};
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, StringSurrogate, expr, signal},
+    runtime::{Event, Signal, expr, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -33,7 +33,7 @@ fn selection_mount(
                 String::new()
             )
         };
-        let _apply = |_key: StringSurrogate, _value: StringSurrogate| {
+        let _apply = |_key: String, _value: String| {
             if _key == "lific_theme" {
                 theme.set(
                     if _value == "light" {

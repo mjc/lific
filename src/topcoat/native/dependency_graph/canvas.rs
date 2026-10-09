@@ -12,7 +12,7 @@ use crate::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, StringSurrogate, signal},
+    runtime::{Event, Signal, signal},
     view::{BoxView, View, ViewExt, component, view},
 };
 
@@ -759,7 +759,7 @@ fn action_button<'a>(
             @click=$(async |_event: Event| {
                 busy_action.set(true);
                 error_action.set("".to_owned());
-                let _success = |_message: StringSurrogate| {
+                let _success = |_message: String| {
                     busy_success.set(false);
                     menu_action.set("".to_owned());
                     revision_action.increment();

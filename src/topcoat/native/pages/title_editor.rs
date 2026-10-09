@@ -79,7 +79,7 @@ fn finish_handler<C: FnOnce(), D: Fn()>(
     keyboard: bool,
 ) -> Js {
     let browser = browser::bindings();
-    let factory = expr!(|event: Event, commit: C, cancel: D| {
+    let factory = super::callback_pair_factory::<C, D, _>(expr!(|event: Event, commit, cancel| {
         if !browser.is_disposed() {
             if editing.get() {
                 if keyboard {
@@ -105,7 +105,7 @@ fn finish_handler<C: FnOnce(), D: Fn()>(
                 }
             }
         }
-    });
+    }));
     Js::builder()
         .source("event => (")
         .expression(&factory)

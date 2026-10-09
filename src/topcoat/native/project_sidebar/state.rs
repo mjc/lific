@@ -5,9 +5,7 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, Surrogated, expr, signal,
-    },
+    runtime::{Event, Js, Signal, Surrogated, expr, signal},
     view::Attributes,
 };
 
@@ -196,24 +194,24 @@ fn handler_arguments(
 }
 
 type SidebarHandlerSignals<'a> = (
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<i64>,
-    &'a SignalSurrogate<f64>,
-    &'a SignalSurrogate<f64>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<usize>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<i64>,
+    &'a Signal<f64>,
+    &'a Signal<f64>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
 );
 
 pub(super) fn handler_source() -> &'static str {
     static SOURCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SOURCE.get_or_init(|| {
-        let factory = expr!(|_mount_event: Event, signals: SidebarHandlerSignals<'_>, account: I64Surrogate, request: (&topcoat::runtime::StrSurrogate, BoolSurrogate, &topcoat::runtime::StrSurrogate, I64Surrogate, &topcoat::runtime::StrSurrogate)| {
+        let factory = expr!(|_mount_event: Event, signals: SidebarHandlerSignals<'_>, account: i64, request: (&str, bool, &str, i64, &str)| {
             let model = signals.0;
             let draft = signals.1;
             let revision = signals.2;
@@ -239,12 +237,12 @@ pub(super) fn handler_source() -> &'static str {
             let _command = request.2;
             let _id = request.3;
             let _value = request.4;
-            let _dispatch =         async |event: Event,
-               mode: topcoat::runtime::StringSurrogate,
-               command: topcoat::runtime::StringSurrogate,
-               id: topcoat::runtime::I64Surrogate,
-               value: topcoat::runtime::StringSurrogate,
-               _target_id: topcoat::runtime::StringSurrogate| {
+            let _dispatch =         |event: Event,
+               mode: String,
+               command: String,
+               id: i64,
+               value: String,
+          _target_id: String| {
             let keyboard = event.event_type == "keydown";
             if mode == "invoke" {
                 let allowed = if keyboard {
@@ -505,7 +503,7 @@ pub(super) fn menu_attributes(cx: &Cx, state: &Signals) -> Attributes {
         let top = if top > max_top { max_top } else { top };
         x.set(if left < 8.0 { 8.0 } else { left });
         y.set(if top < 8.0 { 8.0 } else { top });
-        let _close = |restore: topcoat::runtime::BoolSurrogate| {
+        let _close = |restore: bool| {
             kind.set("".to_owned());
             if restore {
                 let _id = focus.get();

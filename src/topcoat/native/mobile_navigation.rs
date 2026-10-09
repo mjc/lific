@@ -4,10 +4,7 @@ use super::super::runtime::signal_vec::VecPositionExt;
 use super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, Js, Signal, SignalSurrogate, StringSurrogate, Surrogated,
-        VecSurrogate, expr, record, shard, signal,
-    },
+    runtime::{Event, Js, Signal, Surrogated, expr, record, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -87,21 +84,19 @@ struct HistoryEntry {
     project: String,
 }
 
-type HistoryEntrySurrogate = <HistoryEntry as Surrogated>::Surrogate;
-
 pub(super) type ChromeHandlerSignals<'a> = (
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
 );
 
 #[shard("/__native_home/phone")]
@@ -312,14 +307,14 @@ pub(crate) fn mobile_action_mount(cx: &Cx, navigation: &MobileNavigation) -> Att
 }
 
 type MobileHandlerSignals<'a> = (
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
 );
 
 pub(crate) fn dispatch_factory() -> Js {
@@ -334,7 +329,7 @@ pub(crate) fn dispatch_factory() -> Js {
         let pending_palette = handles.5;
         let view_identifier = handles.6;
         let initialized = handles.7;
-        let _dispatch = |action: StringSurrogate, identifier: StringSurrogate| {
+        let _dispatch = |action: String, identifier: String| {
             if !pending_palette.get() {
                 if action == "back" {
                     raw!("history.back();", ());
@@ -419,7 +414,7 @@ pub(crate) fn handler_factory() -> Js {
     let handler = expr!(|browser: super::browser::Browser,
                          _mount: Event,
                          chrome: ChromeHandlerSignals<'_>,
-                         projects: &VecSurrogate<String>,
+                         projects: &Vec<String>,
                          palette: &super::palette::OpenPalette| {
         let theme_menu = chrome.2;
         let mobile_open = chrome.3;
@@ -457,10 +452,10 @@ pub(crate) fn handler_factory() -> Js {
                 }
             )
         };
-        let _owns_closed_entry = |record: HistoryEntrySurrogate,
-                                  expected_owner: StringSurrogate,
-                                  expected_href: StringSurrogate,
-                                  current_href: StringSurrogate| {
+        let _owns_closed_entry = |record: HistoryEntry,
+                                  expected_owner: String,
+                                  expected_href: String,
+                                  current_href: String| {
             if record.version == "1" {
                 if record.owner == expected_owner {
                     if record.href == expected_href {
@@ -483,7 +478,7 @@ pub(crate) fn handler_factory() -> Js {
                 false
             }
         };
-        let _focus_entry = |previous: StringSurrogate| {
+        let _focus_entry = |previous: String| {
             if mobile_pane.get() == "project" {
                 browser
                     .focus_selector("[data-native-mobile-project]:not([hidden]) button".to_owned());
@@ -493,7 +488,7 @@ pub(crate) fn handler_factory() -> Js {
                 browser.focus_project(previous);
             }
         };
-        let _present = |arguments: (BoolSurrogate, HistoryEntrySurrogate)| {
+        let _present = |arguments: (bool, HistoryEntry)| {
             let history_pop = arguments.0;
             let record = arguments.1;
             let current_href = raw!("cx.hydrate(window.location.href)", "".to_owned());

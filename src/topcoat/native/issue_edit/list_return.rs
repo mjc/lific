@@ -1,7 +1,7 @@
 //! One saved layout choice for issue breadcrumb, Escape and deferred Delete.
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, Expr, Js, Signal, StringSurrogate, expr, signal},
+    runtime::{Event, Expr, Js, Signal, expr, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -19,7 +19,7 @@ fn destination(project: &str) -> Expr<String> {
     let list = format!("/{project}/issues");
     let initial = list.clone();
     let board = board_path(project);
-    let choose = expr!(|preferred: BoolSurrogate| {
+    let choose = expr!(|preferred: bool| {
         if preferred {
             board.clone()
         } else {
@@ -63,7 +63,7 @@ pub(crate) fn breadcrumb<'a>(cx: &'a Cx, project: &str, identifier: &str) -> Box
     let board = board_path(project);
     let update_label = label.clone();
     let update_href = href.clone();
-    let update = expr!(|destination: StringSurrogate| {
+    let update = expr!(|destination: String| {
         update_label.set(if destination == board {
             "Board".to_owned()
         } else {
@@ -103,7 +103,7 @@ pub(crate) fn keyboard_mount(
     let mount = super::super::transport::trusted_mount(cx)
         .unwrap_or_default()
         .to_owned();
-    let navigate = expr!(|_destination: StringSurrogate| {
+    let navigate = expr!(|_destination: String| {
         // Activate the real breadcrumb so native navigation and fresh
         // destination authorization own the transition.
         raw!(

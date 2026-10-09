@@ -64,7 +64,7 @@ fn copy_action_with_source(
                 ()
             );
         };
-        raw!("${_copy}();", ());
+        raw!("void Promise.resolve(${_copy}());", ());
     })
     .into_evaluated_and_js()
     .1

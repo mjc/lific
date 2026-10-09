@@ -25,7 +25,7 @@ impl StrUnicodeExt for StrSurrogate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use topcoat::runtime::{StringSurrogate, Surrogate, Surrogated, expr};
+    use topcoat::runtime::{Surrogate, Surrogated, expr};
 
     #[test]
     fn string_operations_match_rust_and_export_production_expr_coherence_cases() {
@@ -72,8 +72,7 @@ mod tests {
 
     #[test]
     fn generic_methods_typecheck_without_server_calls() {
-        let expression =
-            expr!(|text: StringSurrogate| text.to_uppercase().unicode_scalars(0_usize));
+        let expression = expr!(|text: String| text.to_uppercase().unicode_scalars(0_usize));
         let source = expression.into_evaluated_and_js().1.to_source();
         assert!(source.contains(".to_uppercase("));
         assert!(source.contains(".unicode_scalars("));

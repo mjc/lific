@@ -157,7 +157,7 @@ fn save_name_attrs(cx: &Cx, account: i64, state: NameState) -> Attributes {
                         let _transport_error =
                             "Couldn't save the instance name. Try again.".to_owned();
                         let result = raw!(
-                            "await ${_request}().catch(()=>cx.hydrate([false,${_transport_error}.toString()]))",
+                            "await Promise.resolve(${_request}()).catch(()=>cx.hydrate([false,${_transport_error}.toString()]))",
                             (false, String::new())
                         );
                         if !raw!("${_live}()", false) {

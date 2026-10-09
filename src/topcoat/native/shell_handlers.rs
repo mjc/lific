@@ -1,12 +1,12 @@
 //! Shared source assembly for preloaded native shell handler factories.
 
-use topcoat::runtime::{Event, Js, SignalSurrogate, expr};
+use topcoat::runtime::{Event, Js, Signal, expr};
 
 const HANDLER_PATH: &str = "/__native-home-shell.js";
 
 fn mount_factory() -> Js {
     let browser = super::browser::bindings();
-    let chrome = expr!(|_event: Event, collapsed: &SignalSurrogate<bool>| {
+    let chrome = expr!(|_event: Event, collapsed: &Signal<bool>| {
         collapsed.set(browser.stored("lific:sidebar:collapsed".to_owned()) == "1");
     })
     .into_evaluated_and_js()

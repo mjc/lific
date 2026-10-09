@@ -1,7 +1,7 @@
 //! Document-owned focus scheduling and project publication invalidations.
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, Signal, StringSurrogate, expr},
+    runtime::{Event, Signal, expr},
     view::{Attributes, BoxView, ViewExt, emit, live},
 };
 
@@ -42,7 +42,7 @@ pub(super) fn mount(
             "owner.nativeActivitySchedule=()=>${_schedule}(${_event});",
             ()
         );
-        let _failed = |failed_path: StringSurrogate| {
+        let _failed = |failed_path: String| {
             if failed_path == path {
                 failed_loading.set(false);
             }

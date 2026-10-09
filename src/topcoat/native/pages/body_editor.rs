@@ -67,11 +67,11 @@ where
     C: FnOnce(),
 {
     let browser = browser::bindings();
-    let factory = expr!(|_event: Event, callback: C| {
+    let factory = super::callback_factory::<C, _>(expr!(|_event: Event, callback| {
         if !browser.is_disposed() {
             browser.call0(callback);
         }
-    });
+    }));
     Js::builder()
         .source("event => (")
         .expression(&factory)
@@ -92,7 +92,7 @@ where
     D: FnOnce(),
 {
     let browser = browser::bindings();
-    let factory = expr!(|_event: Event, commit: C, edit: D| {
+    let factory = super::callback_pair_factory::<C, D, _>(expr!(|_event: Event, commit, edit| {
         if !browser.is_disposed() {
             if target_editing {
                 if !editing.get() {
@@ -104,7 +104,7 @@ where
                 }
             }
         }
-    });
+    }));
     Js::builder()
         .source("event => (")
         .expression(&factory)
@@ -140,7 +140,7 @@ where
     D: FnOnce(),
 {
     let browser = browser::bindings();
-    let factory = expr!(|event: Event, commit: C, cancel: D| {
+    let factory = super::callback_pair_factory::<C, D, _>(expr!(|event: Event, commit, cancel| {
         if !browser.is_disposed() {
             if event.key == "Escape" {
                 event.prevent_default();
@@ -157,7 +157,7 @@ where
                 }
             }
         }
-    });
+    }));
     Js::builder()
         .source("event => (")
         .expression(&factory)
@@ -213,9 +213,9 @@ pub(super) fn cancel_attributes(cx: &Cx, editor: &EditorState, controls: &Contro
 
 fn keyboard_mount_handler<C: Fn(Event)>(listener: &Expr<C>) -> Js {
     let browser = browser::bindings();
-    let factory = expr!(|_event: Event, listener: C| {
+    let factory = super::callback_factory::<C, _>(expr!(|_event: Event, listener| {
         browser.window_listener("keydown".to_owned(), listener);
-    });
+    }));
     Js::builder()
         .source("event => (")
         .expression(&factory)

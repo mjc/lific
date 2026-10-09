@@ -4,7 +4,7 @@ use super::super::browser;
 use super::{Scope, render};
 use topcoat::{
     context::Cx,
-    runtime::{Event, StringSurrogate, expr, signal},
+    runtime::{Event, expr, signal},
     view::{Attributes, BoxView, Unescaped, ViewExt, view},
 };
 
@@ -21,7 +21,7 @@ pub(crate) fn private_view<'a>(cx: &'a Cx, source: &str, mentions: &[(&str, &str
     let click_original = original.clone();
     let click_alt = alt.clone();
     let click = expr!(|event: Event| {
-        click_browser.markdown_image_action(event, |event: Event, action: StringSurrogate| {
+        click_browser.markdown_image_action(event, |event: Event, action: String| {
             if !click_browser.is_disposed() {
                 let kind =
                     click_browser.json_string(action.clone(), "kind".to_owned(), "".to_owned());

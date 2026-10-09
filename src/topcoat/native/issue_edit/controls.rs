@@ -3,7 +3,7 @@
 use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Expr, Signal, Surrogated, expr, procedure, shard, signal},
+    runtime::{Event, Expr, Signal, expr, procedure, shard, signal},
     view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
 };
 
@@ -30,11 +30,6 @@ type WireOutcome = (
     Vec<String>,
     Vec<String>,
 );
-type ModuleAssignmentReplyValue =
-    <super::module_assignment::ModuleAssignmentReply as Surrogated>::Surrogate;
-type SavedSnapshotValue =
-    <super::module_assignment::ModuleAssignmentSnapshot as Surrogated>::Surrogate;
-
 fn wire(outcome: SaveOutcome) -> WireOutcome {
     let (result, snapshot) = match outcome {
         SaveOutcome::Saved(snapshot) => (Ok("saved".into()), Some(snapshot)),
@@ -696,7 +691,7 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
                 raw!("requestAnimationFrame(${_focus})", ());
             }
         }
-        let _dismiss = |inside_picker: topcoat::runtime::BoolSurrogate| {
+        let _dismiss = |inside_picker: bool| {
             if !inside_picker {
                 status_open.set(false);
                 header_status_open.set(false);
@@ -707,46 +702,44 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
             "window.addEventListener('click', event => ${_dismiss}(cx.hydrate(Boolean(event.target?.closest?.('.native-issue-detail__picker')))), {signal:cx.abortSignal})",
             ()
         );
-        let _dismiss_label =
-            |inside_picker: topcoat::runtime::BoolSurrogate,
-             inside_color: topcoat::runtime::BoolSurrogate| {
-                if !inside_picker {
-                    label_open.set(false);
-                    label_color_open.set(false);
-                } else if !inside_color {
-                    label_color_open.set(false);
-                }
-            };
+        let _dismiss_label = |inside_picker: bool, inside_color: bool| {
+            if !inside_picker {
+                label_open.set(false);
+                label_color_open.set(false);
+            } else if !inside_color {
+                label_color_open.set(false);
+            }
+        };
         raw!(
             "window.addEventListener('click',event=>${_dismiss_label}(cx.hydrate(Boolean(event.target?.closest?.('[data-native-issue-labels]'))),cx.hydrate(Boolean(event.target?.closest?.('[data-native-label-color-area]')))),{signal:cx.abortSignal})",
             ()
         );
-        let _apply_saved = |next_seq: topcoat::runtime::I64Surrogate,
-                            canonical: SavedSnapshotValue| {
-            if next_seq >= module_seq.get() {
-                let was_clean_title = module_title_draft.get() == module_title.get();
-                let was_clean_description =
-                    module_description_draft.get() == module_description.get();
-                module_seq.set(next_seq);
-                module_title.set(canonical.title.clone());
-                module_description.set(canonical.description.clone());
-                module_status.set(canonical.status);
-                module_priority.set(canonical.priority);
-                module_blocks.set(canonical.blocks);
-                module_blocked_by.set(canonical.blocked_by);
-                module_relates_to.set(canonical.relates_to);
-                module_duplicates.set(canonical.duplicates);
-                module_duplicated_by.set(canonical.duplicated_by);
-                module_labels.set(canonical.labels);
-                if was_clean_title {
-                    module_title_draft.set(canonical.title);
+        let _apply_saved =
+            |next_seq: i64, canonical: super::module_assignment::ModuleAssignmentSnapshot| {
+                if next_seq >= module_seq.get() {
+                    let was_clean_title = module_title_draft.get() == module_title.get();
+                    let was_clean_description =
+                        module_description_draft.get() == module_description.get();
+                    module_seq.set(next_seq);
+                    module_title.set(canonical.title.clone());
+                    module_description.set(canonical.description.clone());
+                    module_status.set(canonical.status);
+                    module_priority.set(canonical.priority);
+                    module_blocks.set(canonical.blocks);
+                    module_blocked_by.set(canonical.blocked_by);
+                    module_relates_to.set(canonical.relates_to);
+                    module_duplicates.set(canonical.duplicates);
+                    module_duplicated_by.set(canonical.duplicated_by);
+                    module_labels.set(canonical.labels);
+                    if was_clean_title {
+                        module_title_draft.set(canonical.title);
+                    }
+                    if was_clean_description {
+                        module_description_draft.set(canonical.description);
+                    }
                 }
-                if was_clean_description {
-                    module_description_draft.set(canonical.description);
-                }
-            }
-        };
-        let _module_applied = |reply: ModuleAssignmentReplyValue| {
+            };
+        let _module_applied = |reply: super::module_assignment::ModuleAssignmentReply| {
             if reply.account_id == module_account {
                 if reply.issue_id == module_issue {
                     if reply.status.is_ok() {
@@ -762,7 +755,7 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
             "window.addEventListener('lific:native-issue-module-applied', event => ${_module_applied}(event.detail), {signal:cx.abortSignal})",
             ()
         );
-        let _label_applied = |reply: super::labels::LabelReplyValue| {
+        let _label_applied = |reply: super::labels::LabelReply| {
             if reply.account_id == module_account {
                 if reply.issue_id == module_issue {
                     if reply.catalog_item.is_some() {

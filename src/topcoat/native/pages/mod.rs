@@ -31,7 +31,26 @@ mod title_commit_production;
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, session};
 use crate::{db::queries, error::LificError};
-use topcoat::{context::Cx, view::BoxView};
+use topcoat::{
+    context::Cx,
+    runtime::{Event, Expr},
+    view::BoxView,
+};
+
+// Constrain opaque callback types through Rust so expr! can infer its parameters.
+pub(super) fn callback_factory<C, F>(factory: Expr<F>) -> Expr<F>
+where
+    F: FnOnce(Event, C),
+{
+    factory
+}
+
+pub(super) fn callback_pair_factory<C, D, F>(factory: Expr<F>) -> Expr<F>
+where
+    F: FnOnce(Event, C, D),
+{
+    factory
+}
 
 pub(crate) fn screen<'a>(cx: &'a Cx, route: &ParsedRoute<'_>) -> topcoat::Result<BoxView<'a>> {
     super::workspace::common_screen(cx, route)

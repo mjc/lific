@@ -5,10 +5,7 @@ use super::super::shell::ParsedRoute;
 use super::{icons::UiIcon, session::native_home_session};
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
-        Surrogated, VecSurrogate, expr, record, shard,
-    },
+    runtime::{Event, Js, Signal, StringSurrogate, Surrogate, Surrogated, expr, record, shard},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -50,6 +47,23 @@ pub(super) type PaletteSignals = (
 
 /// The mobile component receives this typed callback through the shared factory.
 pub(super) struct OpenPalette;
+
+impl<'a> Surrogated for &'a OpenPalette {
+    type Surrogate = &'a OpenPalette;
+
+    fn into_surrogate(self) -> Self::Surrogate {
+        self
+    }
+}
+
+impl<'a> Surrogate for &'a OpenPalette {
+    type Real = &'a OpenPalette;
+
+    fn into_real(self) -> Self::Real {
+        self
+    }
+}
+
 impl OpenPalette {
     pub(super) fn call(&self, _opener: StringSurrogate) {}
 }
@@ -61,21 +75,19 @@ pub(super) struct Projection {
     destinations: Vec<String>,
 }
 
-type ProjectionSurrogate = <Projection as Surrogated>::Surrogate;
-
 type ProjectionSignals<'a> = (
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    (&'a SignalSurrogate<String>, &'a SignalSurrogate<bool>),
+    &'a Signal<usize>,
+    &'a Signal<usize>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<usize>,
+    &'a Signal<usize>,
+    &'a Signal<bool>,
+    &'a Signal<bool>,
+    &'a Signal<bool>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    (&'a Signal<String>, &'a Signal<bool>),
 );
 
 /// Each input captures the same authorized Rust projection as its visible rows.
@@ -84,9 +96,9 @@ pub(super) fn projection_factory() -> Js {
     let browser = super::browser::bindings();
     expr!(|event: Event,
            state: ProjectionSignals<'_>,
-           projection: ProjectionSurrogate,
-           allowed: BoolSurrogate,
-           mode: StringSurrogate| {
+           projection: Projection,
+           allowed: bool,
+           mode: String| {
         let revision = state.0;
         let selected = state.1;
         let selected_href = state.2;
@@ -240,33 +252,23 @@ pub(super) fn projection_factory() -> Js {
 }
 
 type PaletteHandlerSignals<'a> = (
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<usize>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<usize>,
+    &'a Signal<usize>,
+    &'a Signal<usize>,
+    &'a Signal<usize>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<usize>,
+    &'a Signal<bool>,
+    (&'a Signal<bool>, &'a Signal<bool>),
 );
 
-type PaletteStatusSignals<'a> = (
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-);
+type PaletteStatusSignals<'a> = (&'a Signal<bool>, &'a Signal<String>, &'a Signal<String>);
 
-type PaletteRequest<'a> = (
-    &'a VecSurrogate<String>,
-    &'a StringSurrogate,
-    I64Surrogate,
-    BoolSurrogate,
-);
+type PaletteRequest<'a> = (&'a Vec<String>, &'a String, i64, bool);
 
 pub(super) fn handler_factory() -> Js {
     let browser = super::browser::bindings();
@@ -288,8 +290,8 @@ pub(super) fn handler_factory() -> Js {
         let palette_cursor_moved = palette.8;
         let palette_count = palette.9;
         let palette_pending_enter = palette.10;
-        let palette_pending_new_tab = palette.11;
-        let pending_focus = palette.12;
+        let palette_pending_new_tab = palette.11.0;
+        let pending_focus = palette.11.1;
         let palette_waiting = status.0;
         let palette_error = status.1;
         let palette_return_focus = status.2;
@@ -351,7 +353,7 @@ pub(super) fn handler_factory() -> Js {
                 ()
             );
         };
-        let _open_palette = |opener: StringSurrogate| {
+        let _open_palette = |opener: String| {
             palette_return_focus.set(opener);
             pending_focus.set(true);
             palette_query.set("".to_owned());

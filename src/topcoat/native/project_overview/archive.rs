@@ -142,7 +142,7 @@ pub(super) fn panel<'a>(
                         if if confirmed.get() { !busy.get() } else { false } {
                             busy.set(true);
                             error.set("".to_owned());
-                            let _completed = |failure: topcoat::runtime::StringSurrogate| {
+                            let _completed = |failure: String| {
                                 if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                                     error.set(failure);
                                     busy.set(false);

@@ -538,8 +538,10 @@ fn shell_mount(
             (&palette_cursor_moved).into_surrogate(),
             (&palette_count).into_surrogate(),
             (&palette_pending_enter).into_surrogate(),
-            (&palette_pending_new_tab).into_surrogate(),
-            (&palette_pending_focus).into_surrogate(),
+            (
+                (&palette_pending_new_tab).into_surrogate(),
+                (&palette_pending_focus).into_surrogate(),
+            ),
         ))
         .raw(",")
         .surrogate(&(

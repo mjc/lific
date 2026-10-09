@@ -102,7 +102,7 @@ pub(crate) fn field<'a>(
     let current_label = module_label;
     let dismiss_open = open.clone();
     let dismiss = expr!(|_mount: Event| {
-        let _outside = |inside_picker: topcoat::runtime::BoolSurrogate| {
+        let _outside = |inside_picker: bool| {
             if !inside_picker {
                 dismiss_open.set(false);
             }

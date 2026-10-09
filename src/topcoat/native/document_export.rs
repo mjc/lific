@@ -2,7 +2,7 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{Event, StringSurrogate, expr},
+    runtime::{Event, expr},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -102,7 +102,7 @@ pub(crate) fn toolbar_fragments<'a>(
         if !exporting.get() {
             exporting.set(true);
             error.set("".to_owned());
-            let _completed = |failure: StringSurrogate| {
+            let _completed = |failure: String| {
                 if !browser.is_disposed() {
                     completed_error.set(failure);
                     completed_exporting.set(false);
