@@ -39,6 +39,8 @@ and deletion. Nested steps have independent collapse controls for viewers and
 editors. Plan detail reuses the shared activity timeline for the latest 100 entries,
 with six initially visible and expandable description changes. Shared plan actions
 ignore retired owners and late replies.
+Plan titles start in read mode and edit inline, with Enter, blur, and Ctrl/Cmd+S
+commits and Escape cancellation. Empty or unchanged titles do not write.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
@@ -53,6 +55,9 @@ the saved icon on failure. Lifecycle tabs persist under Main's project-identifie
 storage key. Both use shared Rust services and the workspace/sidebar. Viewers
 receive read-only content. Cached navigation checks the destination's rendered
 project permissions against current records.
+Module detail uses the shared project, Modules, and current-name breadcrumbs.
+The name follows successful renames; project copying uses the shared clipboard
+feedback and account notification owner.
 
 Issue detail supports module assignment and clearing, including inactive modules
 and a separate module navigation link for viewers. The account-owned four-toast
