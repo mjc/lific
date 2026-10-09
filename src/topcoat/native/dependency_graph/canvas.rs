@@ -12,8 +12,8 @@ use crate::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{Event, Signal, signal},
-    view::{BoxView, View, ViewExt, component, view},
+    runtime::{Event, Signal, expr, signal},
+    view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
 pub(super) fn content<'a>(
@@ -179,19 +179,55 @@ async fn graph_content(
         .iter()
         .map(|issue| (issue.id, issue))
         .collect();
-    let nodes = chosen
+    let layout_scope = format!("{}-{}-{}", canvas.get(), closed.get(), revision.get());
+    let positions: BTreeMap<_, _> = chosen
         .issues
         .iter()
         .map(|issue| {
+            let issue_cx = cx.keyed(format!(
+                "native-dependency-graph-position-{layout_scope}-{}",
+                issue.id
+            ));
             let point = layout
                 .positions
                 .get(&issue.id)
                 .copied()
                 .unwrap_or(Point { x: 0.0, y: 0.0 });
+            (
+                issue.id,
+                (signal(&issue_cx, || point.x), signal(&issue_cx, || point.y)),
+            )
+        })
+        .collect();
+    let nodes = chosen
+        .issues
+        .iter()
+        .map(|issue| {
+            let drag_cx = cx.keyed(format!(
+                "native-dependency-graph-node-{layout_scope}-{}",
+                issue.id
+            ));
+            let (x, y) = positions.get(&issue.id).expect("issue position");
+            let point = Point {
+                x: x.get_untracked(),
+                y: y.get_untracked(),
+            };
+            let drag = NodeDragState {
+                active: signal(&drag_cx, || false),
+                pointer: signal(&drag_cx, || 0.0_f64),
+                start_x: signal(&drag_cx, || 0.0_f64),
+                start_y: signal(&drag_cx, || 0.0_f64),
+                origin_x: signal(&drag_cx, || point.x),
+                origin_y: signal(&drag_cx, || point.y),
+                dragged: signal(&drag_cx, || false),
+                position_x: x.clone(),
+                position_y: y.clone(),
+                zoom: viewport_state.zoom.clone(),
+            };
             node(
                 cx,
                 issue,
-                point,
+                drag,
                 editable,
                 &menu_kind,
                 &menu_source,
@@ -203,8 +239,8 @@ async fn graph_content(
         .relations
         .iter()
         .filter_map(|relation| {
-            let source = layout.positions.get(&relation.source_id).copied()?;
-            let target = layout.positions.get(&relation.target_id).copied()?;
+            let (source_x, source_y) = positions.get(&relation.source_id)?;
+            let (target_x, target_y) = positions.get(&relation.target_id)?;
             let source_issue = issue_index.get(&relation.source_id)?;
             let target_issue = issue_index.get(&relation.target_id)?;
             Some(edge(
@@ -212,8 +248,10 @@ async fn graph_content(
                 relation,
                 source_issue,
                 target_issue,
-                source,
-                target,
+                source_x.clone(),
+                source_y.clone(),
+                target_x.clone(),
+                target_y.clone(),
                 editable,
                 &menu_kind,
                 &menu_source,
@@ -547,15 +585,173 @@ async fn graph_content(
     })
 }
 
+struct NodeDragState {
+    active: Signal<bool>,
+    pointer: Signal<f64>,
+    start_x: Signal<f64>,
+    start_y: Signal<f64>,
+    origin_x: Signal<f64>,
+    origin_y: Signal<f64>,
+    dragged: Signal<bool>,
+    position_x: Signal<f64>,
+    position_y: Signal<f64>,
+    zoom: Signal<f64>,
+}
+
+fn node_drag_attrs(cx: &Cx, state: NodeDragState) -> Attributes {
+    let NodeDragState {
+        active,
+        pointer,
+        start_x,
+        start_y,
+        origin_x,
+        origin_y,
+        dragged,
+        position_x,
+        position_y,
+        zoom,
+    } = state;
+    let down_active = active.clone();
+    let down_pointer = pointer.clone();
+    let down_start_x = start_x.clone();
+    let down_start_y = start_y.clone();
+    let down_origin_x = origin_x.clone();
+    let down_origin_y = origin_y.clone();
+    let down_dragged = dragged.clone();
+    let down_x = position_x.clone();
+    let down_y = position_y.clone();
+    let move_active = active.clone();
+    let move_pointer = pointer.clone();
+    let move_start_x = start_x;
+    let move_start_y = start_y;
+    let move_origin_x = origin_x;
+    let move_origin_y = origin_y;
+    let move_dragged = dragged.clone();
+    let move_x = position_x;
+    let move_y = position_y;
+    let move_zoom = zoom;
+    let up_active = active.clone();
+    let up_pointer = pointer.clone();
+    let cancel_active = active;
+    let cancel_pointer = pointer;
+    let cancel_dragged = dragged.clone();
+    let click_dragged = dragged;
+    let down = expr!(|event: Event| {
+        let button = raw!("cx.hydrate(${event}.inner.button)", 0.0);
+        let primary = raw!("cx.hydrate(${event}.inner.isPrimary)", false);
+        if button == 0.0 {
+            if primary {
+                event.stop_propagation();
+                down_active.set(true);
+                down_pointer.set(raw!("cx.hydrate(${event}.inner.pointerId)", 0.0));
+                down_start_x.set(raw!("cx.hydrate(${event}.inner.clientX)", 0.0));
+                down_start_y.set(raw!("cx.hydrate(${event}.inner.clientY)", 0.0));
+                down_origin_x.set(down_x.get());
+                down_origin_y.set(down_y.get());
+                down_dragged.set(false);
+                raw!(
+                    "${event}.inner.currentTarget.setPointerCapture?.(${event}.inner.pointerId)",
+                    ()
+                );
+            }
+        }
+    });
+    let movement = expr!(|_event: Event| {
+        if move_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == move_pointer.get() {
+                let x = raw!("cx.hydrate(${_event}.inner.clientX)", 0.0);
+                let y = raw!("cx.hydrate(${_event}.inner.clientY)", 0.0);
+                let dx = x - move_start_x.get();
+                let dy = y - move_start_y.get();
+                if dx * dx + dy * dy >= 9.0 {
+                    move_dragged.set(true);
+                    move_x.set(move_origin_x.get() + dx / move_zoom.get());
+                    move_y.set(move_origin_y.get() + dy / move_zoom.get());
+                }
+            }
+        }
+    });
+    let up = expr!(|_event: Event| {
+        if up_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == up_pointer.get() {
+                up_active.set(false);
+                raw!(
+                    "const node=${_event}.inner.currentTarget;if(node.hasPointerCapture?.(${_event}.inner.pointerId)){try{node.releasePointerCapture(${_event}.inner.pointerId)}catch(error){if(error?.name!=='NotFoundError')throw error}}",
+                    ()
+                );
+            }
+        }
+    });
+    let cancel = expr!(|_event: Event| {
+        if cancel_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == cancel_pointer.get() {
+                cancel_active.set(false);
+                cancel_dragged.set(false);
+            }
+        }
+    });
+    let lost = expr!(|_event: Event| {
+        if cancel_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == cancel_pointer.get() {
+                cancel_active.set(false);
+            }
+        }
+    });
+    let click = expr!(|event: Event| {
+        if click_dragged.get() {
+            event.prevent_default();
+            click_dragged.set(false);
+        }
+    });
+    let mut attrs = Attributes::with_capacity(6);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointerdown",
+        down.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointermove",
+        movement.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointerup",
+        up.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointercancel",
+        cancel.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:lostpointercapture",
+        lost.into_evaluated_and_js().1,
+    );
+    attrs.insert(cx, "data-topcoat-on:click", click.into_evaluated_and_js().1);
+    attrs
+}
+
 fn node<'a>(
     cx: &'a Cx,
     issue: &Issue,
-    point: Point,
+    drag: NodeDragState,
     editable: bool,
     menu_kind: &Signal<String>,
     menu_source: &Signal<String>,
     menu_target: &Signal<String>,
 ) -> BoxView<'a> {
+    let position_x = drag.position_x.clone();
+    let position_y = drag.position_y.clone();
+    let point = Point {
+        x: position_x.get_untracked(),
+        y: position_y.get_untracked(),
+    };
     let href = super::super::navigation::attrs(
         cx,
         &format!(
@@ -567,10 +763,8 @@ fn node<'a>(
             issue.identifier
         ),
     );
-    let style = format!(
-        "position:absolute;left:{}px;top:{}px;width:200px;height:58px",
-        point.x, point.y
-    );
+    let drag_marker = drag.dragged.clone();
+    let drag_attrs = node_drag_attrs(cx, drag);
     let identifier = issue.identifier.clone();
     let issue_id = issue.id.to_string();
     let issue_title = issue.title.clone();
@@ -591,11 +785,20 @@ fn node<'a>(
     } else {
         "native-dependency-graph__node group flex flex-col justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 shadow-sm no-underline hover:border-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
     };
+    let stop_node_drag = expr!(|event: Event| event.stop_propagation());
+    let mut handle_attrs = Attributes::with_capacity(1);
+    handle_attrs.insert(
+        cx,
+        "data-topcoat-on:pointerdown",
+        stop_node_drag.into_evaluated_and_js().1,
+    );
     view! {
         cx =>
         <a
-            class=(node_class)
-            style=(style)
+            class=(format!(
+                "{node_class} touch-none cursor-grab select-none data-[dragging=true]:!border-[var(--border)]",
+            ))
+            draggable="false"
             data-native-graph-node=(issue_id)
             data-issue-id=(identifier.clone())
             data-x=(point.x.to_string())
@@ -604,6 +807,19 @@ fn node<'a>(
             data-height="58"
             aria-label=(issue_label)
             aria-disabled="false"
+            :data-dragging=$({
+                let _moving = drag_marker.get();
+                raw!("cx.hydrate(${_moving}.toString())", "false")
+            })
+            :style=$({
+                let _x = position_x.get();
+                let _y = position_y.get();
+                raw!(
+                    "cx.hydrate('position:absolute;left:'+${_x}.toString()+'px;top:'+${_y}.toString()+'px;width:200px;height:58px')",
+                    "",
+                )
+            })
+            (drag_attrs)
             (href)
         >
             <span class="flex items-center gap-1.5">
@@ -622,6 +838,7 @@ fn node<'a>(
                     aria-label=(format!("Create relation from {}", identifier))
                     class="native-graph-handle absolute -right-2 top-1/2 size-2.5 -translate-y-1/2 rounded-full border-2 border-[var(--surface)] bg-[var(--accent)]"
                     data-native-graph-connect=(identifier.clone())
+                    (handle_attrs)
                     @click=$(|event: Event| {
                         event.prevent_default();
                         event.stop_propagation();
@@ -641,19 +858,27 @@ fn edge<'a>(
     relation: &ProjectRelation,
     source_issue: &Issue,
     target_issue: &Issue,
-    source: Point,
-    target: Point,
+    source_x: Signal<f64>,
+    source_y: Signal<f64>,
+    target_x: Signal<f64>,
+    target_y: Signal<f64>,
     editable: bool,
     menu_kind: &Signal<String>,
     menu_source: &Signal<String>,
     menu_target: &Signal<String>,
 ) -> BoxView<'a> {
-    let x1 = source.x + 200.0;
-    let y1 = source.y + 29.0;
-    let x2 = target.x;
-    let y2 = target.y + 29.0;
-    let middle = (x1 + x2) / 2.0;
-    let path = format!("M {x1} {y1} C {middle} {y1}, {middle} {y2}, {x2} {y2}");
+    let initial_x1 = source_x.get_untracked() + 200.0;
+    let initial_y1 = source_y.get_untracked() + 29.0;
+    let initial_x2 = target_x.get_untracked();
+    let initial_y2 = target_y.get_untracked() + 29.0;
+    let middle = (initial_x1 + initial_x2) / 2.0;
+    let path = format!(
+        "M {initial_x1} {initial_y1} C {middle} {initial_y1}, {middle} {initial_y2}, {initial_x2} {initial_y2}"
+    );
+    let edge_source_x = source_x;
+    let edge_source_y = source_y;
+    let edge_target_x = target_x;
+    let edge_target_y = target_y;
     let kind = relation.relation_type.clone();
     let stroke = "var(--text-faint)";
     let dash = match kind.as_str() {
@@ -683,6 +908,17 @@ fn edge<'a>(
         >
             <path
                 d=(path)
+                :d=$({
+                    let _x1 = edge_source_x.get() + 200.0;
+                    let _y1 = edge_source_y.get() + 29.0;
+                    let _x2 = edge_target_x.get();
+                    let _y2 = edge_target_y.get() + 29.0;
+                    let _middle = (_x1 + _x2) / 2.0;
+                    raw!(
+                        "cx.hydrate('M '+${_x1}.toString()+' '+${_y1}.toString()+' C '+${_middle}.toString()+' '+${_y1}.toString()+', '+${_middle}.toString()+' '+${_y2}.toString()+', '+${_x2}.toString()+' '+${_y2}.toString())",
+                        "",
+                    )
+                })
                 fill="none"
                 stroke=(stroke)
                 stroke-opacity=(opacity)
@@ -695,11 +931,18 @@ fn edge<'a>(
             <button
                 type="button"
                 class="absolute z-10 size-7 opacity-0 focus:opacity-100 hover:opacity-100"
-                style=(format!(
-                    "left:{}px;top:{}px",
-                    middle - 14.0,
-                    (y1 + y2) / 2.0 - 14.0,
-                ))
+                :style=$({
+                    let _x1 = edge_source_x.get() + 200.0;
+                    let _y1 = edge_source_y.get() + 29.0;
+                    let _x2 = edge_target_x.get();
+                    let _y2 = edge_target_y.get() + 29.0;
+                    let _left = (_x1 + _x2) / 2.0 - 14.0;
+                    let _top = (_y1 + _y2) / 2.0 - 14.0;
+                    raw!(
+                        "cx.hydrate('left:'+${_left}.toString()+'px;top:'+${_top}.toString()+'px')",
+                        "",
+                    )
+                })
                 aria-label=(format!("Manage relation from {} to {}", source, target))
                 data-native-graph-manage=(format!("{}:{}", source, target))
                 @click=$(|event: Event| {
