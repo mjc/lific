@@ -8,7 +8,7 @@ assert.ok(input.handlers['search-open:click'], 'Main search opens from a compact
 assert.ok(input.handlers['search:blur'], 'empty search collapses on blur');
 const key = 'lific:list:state:ACC';
 const saved = {
-  filterStatus: 'done', filterPriority: '', filterLabel: '', filterModule: '',
+  filterStatus: 'done', filterPriority: '', filterLabel: '', filterModule: '', filterAssignee: '',
   searchQuery: 'seed', sortField: 'number', sortDir: 'asc', groupBy: 'module', density: 'compact',
 };
 
@@ -37,6 +37,14 @@ assert.equal(live.state().filterStatus, 'active');
 live.invoke('status:active');
 assert.equal(live.state().filterStatus, '', 'repeat choice toggles off');
 live.invoke('priority:high');
+live.invoke('assignee:none');
+assert.equal(live.state().filterAssignee, 'none', 'unassigned is a native collection filter');
+live.invoke('assignee:none');
+assert.equal(live.state().filterAssignee, '', 'assignee filter choices toggle off');
+live.invoke('assignee:me');
+assert.equal(live.state().filterAssignee, 'me', 'current-user filter is saved in collection state');
+live.invoke('clear');
+assert.equal(live.state().filterAssignee, '');
 live.invoke('sort:updated');
 assert.equal(live.state().sortField, 'updated');
 assert.equal(live.state().sortDir, 'desc', 'updated initially sorts newest first');
@@ -67,7 +75,7 @@ assert.equal(JSON.stringify([...live.stored]), before, 'disposed controls cannot
 const malformed = fixture('{invalid');
 malformed.invoke('status:todo');
 assert.equal(malformed.state().filterStatus, 'todo', 'malformed storage recovers to defaults');
-assert.equal(Object.keys(malformed.state()).length, 9);
+assert.equal(Object.keys(malformed.state()).length, 10);
 const blocked = fixture('', true);
 blocked.invoke('status:active');
 blocked.invoke('clear');
