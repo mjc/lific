@@ -8,6 +8,9 @@ const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const flush = async () => {
   for (let attempt = 0; attempt < 60; attempt += 1) await Promise.resolve();
 };
+const marker = (selector, fields = {}) => Object.assign({
+  closest(candidate) { return candidate === selector ? this : null; },
+}, fields);
 
 function snapshot(cx, signals) {
   return Object.fromEntries(Object.keys(signals).map(id => [id, cx.signal(id).dehydrate().v]));
@@ -22,6 +25,17 @@ async function run() {
       type: 'mount', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
     }));
     await flush();
+    const disposedFixture = handlerFixture(input.signals, async () => {
+      throw new Error('canonical title reconciliation must not perform network I/O');
+    }, input.browser_source);
+    const beforeDisposedMount = snapshot(disposedFixture.cx, input.signals);
+    disposedFixture.controller.abort();
+    disposedFixture.handler(input.mount_handler)(disposedFixture.cx.event({
+      type: 'mount', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    }));
+    await flush();
+    assert.deepEqual(snapshot(disposedFixture.cx, input.signals), beforeDisposedMount,
+      'a disposed saved-shard mount cannot update parent title state');
     return {signals: snapshot(fixture.cx, input.signals)};
   }
 
@@ -31,7 +45,6 @@ async function run() {
       return new Promise(resolve => pending.push({
         path: new URL(url, 'http://localhost').pathname,
         arguments: JSON.parse(options.body),
-        signal: options.signal,
         resolve,
       }));
     }, input.browser_source);
@@ -72,27 +85,50 @@ async function run() {
     await flush();
     retiredChildController.abort();
     assert.equal(retiredChild.abortSignal.aborted, true, 'the replaced saved-shard child is retired');
-    assert.equal(pending[1].signal.aborted, false,
-      'the second pending save is owned by the persistent parent context');
+    assert.equal(fixture.cx.abortSignal.aborted, false,
+      'retiring a saved-shard child leaves the parent owner alive');
     pending[1].resolve({ok: true, json: async () => input.responses[1]});
     await flush();
+    const afterSecondSave = snapshot(fixture.cx, input.signals);
+    assert(Object.values(afterSecondSave).includes('Second overlapping title'),
+      'the parent-owned second save updates canonical state after child retirement');
+    const beforeStaleMount = snapshot(fixture.cx, input.signals);
+    fixture.handler(input.mount_handler)(fixture.cx.event({
+      type: 'mount', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    }));
+    await flush();
+    assert.deepEqual(snapshot(fixture.cx, input.signals), beforeStaleMount,
+      'an obsolete shard mount cannot replace a newer canonical title');
     return {
       requests: pending.map(({path, arguments: args}) => ({path, arguments: args})),
-      signals: snapshot(fixture.cx, input.signals),
+      signals: afterSecondSave,
     };
+  }
+
+  if (input.mode === 'prepare_draft') {
+    const fixture = handlerFixture(input.signals, async () => {
+      throw new Error('editing the title must not perform network I/O');
+    }, input.browser_source);
+    fixture.handler(input.click_handler)(fixture.cx.event({
+      type: 'click', target: marker('[data-native-plan-title-trigger]'), currentTarget: {},
+    }));
+    fixture.handler(input.input_handler)(fixture.cx.event({
+      type: 'input', target: marker('[data-native-plan-title-input]', {value: input.draft}), currentTarget: {},
+    }));
+    return {signals: snapshot(fixture.cx, input.signals)};
   }
 
   const clickFixture = handlerFixture(input.signals, async () => {
     throw new Error('starting title edit must not perform network I/O');
   }, input.browser_source);
   clickFixture.handler(input.click_handler)(clickFixture.cx.event({
-    type: 'click', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    type: 'click', target: marker('[data-native-plan-title-trigger]'), currentTarget: {}, preventDefault() {}, stopPropagation() {},
   }));
   await flush();
   const afterClick = snapshot(clickFixture.cx, input.signals);
 
   const keyEvent = key => ({
-    type: 'keydown', key, target: {}, currentTarget: {},
+    type: 'keydown', key, target: marker('[data-native-plan-title-trigger]'), currentTarget: {},
     preventDefault() { this.prevented = true; }, stopPropagation() {},
   });
   async function activate(key) {
@@ -124,7 +160,7 @@ async function run() {
       throw new Error('Escape must not save the draft');
     }, input.browser_source);
     fixture.handler(input.edit_keydown_handler)(fixture.cx.event({
-      type: 'keydown', key: 'Escape', target: {}, currentTarget: {},
+      type: 'keydown', key: 'Escape', target: marker('[data-native-plan-title-input]'), currentTarget: {},
       preventDefault() {}, stopPropagation() {},
     }));
     return {close_signals: snapshot(fixture.cx, input.edit_signals)};
@@ -139,14 +175,14 @@ async function run() {
   const key = editFixture.handler(input.edit_keydown_handler);
   const blur = editFixture.handler(input.blur_handler);
   field(editFixture.cx.event({
-    type: 'input', target: {value: '  Renamed plan title\uFEFF'}, currentTarget: {},
+    type: 'input', target: marker('[data-native-plan-title-input]', {value: '  Renamed plan title\uFEFF'}), currentTarget: {},
   }));
   const commitEnter = {
-    type: 'keydown', key: 'Enter', target: {}, currentTarget: {},
+    type: 'keydown', key: 'Enter', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     preventDefault() { this.prevented = true; }, stopPropagation() {},
   };
   key(editFixture.cx.event(commitEnter));
-  blur(editFixture.cx.event({type: 'blur', target: {}, currentTarget: {}}));
+  blur(editFixture.cx.event({type: 'focusout', target: marker('[data-native-plan-title-input]'), currentTarget: {}}));
   await flush();
   assert.equal(commitEnter.prevented, true, 'Enter commits and prevents form submission');
   assert.equal(requests.length, 1, 'Enter followed by blur performs one save');
@@ -159,16 +195,16 @@ async function run() {
       throw new Error(`${keyName} must not save this draft`);
     }, input.browser_source);
     fixture.handler(input.input_handler)(fixture.cx.event({
-      type: 'input', target: {value}, currentTarget: {},
+      type: 'input', target: marker('[data-native-plan-title-input]', {value}), currentTarget: {},
     }));
     const keyHandler = fixture.handler(input.edit_keydown_handler);
     const keyEvent = {
-      type: 'keydown', key: keyName, target: {}, currentTarget: {},
+      type: 'keydown', key: keyName, target: marker('[data-native-plan-title-input]'), currentTarget: {},
       preventDefault() { this.prevented = true; }, stopPropagation() {},
     };
     keyHandler(fixture.cx.event(keyEvent));
     fixture.handler(input.blur_handler)(fixture.cx.event({
-      type: 'blur', target: {}, currentTarget: {},
+      type: 'focusout', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     }));
     await flush();
     assert.equal(requests, 0, `${keyName} does not save this draft`);
@@ -186,19 +222,19 @@ async function run() {
       return {ok: true, json: async () => input.response};
     }, input.browser_source);
     fixture.handler(input.input_handler)(fixture.cx.event({
-      type: 'input', target: {value: `Saved by ${mode}`}, currentTarget: {},
+      type: 'input', target: marker('[data-native-plan-title-input]', {value: `Saved by ${mode}`}), currentTarget: {},
     }));
     if (mode !== 'blur') {
       const keyEvent = {
         type: 'keydown', key: 's', ctrl_key: mode === 'ctrl+s', meta_key: mode === 'meta+s',
-        ctrlKey: mode === 'ctrl+s', metaKey: mode === 'meta+s', target: {}, currentTarget: {},
+        ctrlKey: mode === 'ctrl+s', metaKey: mode === 'meta+s', target: marker('[data-native-plan-title-input]'), currentTarget: {},
         preventDefault() { this.prevented = true; }, stopPropagation() {},
       };
       fixture.handler(input.edit_keydown_handler)(fixture.cx.event(keyEvent));
       assert.equal(keyEvent.prevented, true, `${mode} prevents browser save`);
     }
     fixture.handler(input.blur_handler)(fixture.cx.event({
-      type: 'blur', target: {}, currentTarget: {},
+      type: 'focusout', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     }));
     await flush();
     assert.equal(saveRequests.length, 1, `${mode} performs one title save`);
@@ -212,10 +248,10 @@ async function run() {
     throw new Error('offline');
   }, input.browser_source);
   failedFixture.handler(input.input_handler)(failedFixture.cx.event({
-    type: 'input', target: {value: 'Rejected title'}, currentTarget: {},
+    type: 'input', target: marker('[data-native-plan-title-input]', {value: 'Rejected title'}), currentTarget: {},
   }));
   failedFixture.handler(input.edit_keydown_handler)(failedFixture.cx.event({
-    type: 'keydown', key: 'Enter', target: {}, currentTarget: {},
+    type: 'keydown', key: 'Enter', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     preventDefault() {}, stopPropagation() {},
   }));
   await flush();
@@ -229,21 +265,21 @@ async function run() {
     });
   }, input.browser_source);
   pendingFixture.handler(input.click_handler)(pendingFixture.cx.event({
-    type: 'click', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    type: 'click', target: marker('[data-native-plan-title-trigger]'), currentTarget: {}, preventDefault() {}, stopPropagation() {},
   }));
   pendingFixture.handler(input.input_handler)(pendingFixture.cx.event({
-    type: 'input', target: {value: 'Saving title'}, currentTarget: {},
+    type: 'input', target: marker('[data-native-plan-title-input]', {value: 'Saving title'}), currentTarget: {},
   }));
   pendingFixture.handler(input.edit_keydown_handler)(pendingFixture.cx.event({
-    type: 'keydown', key: 'Enter', target: {}, currentTarget: {},
+    type: 'keydown', key: 'Enter', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     preventDefault() {}, stopPropagation() {},
   }));
   await flush();
   pendingFixture.handler(input.click_handler)(pendingFixture.cx.event({
-    type: 'click', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    type: 'click', target: marker('[data-native-plan-title-trigger]'), currentTarget: {}, preventDefault() {}, stopPropagation() {},
   }));
   pendingFixture.handler(input.input_handler)(pendingFixture.cx.event({
-    type: 'input', target: {value: 'Newer unsaved draft'}, currentTarget: {},
+    type: 'input', target: marker('[data-native-plan-title-input]', {value: 'Newer unsaved draft'}), currentTarget: {},
   }));
   resolvePending({ok: true, json: async () => input.pending_response});
   await flush();
@@ -254,10 +290,10 @@ async function run() {
     resolveRetired = resolve;
   }), input.browser_source);
   retiredFixture.handler(input.input_handler)(retiredFixture.cx.event({
-    type: 'input', target: {value: 'Retired title'}, currentTarget: {},
+    type: 'input', target: marker('[data-native-plan-title-input]', {value: 'Retired title'}), currentTarget: {},
   }));
   retiredFixture.handler(input.edit_keydown_handler)(retiredFixture.cx.event({
-    type: 'keydown', key: 'Enter', target: {}, currentTarget: {},
+    type: 'keydown', key: 'Enter', target: marker('[data-native-plan-title-input]'), currentTarget: {},
     preventDefault() {}, stopPropagation() {},
   }));
   await flush();
