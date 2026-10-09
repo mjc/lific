@@ -1,7 +1,7 @@
 This directory contains the Topcoat core browser modules imported by the
 vendored Topcoat runtime's source tests and browser build inputs. The files are
-from `mjc/topcoat` commit `9c909ed4ea16b7058ae23c5e1938c83039f3e985`, rebased on
-official Topcoat `main` commit `8cdc2bfd`:
+from `mjc/topcoat` commit `8c3e6adee4694b504e6df13c90428666100ea167`, based on
+official Topcoat `main` commit `341f3ff2`:
 
 - `browser/dev.ts` defines the development refresh event and runtime contract.
 - `browser/frames.ts` defines the shared framed-render protocol.

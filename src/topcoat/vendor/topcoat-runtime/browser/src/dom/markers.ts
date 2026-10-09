@@ -67,7 +67,12 @@ export function parseComment(node: Comment): CommentMarker | null {
 			v: DehydratedSurrogate;
 		};
 
-		const payload = JSON.parse(decodeHtml(sig[1] ?? "")) as SignalPayload;
+		const rawPayload = sig[1] ?? "";
+		// Legacy declarations escaped the object's opening quote as an HTML entity.
+		const json = rawPayload.startsWith("{&quot;")
+			? decodeHtml(rawPayload)
+			: rawPayload;
+		const payload = JSON.parse(json) as SignalPayload;
 		if (payload.t !== "signal" || typeof payload.id !== "string") {
 			throw new Error("Invalid signal marker");
 		}

@@ -1,8 +1,8 @@
 # Lific Topcoat runtime bridge
 
 The vendored framework source under `src/topcoat/vendor/topcoat-runtime` is from
-`mjc/topcoat` commit `9c909ed4ea16b7058ae23c5e1938c83039f3e985`, rebased on
-official Topcoat `main` commit `8cdc2bfd`. `UPSTREAM-SHA256SUMS` records the
+`mjc/topcoat` commit `8c3e6adee4694b504e6df13c90428666100ea167`, based on
+official Topcoat `main` commit `341f3ff2`. `UPSTREAM-SHA256SUMS` records the
 fork package files before Lific's path and manifest changes. These source hashes
 do not represent a crates.io package checksum.
 

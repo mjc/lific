@@ -1,5 +1,6 @@
 import type { SignalId, SignalRegistry } from "../signal-registry";
 import { Option, Record, Result, Tuple, WriteSignal } from "../surrogate";
+import { Future } from "../surrogate/future";
 import { hydrate } from "./hydrate";
 import type { DehydratedSurrogate } from "./serialized";
 
@@ -41,5 +42,9 @@ export class Context {
 
 	tuple(items: readonly unknown[]): Tuple {
 		return new Tuple(items);
+	}
+
+	future<T>(run: () => Promise<T>): Future<T> {
+		return new Future(run);
 	}
 }
