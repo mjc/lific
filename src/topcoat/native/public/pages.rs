@@ -588,6 +588,10 @@ fn sorted_updated<'a>(pages: impl Iterator<Item = &'a Page>) -> Vec<&'a Page> {
     pages
 }
 
+#[cfg(test)]
+#[path = "pages_production.rs"]
+mod production_tests;
+
 fn sorted_recent(pages: &[Page]) -> Vec<&Page> {
     let mut pages = pages
         .iter()

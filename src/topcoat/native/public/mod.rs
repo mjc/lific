@@ -30,4 +30,13 @@ pub(super) fn markdown_view<'a>(
 mod production;
 
 #[cfg(test)]
+mod collection_production;
+
+#[cfg(test)]
+mod collection_subtabs_production;
+
+#[cfg(test)]
 mod detail_production;
+
+#[cfg(test)]
+mod detail_state_production;
