@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use super::super::super::runtime::signal_vec::{SignalVecExt, VecPositionExt};
 use super::super::{browser, public_route::Route};
+use super::preferences;
 use super::{data, data::Body};
 use crate::db::models::{Folder, Page, Project};
 use topcoat::{
@@ -30,6 +31,8 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
     let title = project.name.clone();
     let owner = cx.keyed(("public-pages", project.id));
     let tab = signal(&owner, || "browse".to_owned());
+    let tab_key = preferences::page_tab_storage_key(project.id);
+    let preferences_attrs = preferences::pages_mount(cx, project.id, tab.clone());
     let query = signal(&owner, String::new);
     let label = signal(&owner, String::new);
     let status = signal(&owner, || DEFAULT_STATUS.to_owned());
@@ -39,14 +42,10 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
     let shard_project = project_identifier;
     let shard_tab = tab.clone();
 
-    let tab_browse = tab.clone();
-    let browse_click = expr!(|_event: Event| tab_browse.set("browse".to_owned()));
-    let tab_recent = tab.clone();
-    let recent_click = expr!(|_event: Event| tab_recent.set("recent".to_owned()));
-    let tab_drafts = tab.clone();
-    let drafts_click = expr!(|_event: Event| tab_drafts.set("drafts".to_owned()));
-    let tab_archived = tab.clone();
-    let archived_click = expr!(|_event: Event| tab_archived.set("archived".to_owned()));
+    let browse_click = preferences::save_page_tab(tab.clone(), tab_key.clone(), "browse");
+    let recent_click = preferences::save_page_tab(tab.clone(), tab_key.clone(), "recent");
+    let drafts_click = preferences::save_page_tab(tab.clone(), tab_key.clone(), "drafts");
+    let archived_click = preferences::save_page_tab(tab.clone(), tab_key, "archived");
 
     let body = view! {
         owner =>
@@ -67,6 +66,7 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
         <main
             class="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-4 px-4 py-6 md:px-8"
             data-public-pages=""
+            (preferences_attrs)
         >
             <header class="flex flex-wrap items-center justify-between gap-3">
                 <h1 class="m-0 text-heading font-semibold">

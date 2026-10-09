@@ -1,6 +1,7 @@
 //! Read-only issue and board views for published projects.
 use super::super::issue_collection::{model, view};
 use super::data::{self, Body};
+use super::preferences;
 use crate::services::issues::IssueCollection;
 use topcoat::{
     context::Cx,
@@ -12,37 +13,91 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let layout = if board { "board" } else { "list" }.to_owned();
     let project = collection.project.identifier.clone();
     let owner = cx.keyed(("public-issue-list", project.clone(), layout.clone()));
-    let query = signal(&owner, String::new);
-    let query_input = query.clone();
-    let input = expr!(|event: Event| {
-        query_input.set(event.target.value.to_owned());
-    });
+    let preference_owner = cx.keyed(("public-issue-preferences", project.clone()));
+    let query = signal(&preference_owner, String::new);
     let list_href = super::super::navigation::attrs(cx, &format!("/public/{project}/issues"));
     let board_href = super::super::navigation::attrs(cx, &format!("/public/{project}/board"));
     let title = collection.project.name.clone();
-    let status = signal(&owner, String::new);
-    let priority = signal(&owner, String::new);
-    let label = signal(&owner, String::new);
-    let module = signal(&owner, String::new);
-    let sort_field = signal(&owner, || "priority".to_owned());
-    let sort_dir = signal(&owner, || "asc".to_owned());
-    let group_by = signal(&owner, || "status".to_owned());
-    let issue_sub_tab = signal(&owner, || "all".to_owned());
-    let status_input = status.clone();
-    let status_handler = expr!(|event: Event| status_input.set(event.target.value.to_owned()));
-    let priority_input = priority.clone();
-    let priority_handler = expr!(|event: Event| priority_input.set(event.target.value.to_owned()));
-    let label_input = label.clone();
-    let label_handler = expr!(|event: Event| label_input.set(event.target.value.to_owned()));
-    let module_input = module.clone();
-    let module_handler = expr!(|event: Event| module_input.set(event.target.value.to_owned()));
-    let sort_field_input = sort_field.clone();
-    let sort_field_handler =
-        expr!(|event: Event| sort_field_input.set(event.target.value.to_owned()));
-    let sort_dir_input = sort_dir.clone();
-    let sort_dir_handler = expr!(|event: Event| sort_dir_input.set(event.target.value.to_owned()));
-    let group_input = group_by.clone();
-    let group_handler = expr!(|event: Event| group_input.set(event.target.value.to_owned()));
+    let project_id = collection.project.id;
+    let status = signal(&preference_owner, String::new);
+    let priority = signal(&preference_owner, String::new);
+    let label = signal(&preference_owner, String::new);
+    let module = signal(&preference_owner, String::new);
+    let sort_field = signal(&preference_owner, || "priority".to_owned());
+    let sort_dir = signal(&preference_owner, || "asc".to_owned());
+    let group_by = signal(&preference_owner, || "status".to_owned());
+    let issue_sub_tab = signal(&preference_owner, || "all".to_owned());
+    let state_wire = signal(&preference_owner, || preferences::ISSUE_DEFAULTS.to_owned());
+    let hydrated = signal(&preference_owner, || false);
+    let state_key = preferences::issue_storage_key(&project);
+    let tab_key = preferences::issue_tab_storage_key(project_id);
+    let query_handler = preferences::persist_input(
+        query.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "searchQuery",
+    );
+    let status_handler = preferences::persist_input(
+        status.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "filterStatus",
+    );
+    let priority_handler = preferences::persist_input(
+        priority.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "filterPriority",
+    );
+    let label_handler = preferences::persist_input(
+        label.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "filterLabel",
+    );
+    let module_handler = preferences::persist_input(
+        module.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "filterModule",
+    );
+    let sort_field_handler = preferences::persist_input(
+        sort_field.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "sortField",
+    );
+    let sort_dir_handler = preferences::persist_input(
+        sort_dir.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "sortDir",
+    );
+    let group_handler = preferences::persist_input(
+        group_by.clone(),
+        state_wire.clone(),
+        state_key.clone(),
+        "groupBy",
+    );
+    let preferences_attrs = preferences::issue_mount(
+        cx,
+        &project,
+        project_id,
+        &layout,
+        preferences::IssueSignals {
+            wire: state_wire.clone(),
+            hydrated,
+            query: query.clone(),
+            status: status.clone(),
+            priority: priority.clone(),
+            label: label.clone(),
+            module: module.clone(),
+            sort_field: sort_field.clone(),
+            sort_dir: sort_dir.clone(),
+            group_by: group_by.clone(),
+            issue_sub_tab: issue_sub_tab.clone(),
+        },
+    );
     let clear_query = query.clone();
     let clear_status = status.clone();
     let clear_priority = priority.clone();
@@ -52,16 +107,26 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let clear_sort_dir = sort_dir.clone();
     let clear_group = group_by.clone();
     let clear_sub_tab = issue_sub_tab.clone();
+    let clear_wire = state_wire;
+    let clear_key = state_key;
+    let clear_tab_key = tab_key.clone();
+    let clear_defaults = preferences::ISSUE_DEFAULTS.to_owned();
+    let browser = super::super::browser::bindings();
     let clear_handler = expr!(|_event: Event| {
-        clear_query.set("".to_owned());
-        clear_status.set("".to_owned());
-        clear_priority.set("".to_owned());
-        clear_label.set("".to_owned());
-        clear_module.set("".to_owned());
-        clear_sort_field.set("priority".to_owned());
-        clear_sort_dir.set("asc".to_owned());
-        clear_group.set("status".to_owned());
-        clear_sub_tab.set("all".to_owned());
+        if !browser.is_disposed() {
+            clear_query.set("".to_owned());
+            clear_status.set("".to_owned());
+            clear_priority.set("".to_owned());
+            clear_label.set("".to_owned());
+            clear_module.set("".to_owned());
+            clear_sort_field.set("priority".to_owned());
+            clear_sort_dir.set("asc".to_owned());
+            clear_group.set("status".to_owned());
+            clear_sub_tab.set("all".to_owned());
+            browser.store(clear_tab_key.clone(), "all".to_owned());
+            clear_wire.set(clear_defaults.clone());
+            browser.store(clear_key.clone(), clear_defaults.clone());
+        }
     });
     let labels = collection
         .labels
@@ -122,7 +187,14 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     .map(|(tab, label, count)| {
         let selected = issue_sub_tab.clone();
         let handler_state = issue_sub_tab.clone();
-        let handler = expr!(|_event: Event| handler_state.set(tab.to_owned()));
+        let handler_key = tab_key.clone();
+        let browser = super::super::browser::bindings();
+        let handler = expr!(|_event: Event| {
+            if !browser.is_disposed() {
+                handler_state.set(tab.to_owned());
+                browser.store(handler_key.clone(), tab.to_owned());
+            }
+        });
         view! {
             cx =>
             <button
@@ -148,6 +220,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
         cx =>
         <main
             class="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-4 px-4 py-6 md:px-8"
+            (preferences_attrs)
         >
             <header class="flex flex-wrap items-center justify-between gap-3">
                 <h1 class="m-0 text-heading font-semibold">(title)</h1>
@@ -178,7 +251,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
                         :value=$(query.get())
                         placeholder="Search issues"
                         class="rounded-md border border-solid border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-                        data-topcoat-on:input=(input.into_evaluated_and_js().1)
+                        data-topcoat-on:input=(query_handler.into_evaluated_and_js().1)
                     />
                 </label>
                 <label class="flex flex-col gap-1 text-caption">
