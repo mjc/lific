@@ -7,9 +7,11 @@ use crate::{
 };
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, Expr, Js, Signal, expr, procedure, shard, signal},
+    runtime::{Event, Signal, expr, procedure, shard, signal},
     view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
 };
+
+mod title;
 
 #[derive(Clone)]
 struct PlanEditor {
@@ -115,9 +117,20 @@ async fn plan_detail_owner(
     let step_title_draft = signal(cx, String::new);
     let step_description_target = signal(cx, || 0_i64);
     let step_description_draft = signal(cx, String::new);
+    let title_owner = title::owner_attributes(
+        cx,
+        account,
+        project.clone(),
+        plan.id,
+        canonical_title.clone(),
+        title_draft.clone(),
+        title_editing.clone(),
+        revision.clone(),
+        message.clone(),
+    );
     Ok(view! {
         cx =>
-        <div data-native-plan-owner=(plan.identifier.clone())>
+        <div data-native-plan-owner=(plan.identifier.clone()) (title_owner)>
             <p
                 class="text-body-sm text-[var(--error)] px-6 pt-3"
                 role="alert"
@@ -168,7 +181,6 @@ mod shards {
         busy: Signal<bool>,
         message: Signal<String>,
     ) -> topcoat::Result<impl View> {
-        let _ = revision_value;
         let (canonical_title, title_draft, title_editing) = title_state;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
@@ -229,6 +241,7 @@ mod shards {
             plan,
             can_edit,
             activity,
+            revision_value,
             PlanEditor {
                 revision: revision_owner,
                 canonical_title,
@@ -252,6 +265,7 @@ fn render_detail<'a>(
     plan: Plan,
     can_edit: bool,
     activity: Vec<crate::db::models::Activity>,
+    revision_value: i64,
     editor: PlanEditor,
 ) -> BoxView<'a> {
     prepare_step_expansion_state(cx, &plan.steps);
@@ -289,11 +303,8 @@ fn render_detail<'a>(
     let progress_text = format!("{}/{}", plan.done_count, plan.step_count);
     let dates = (plan.created_at.clone(), plan.updated_at.clone());
     let title_editor = if can_edit {
-        Some(title_form(
+        Some(title::form(
             cx,
-            account,
-            project,
-            plan.id,
             editor.canonical_title.clone(),
             editor.clone(),
         ))
@@ -390,11 +401,19 @@ fn render_detail<'a>(
             }
         })
         .collect::<Vec<_>>();
+    let detail_attrs = title::reconcile_attributes(
+        cx,
+        revision_value,
+        editor.revision.clone(),
+        editor.canonical_title.clone(),
+        plan.title.clone(),
+    );
     view! {
         cx =>
         <main
             data-native-plan-detail=(identifier.clone())
             class="h-full overflow-y-auto"
+            (detail_attrs)
         >
             <div
                 class="max-w-[1080px] mx-auto px-6 py-6 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_240px] gap-8"
@@ -861,210 +880,6 @@ impl OkBox {
             </article>
         }.boxed()
     }
-}
-
-fn title_form<'a>(
-    cx: &'a Cx,
-    account: i64,
-    project: &str,
-    plan_id: i64,
-    title: Signal<String>,
-    editor: PlanEditor,
-) -> BoxView<'a> {
-    let draft = editor.title_draft;
-    let editing = editor.title_editing;
-    let revision = editor.revision;
-    let message = editor.message;
-    let project = project.to_owned();
-    let browser = browser::bindings();
-    let start_draft = draft.clone();
-    let start_editing = editing.clone();
-    let start_message = message.clone();
-    let start = expr!(|| {
-        if !browser.is_disposed() {
-            start_draft.set(title.get());
-            start_message.set("".to_owned());
-            start_editing.set(true);
-        }
-    });
-    let start_key = title_activation_handler(&start);
-
-    let submit_draft = draft.clone();
-    let submit_editing = editing.clone();
-    let submit_revision = revision.clone();
-    let submit_message = message.clone();
-    let failed_message = message.clone();
-    let failed_message_async = failed_message.clone();
-    let submit_revision_async = submit_revision.clone();
-    let saved_title = title.clone();
-    let commit = expr!(|| {
-        if !browser.is_disposed() {
-            if submit_editing.get() {
-                submit_editing.set(false);
-                let next_title = submit_draft.get().trim_ecmascript();
-                if !next_title.is_empty() {
-                    if next_title != saved_title.get() {
-                        submit_message.set("".to_owned());
-                        let _failed = || {
-                            if !browser.is_disposed() {
-                                failed_message_async.set("Unable to save plan title.".to_owned());
-                            }
-                        };
-                        let _run = async || {
-                            let committed_title = mutate_plan(
-                                account,
-                                project,
-                                plan_id,
-                                0_i64,
-                                "title".to_owned(),
-                                next_title,
-                            )
-                            .await;
-                            if !browser.is_disposed() {
-                                saved_title.set(committed_title);
-                                submit_revision_async.set(submit_revision_async.get() + 1_i64);
-                            }
-                        };
-                        raw!(
-                            "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
-                            ()
-                        );
-                    }
-                }
-            }
-        }
-    });
-    let cancel_draft = draft.clone();
-    let cancel_editing = editing.clone();
-    let cancel = expr!(|| {
-        if !browser.is_disposed() {
-            if cancel_editing.get() {
-                cancel_draft.set(title.get());
-                cancel_editing.set(false);
-            }
-        }
-    });
-    let finish_key = title_finish_handler(editing.clone(), &commit, &cancel, true);
-    let finish_blur = title_finish_handler(editing.clone(), &commit, &cancel, false);
-    let input_draft = draft.clone();
-    let input = expr!(|event: Event| {
-        if !browser.is_disposed() {
-            input_draft.set(event.target.value.to_owned());
-        }
-    });
-    let mut trigger = Attributes::with_capacity(2);
-    trigger.insert(cx, "data-native-plan-title-trigger", "true");
-    trigger.insert(cx, "data-topcoat-on:click", title_callback_handler(&start));
-    trigger.insert(cx, "data-topcoat-on:keydown", start_key);
-    let mut editor_attributes = Attributes::with_capacity(3);
-    editor_attributes.insert(cx, "data-native-plan-title-input", "true");
-    editor_attributes.insert(cx, "data-topcoat-on:input", input.into_evaluated_and_js().1);
-    editor_attributes.insert(cx, "data-topcoat-on:keydown", finish_key);
-    editor_attributes.insert(cx, "data-topcoat-on:blur", finish_blur);
-    view! {
-        cx =>
-        if editing.get() {
-            <input
-                type="text"
-                class="w-full text-title mb-4 font-display tracking-tight bg-transparent border-0 border-b-2 border-solid border-b-[var(--accent)] outline-none text-[var(--text)] py-1"
-                :value=$(draft.get())
-                autofocus="autofocus"
-                (editor_attributes)
-            />
-        } else {
-            <button
-                type="button"
-                class="text-title mb-4 w-full text-left font-display tracking-tight text-[var(--text)] py-1 rounded transition-colors bg-transparent border-0 cursor-text hover:bg-[var(--bg-subtle)]"
-                (trigger)
-            >
-                $(title.get())
-            </button>
-        }
-    }.boxed()
-}
-
-fn title_callback_handler<C: FnOnce()>(callback: &Expr<C>) -> Js {
-    let browser = browser::bindings();
-    let factory = expr!(|_event: Event, callback: C| {
-        if !browser.is_disposed() {
-            browser.call0(callback);
-        }
-    });
-    Js::builder()
-        .source("event => (")
-        .expression(&factory)
-        .source(")(event, ")
-        .expression(callback)
-        .source(")")
-        .build()
-}
-
-fn title_activation_handler<C: FnOnce()>(callback: &Expr<C>) -> Js {
-    let browser = browser::bindings();
-    let factory = expr!(|event: Event, callback: C| {
-        if if event.key == "Enter" {
-            true
-        } else {
-            event.key == " "
-        } {
-            event.prevent_default();
-            if !browser.is_disposed() {
-                browser.call0(callback);
-            }
-        }
-    });
-    Js::builder()
-        .source("event => (")
-        .expression(&factory)
-        .source(")(event, ")
-        .expression(callback)
-        .source(")")
-        .build()
-}
-
-fn title_finish_handler<C: FnOnce(), D: FnOnce()>(
-    editing: Signal<bool>,
-    commit: &Expr<C>,
-    cancel: &Expr<D>,
-    keyboard: bool,
-) -> Js {
-    let browser = browser::bindings();
-    let factory = expr!(|event: Event, commit: C, cancel: D| {
-        if !browser.is_disposed() {
-            if editing.get() {
-                if keyboard {
-                    if event.key == "Escape" {
-                        event.prevent_default();
-                        browser.call0(cancel);
-                    } else {
-                        let save_shortcut = if event.key == "s" {
-                            if event.ctrl_key { true } else { event.meta_key }
-                        } else {
-                            false
-                        };
-                        if event.key == "Enter" {
-                            event.prevent_default();
-                            browser.call0(commit);
-                        } else if save_shortcut {
-                            event.prevent_default();
-                            browser.call0(commit);
-                        }
-                    }
-                } else {
-                    browser.call0(commit);
-                }
-            }
-        }
-    });
-    Js::builder()
-        .source("event => (")
-        .expression(&factory)
-        .source(")(event, ")
-        .expression(commit)
-        .source(", ")
-        .expression(cancel)
-        .source(")")
-        .build()
 }
 
 fn description_form<'a>(
@@ -1782,6 +1597,10 @@ mod tests {
             .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
             .next()
             .expect("editable plan title is initially rendered as a button");
+        let owner = document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap();
         assert_eq!(trigger.text().collect::<String>(), "Inline title parity");
         assert!(
             document
@@ -1795,8 +1614,8 @@ mod tests {
             "src/topcoat/native/plans/title_handler.test.cjs",
             &serde_json::json!({
                 "signals": super::super::super::home_fixture::page_signals(&html),
-                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
-                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+                "click_handler": owner.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": owner.value().attr("data-topcoat-on:keydown").unwrap(),
                 "title": "Inline title parity",
             }),
         );
@@ -1833,21 +1652,23 @@ mod tests {
         }
 
         let editing_document = Html::parse_document(&click_editing_html);
-        let input = editing_document
-            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
-            .next()
-            .unwrap();
+        assert!(
+            editing_document
+                .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                .next()
+                .is_some()
+        );
         let signals = super::super::super::home_fixture::page_signals(&click_editing_html);
         let emitted = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/title_handler.test.cjs",
             &serde_json::json!({
                 "signals": super::super::super::home_fixture::page_signals(&html),
                 "edit_signals": signals,
-                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
-                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
-                "input_handler": input.value().attr("data-topcoat-on:input").unwrap(),
-                "edit_keydown_handler": input.value().attr("data-topcoat-on:keydown").unwrap(),
-                "blur_handler": input.value().attr("data-topcoat-on:blur").unwrap(),
+                "click_handler": owner.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": owner.value().attr("data-topcoat-on:keydown").unwrap(),
+                "input_handler": owner.value().attr("data-topcoat-on:input").unwrap(),
+                "edit_keydown_handler": owner.value().attr("data-topcoat-on:keydown").unwrap(),
+                "blur_handler": owner.value().attr("data-topcoat-on:focusout").unwrap(),
                 "title": "Inline title parity",
                 "response": serde_json::to_value("Renamed plan title".to_owned().into_surrogate()).unwrap(),
                 "pending_response": serde_json::to_value("Saving title".to_owned().into_surrogate()).unwrap(),
@@ -2010,17 +1831,21 @@ mod tests {
             pending_input.value().attr("value"),
             Some("Newer unsaved draft")
         );
+        let pending_owner = pending_document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap();
         let close = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/title_handler.test.cjs",
             &serde_json::json!({
                 "mode": "close",
                 "signals": super::super::super::home_fixture::page_signals(&html),
                 "edit_signals": super::super::super::home_fixture::page_signals(&pending_html),
-                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
-                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
-                "input_handler": pending_input.value().attr("data-topcoat-on:input").unwrap(),
-                "edit_keydown_handler": pending_input.value().attr("data-topcoat-on:keydown").unwrap(),
-                "blur_handler": pending_input.value().attr("data-topcoat-on:blur").unwrap(),
+                "click_handler": pending_owner.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": pending_owner.value().attr("data-topcoat-on:keydown").unwrap(),
+                "input_handler": pending_owner.value().attr("data-topcoat-on:input").unwrap(),
+                "edit_keydown_handler": pending_owner.value().attr("data-topcoat-on:keydown").unwrap(),
+                "blur_handler": pending_owner.value().attr("data-topcoat-on:focusout").unwrap(),
             }),
         );
         let (status, closed_html) = super::super::super::home_fixture::document(
@@ -2037,13 +1862,17 @@ mod tests {
             .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
             .next()
             .unwrap();
+        let closed_owner = closed_document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap();
         assert_eq!(canonical_trigger.text().collect::<String>(), "Saving title");
         let reopened = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/title_handler.test.cjs",
             &serde_json::json!({
                 "signals": super::super::super::home_fixture::page_signals(&closed_html),
-                "click_handler": canonical_trigger.value().attr("data-topcoat-on:click").unwrap(),
-                "keydown_handler": canonical_trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+                "click_handler": closed_owner.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": closed_owner.value().attr("data-topcoat-on:keydown").unwrap(),
             }),
         );
         let (status, reopened_html) = super::super::super::home_fixture::document(
@@ -2070,41 +1899,71 @@ mod tests {
 
     #[tokio::test]
     async fn native_plan_title_refreshes_from_fresh_saved_shard_data() {
-        use crate::db::{models::{CreatePlan, UpdatePlan}, queries};
+        use crate::db::{
+            models::{CreatePlan, UpdatePlan},
+            queries,
+        };
         use scraper::{Html, Selector};
 
         let fixture = super::super::super::home_fixture::fixture();
         let plan = {
             let conn = fixture.db.write().unwrap();
-            let account = queries::users::validate_session(&conn, &fixture.token).unwrap().id;
+            let account = queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
             let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
             queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
-            queries::plans::create_plan(&conn, &CreatePlan {
-                project_id,
-                title: "Initial server title".into(),
-                issue_id: None,
-                steps: Vec::new(),
-            }).unwrap()
+            queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id,
+                    title: "Initial server title".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap()
         };
         let path = format!("/ACC/plans/{}", plan.id);
-        let (status, initial_html) = super::super::super::home_fixture::document(
-            &fixture, "/app", &path, true, None,
-        ).await;
+        let (status, initial_html) =
+            super::super::super::home_fixture::document(&fixture, "/app", &path, true, None).await;
         assert_eq!(status, axum::http::StatusCode::OK);
+        let initial_document = Html::parse_document(&initial_html);
+        let initial_owner = initial_document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap()
+            .value();
+        let draft = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "mode": "prepare_draft",
+                "signals": super::super::super::home_fixture::page_signals(&initial_html),
+                "click_handler": initial_owner.attr("data-topcoat-on:click").unwrap(),
+                "input_handler": initial_owner.attr("data-topcoat-on:input").unwrap(),
+                "draft": "Newer unsaved draft",
+            }),
+        );
         {
             let conn = fixture.db.write().unwrap();
-            queries::plans::update_plan(&conn, plan.id, &UpdatePlan {
-                title: Some("Renamed by another client".into()),
-                ..Default::default()
-            }).unwrap();
+            queries::plans::update_plan(
+                &conn,
+                plan.id,
+                &UpdatePlan {
+                    title: Some("Renamed by another client".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
         let (status, shard_html) = super::super::super::home_fixture::document(
             &fixture,
             "/app",
             &path,
             true,
-            Some(super::super::super::home_fixture::page_signals(&initial_html)),
-        ).await;
+            Some(draft["signals"].as_object().unwrap().clone()),
+        )
+        .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let shard = Html::parse_document(&shard_html);
         let detail = shard
@@ -2133,11 +1992,85 @@ mod tests {
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let mounted_document = Html::parse_document(&mounted_html);
-        let title = mounted_document
-            .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+        let input = mounted_document
+            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
             .next()
-            .expect("maintainer title remains editable after shard refresh");
-        assert_eq!(title.text().collect::<String>(), "Renamed by another client");
+            .expect("active title edit remains open after shard refresh");
+        assert_eq!(
+            input.value().attr("value"),
+            Some("Newer unsaved draft"),
+            "mount reconciliation updates canonical title without overwriting the active draft"
+        );
+
+        let owner = mounted_document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap()
+            .value();
+        let cancelled = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "mode": "close",
+                "signals": super::super::super::home_fixture::page_signals(&mounted_html),
+                "edit_signals": super::super::super::home_fixture::page_signals(&mounted_html),
+                "click_handler": owner.attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": owner.attr("data-topcoat-on:keydown").unwrap(),
+                "edit_keydown_handler": owner.attr("data-topcoat-on:keydown").unwrap(),
+            }),
+        );
+        let (status, closed_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(cancelled["close_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let closed_document = Html::parse_document(&closed_html);
+        assert_eq!(
+            closed_document
+                .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+                .next()
+                .unwrap()
+                .text()
+                .collect::<String>(),
+            "Renamed by another client",
+            "canceling reveals the fresh canonical server title"
+        );
+        let closed_owner = closed_document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap()
+            .value();
+        let reopened = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&closed_html),
+                "click_handler": closed_owner.attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": closed_owner.attr("data-topcoat-on:keydown").unwrap(),
+            }),
+        );
+        let (status, reopened_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(reopened["click_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let reopened_document = Html::parse_document(&reopened_html);
+        assert_eq!(
+            reopened_document
+                .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("value"),
+            Some("Renamed by another client"),
+            "a later edit starts from the reconciled canonical title"
+        );
     }
 
     #[tokio::test]
@@ -2148,20 +2081,25 @@ mod tests {
         let fixture = super::super::super::home_fixture::fixture();
         let plan = {
             let conn = fixture.db.write().unwrap();
-            let account = queries::users::validate_session(&conn, &fixture.token).unwrap().id;
+            let account = queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
             let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
             queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
-            queries::plans::create_plan(&conn, &CreatePlan {
-                project_id,
-                title: "Concurrent title saves".into(),
-                issue_id: None,
-                steps: Vec::new(),
-            }).unwrap()
+            queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id,
+                    title: "Concurrent title saves".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap()
         };
         let path = format!("/ACC/plans/{}", plan.id);
-        let (status, html) = super::super::super::home_fixture::document(
-            &fixture, "/app", &path, true, None,
-        ).await;
+        let (status, html) =
+            super::super::super::home_fixture::document(&fixture, "/app", &path, true, None).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let document = Html::parse_document(&html);
         let owner = document
@@ -2169,6 +2107,13 @@ mod tests {
             .next()
             .unwrap()
             .value();
+        let initial_mount = document
+            .select(&Selector::parse("main[data-native-plan-detail]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:mount")
+            .unwrap();
         let handlers = ["click", "keydown", "input", "focusout"]
             .into_iter()
             .map(|event| {
@@ -2177,9 +2122,7 @@ mod tests {
                     serde_json::Value::String(
                         owner
                             .attr(&format!("data-topcoat-on:{event}"))
-                            .unwrap_or_else(|| {
-                                panic!("persistent plan owner delegates {event}")
-                            })
+                            .unwrap_or_else(|| panic!("persistent plan owner delegates {event}"))
                             .to_owned(),
                     ),
                 )
@@ -2191,6 +2134,7 @@ mod tests {
                 "mode": "parent_overlap",
                 "signals": super::super::super::home_fixture::page_signals(&html),
                 "handlers": handlers,
+                "mount_handler": initial_mount,
                 "responses": [
                     serde_json::to_value("First overlapping title".to_owned().into_surrogate()).unwrap(),
                     serde_json::to_value("Second overlapping title".to_owned().into_surrogate()).unwrap(),
@@ -2207,10 +2151,10 @@ mod tests {
                 .any(|value| value == "Second overlapping title"),
             "the later response becomes canonical after the earlier shard is retired"
         );
-        for (request, title) in requests.iter().zip([
-            "First overlapping title",
-            "Second overlapping title",
-        ]) {
+        for (request, title) in requests
+            .iter()
+            .zip(["First overlapping title", "Second overlapping title"])
+        {
             let expected = serde_json::to_value(
                 (
                     queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
@@ -2240,6 +2184,26 @@ mod tests {
                 .unwrap()
                 .title,
             "Second overlapping title"
+        );
+        let (status, final_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(emitted["signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let final_document = Html::parse_document(&final_html);
+        assert_eq!(
+            final_document
+                .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+                .next()
+                .unwrap()
+                .text()
+                .collect::<String>(),
+            "Second overlapping title",
+            "the final rendered canonical title reflects the second save"
         );
         let audits = fixture.db.read().unwrap().query_row(
             "SELECT COUNT(*) FROM audit_log WHERE entity_type = 'plan' AND entity_id = ?1 AND field = 'title'",
