@@ -7,24 +7,31 @@ use topcoat::{
     view::{Attributes, BoxView, ViewExt, view},
 };
 
-pub(super) fn region<'a>(
+#[derive(Clone, Copy)]
+pub(crate) enum Audience<'a> {
+    Private,
+    Published(&'a str),
+}
+
+pub(crate) fn region<'a>(
     cx: &'a Cx,
     collection: &Collection,
     selection: &Selection,
     clear_filters: Attributes,
+    audience: Audience<'_>,
 ) -> BoxView<'a> {
     if selection.layout == "board" {
-        return board(cx, collection, selection);
+        return board(cx, collection, selection, audience);
     }
     let project = collection.project.identifier.clone();
     let body = if selection.issues.is_empty() {
-        empty(cx, selection.empty_filtered, clear_filters)
+        empty(cx, selection.empty_filtered, clear_filters, audience)
     } else if let Some(groups) = &selection.groups {
         let groups = groups.iter().map(|group| {
             let key = group.key.clone(); let label = group.label.clone(); let collapsed = group.collapsed;
             let label_class = if group.kind == "module" { "font-semibold text-caption" } else { "font-semibold text-caption capitalize" };
             let count = group.issues.len().to_string();
-            let rows = list_rows(cx, &project, &group.issues, selection);
+            let rows = list_rows(cx, &project, &group.issues, selection, audience);
             view! {
                 cx =>
                 <section
@@ -51,7 +58,7 @@ pub(super) fn region<'a>(
         }
         .boxed()
     } else {
-        list_rows(cx, &project, &selection.issues, selection)
+        list_rows(cx, &project, &selection.issues, selection, audience)
     };
     let capped = selection.show_search_cap;
     let count = selection.count_label.clone();
@@ -80,7 +87,13 @@ pub(super) fn region<'a>(
     }.boxed()
 }
 
-fn empty(cx: &Cx, filtered: bool, clear_filters: Attributes) -> BoxView<'_> {
+fn empty<'a>(
+    cx: &'a Cx,
+    filtered: bool,
+    clear_filters: Attributes,
+    audience: Audience<'_>,
+) -> BoxView<'a> {
+    let show_clear = matches!(audience, Audience::Private);
     view! {
         cx =>
         <div class="flex flex-col items-center justify-center py-20 gap-3 text-center">
@@ -88,13 +101,15 @@ fn empty(cx: &Cx, filtered: bool, clear_filters: Attributes) -> BoxView<'_> {
                 <p class="text-[var(--text-muted)] text-body-lg">
                     "No issues match your filters"
                 </p>
-                <button
-                    type="button"
-                    class="text-body-sm text-[var(--accent)] hover:underline border-0 bg-transparent"
-                    (clear_filters)
-                >
-                    "Clear filters"
-                </button>
+                if show_clear {
+                    <button
+                        type="button"
+                        class="text-body-sm text-[var(--accent)] hover:underline border-0 bg-transparent"
+                        (clear_filters)
+                    >
+                        "Clear filters"
+                    </button>
+                }
             } else {
                 <p class="text-[var(--text)] text-heading font-medium m-0">
                     "All quiet here"
@@ -112,12 +127,13 @@ fn list_rows<'a>(
     project: &str,
     issues: &[Issue],
     selection: &Selection,
+    audience: Audience<'_>,
 ) -> BoxView<'a> {
     let rows = issues.iter().map(|issue| {
         let id = issue.id.to_string(); let status = issue.status; let priority = issue.priority;
         let identifier = issue.identifier.clone(); let title = issue.title.clone();
-        let href = navigation::attrs(cx, &format!("/{project}/issues/{identifier}"));
-        let peek = issue_peek::button(cx, &identifier);
+        let href = navigation::attrs(cx, &issue_href(project, &identifier, audience));
+        let peek = match audience { Audience::Private => Some(issue_peek::button(cx, &identifier)), Audience::Published(_) => None };
         let preview = if let Some(snippet) = selection.snippets.get(&issue.id) { snippet.clone() }
             else if selection.density == "comfortable" { description_preview(&issue.description) }
             else { String::new() };
@@ -147,7 +163,9 @@ fn list_rows<'a>(
                     }
                     (icons::priority_icon(cx, priority, 21))
                 </a>
-                <span class="mr-3">(peek)</span>
+                if let Some(peek) = peek {
+                    <span class="mr-3">(peek)</span>
+                }
             </li>
         }.boxed()
     }).collect::<Vec<_>>();
@@ -174,13 +192,18 @@ fn description_preview(description: &str) -> String {
     String::from_utf16_lossy(&stripped.trim().encode_utf16().take(160).collect::<Vec<_>>())
 }
 
-fn board<'a>(cx: &'a Cx, collection: &Collection, selection: &Selection) -> BoxView<'a> {
+fn board<'a>(
+    cx: &'a Cx,
+    collection: &Collection,
+    selection: &Selection,
+    audience: Audience<'_>,
+) -> BoxView<'a> {
     let project = collection.project.identifier.clone();
     let lanes = if let Some(lanes) = &selection.lanes {
         lanes.iter().map(|lane| {
             let key = lane.key.clone(); let label = lane.label.clone(); let collapsed = lane.collapsed;
             let label_class = if lane.kind == "priority" { "text-caption font-semibold capitalize" } else { "text-caption font-semibold" };
-            let count = lane.issues.len().to_string(); let columns = columns(cx, &project, &lane.issues, selection);
+            let count = lane.issues.len().to_string(); let columns = columns(cx, &project, &lane.issues, selection, audience);
             view! {
                 cx =>
                 <section
@@ -201,7 +224,13 @@ fn board<'a>(cx: &'a Cx, collection: &Collection, selection: &Selection) -> BoxV
             }.boxed()
         }).collect::<Vec<_>>()
     } else {
-        vec![columns(cx, &project, &selection.issues, selection)]
+        vec![columns(
+            cx,
+            &project,
+            &selection.issues,
+            selection,
+            audience,
+        )]
     };
     let count = selection.count_label.clone();
     view! {
@@ -226,7 +255,13 @@ fn board<'a>(cx: &'a Cx, collection: &Collection, selection: &Selection) -> BoxV
     .boxed()
 }
 
-fn columns<'a>(cx: &'a Cx, project: &str, issues: &[Issue], selection: &Selection) -> BoxView<'a> {
+fn columns<'a>(
+    cx: &'a Cx,
+    project: &str,
+    issues: &[Issue],
+    selection: &Selection,
+    audience: Audience<'_>,
+) -> BoxView<'a> {
     let columns = selection
         .visible_statuses
         .iter()
@@ -240,8 +275,11 @@ fn columns<'a>(cx: &'a Cx, project: &str, issues: &[Issue], selection: &Selectio
                     let identifier = issue.identifier.clone();
                     let title = issue.title.clone();
                     let priority = issue.priority;
-                    let href = navigation::attrs(cx, &format!("/{project}/issues/{identifier}"));
-                    let peek = issue_peek::button(cx, &identifier);
+                    let href = navigation::attrs(cx, &issue_href(project, &identifier, audience));
+                    let peek = match audience {
+                        Audience::Private => Some(issue_peek::button(cx, &identifier)),
+                        Audience::Published(_) => None,
+                    };
                     let title_class = if matches!(status, Status::Done | Status::Cancelled) {
                         "native-board__title native-board__title--closed"
                     } else {
@@ -261,7 +299,9 @@ fn columns<'a>(cx: &'a Cx, project: &str, issues: &[Issue], selection: &Selectio
                                 </div>
                                 <h3 class=(title_class)>(title)</h3>
                             </a>
-                            <span class="absolute right-8 top-2">(peek)</span>
+                            if let Some(peek) = peek {
+                                <span class="absolute right-8 top-2">(peek)</span>
+                            }
                         </div>
                     }
                     .boxed()
@@ -320,4 +360,11 @@ fn columns<'a>(cx: &'a Cx, project: &str, issues: &[Issue], selection: &Selectio
         </div>
     }
     .boxed()
+}
+
+fn issue_href(project: &str, identifier: &str, audience: Audience<'_>) -> String {
+    match audience {
+        Audience::Private => format!("/{project}/issues/{identifier}"),
+        Audience::Published(project) => format!("/public/{project}/issues/{identifier}"),
+    }
 }

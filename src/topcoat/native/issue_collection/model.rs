@@ -10,14 +10,14 @@ use crate::db::{
 
 use super::data::Collection;
 
-pub(super) const STATUSES: [Status; 5] = [
+pub(crate) const STATUSES: [Status; 5] = [
     Status::Backlog,
     Status::Todo,
     Status::Active,
     Status::Done,
     Status::Cancelled,
 ];
-pub(super) const PRIORITIES: [Priority; 5] = [
+pub(crate) const PRIORITIES: [Priority; 5] = [
     Priority::Urgent,
     Priority::High,
     Priority::Medium,
@@ -27,7 +27,7 @@ pub(super) const PRIORITIES: [Priority; 5] = [
 
 #[derive(Clone, Debug, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
-pub(super) struct ViewState {
+pub(crate) struct ViewState {
     pub filter_status: String,
     pub filter_priority: String,
     pub filter_label: String,
@@ -95,7 +95,7 @@ pub(super) struct Stats {
 }
 
 #[derive(Debug)]
-pub(super) struct Group {
+pub(crate) struct Group {
     pub key: String,
     pub label: String,
     pub kind: String,
@@ -104,7 +104,7 @@ pub(super) struct Group {
 }
 
 #[derive(Debug)]
-pub(super) struct Lane {
+pub(crate) struct Lane {
     pub key: String,
     pub label: String,
     pub kind: String,
@@ -113,7 +113,7 @@ pub(super) struct Lane {
 }
 
 #[derive(Debug)]
-pub(super) struct Selection {
+pub(crate) struct Selection {
     pub issues: Vec<Issue>,
     pub groups: Option<Vec<Group>>,
     pub lanes: Option<Vec<Lane>>,
@@ -127,7 +127,7 @@ pub(super) struct Selection {
     pub snippets: HashMap<i64, String>,
 }
 
-pub(super) fn select(collection: &Collection, state: &ViewState, layout: &str) -> Selection {
+pub(crate) fn select(collection: &Collection, state: &ViewState, layout: &str) -> Selection {
     let stats = statistics(&collection.issues);
     let query = trim_ecmascript(&state.search_query);
     let searching = !query.is_empty();

@@ -73,6 +73,7 @@ pub(crate) mod plans;
 pub(crate) mod preloads;
 #[cfg(test)]
 pub(crate) mod probe;
+pub(crate) mod public;
 pub(crate) mod public_route;
 #[cfg(test)]
 mod raw_lifecycle;

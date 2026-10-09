@@ -1,4 +1,4 @@
-//! Interactive attachment image previews for private Markdown.
+//! Shared attachment image previews for private and published Markdown.
 
 use super::super::browser;
 use super::{Scope, render};
@@ -11,6 +11,14 @@ use topcoat::{
 pub(crate) fn private_view<'a>(cx: &'a Cx, source: &str, mentions: &[(&str, &str)]) -> BoxView<'a> {
     let rendered = render(cx, source, Scope::Private, mentions);
     let rendered = super::decorate_private_images(cx, &rendered);
+    rendered_view(cx, source, rendered)
+}
+
+pub(crate) fn published_view<'a>(cx: &'a Cx, project: &str, source: &str) -> BoxView<'a> {
+    rendered_view(cx, source, super::render_published(cx, project, source))
+}
+
+fn rendered_view<'a>(cx: &'a Cx, source: &str, rendered: String) -> BoxView<'a> {
     let view_cx = cx.keyed(source);
     let open = signal(&view_cx.keyed("preview-open"), || false);
     let original = signal(&view_cx.keyed("preview-original"), String::new);

@@ -47,8 +47,13 @@ impl Layer for SocketAdmission {
                 let Some(permit) = hub.try_acquire_published_socket() else {
                     return connection_limit();
                 };
-                let scope = super::super::runtime::SocketRunPolicy::new(|_, uri| {
+                let scope = super::super::runtime::SocketRunPolicy::new(|method, uri| {
                     super::public_route::resolve(uri.path()).is_some()
+                        || (*method == topcoat::router::Method::POST
+                            && matches!(
+                                uri.path(),
+                                "/public/__native/issues" | "/public/__native/pages"
+                            ))
                 });
                 let socket_context = cx.with(Arc::new(permit)).with(scope);
                 return next.run(&socket_context, body).await;

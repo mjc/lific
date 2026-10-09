@@ -3,7 +3,7 @@ use super::super::{context, session};
 use crate::error::LificError;
 use topcoat::context::Cx;
 
-pub(super) use crate::services::issues::IssueCollection as Collection;
+pub(crate) use crate::services::issues::IssueCollection as Collection;
 
 pub(super) fn load(
     cx: &Cx,

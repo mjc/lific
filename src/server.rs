@@ -58,12 +58,16 @@ mod topcoat_app {
         let route = super::topcoat_frontend::shell::ParsedRoute::parse(route_target);
         let native = native_route(&route);
         let native_page = native.is_some();
-        let title = if native_page {
+        let public_page = uri.path().starts_with("/public/");
+        let title = if native_page || public_page {
             "Lific"
         } else {
             route.page.title()
         };
-        if native_page && !matches!(native, Some(NativeRoute::Login | NativeRoute::Signup)) {
+        if !public_page
+            && native_page
+            && !matches!(native, Some(NativeRoute::Login | NativeRoute::Signup))
+        {
             super::topcoat_frontend::native::home::authorize(cx)?;
         }
         Ok(view! {
@@ -126,6 +130,11 @@ mod topcoat_app {
 
     fn shell_page<'a>(cx: &'a topcoat::context::Cx) -> Result<topcoat::view::BoxView<'a>> {
         let uri = topcoat::router::request::uri(cx);
+        if uri.path().starts_with("/public/") {
+            let public_route = super::topcoat_frontend::native::public_route::resolve(uri.path())
+                .ok_or_else(topcoat::router::error::not_found)?;
+            return super::topcoat_frontend::native::public::screen(cx, &public_route);
+        }
         let route_target = uri
             .path_and_query()
             .map_or_else(|| uri.path(), |path| path.as_str());
@@ -463,18 +472,12 @@ mod topcoat_app_tests {
             assert!(html.contains("Visible active initial work"));
             assert!(!html.contains("Private hidden initial work"));
         }
-        let router = topcoat::router::tower::TowerService::new(topcoat_app::router());
         for path in ["/public/LIF/issues", "/public/LIF/board"] {
-            let response = router
-                .clone()
-                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                axum::http::StatusCode::NOT_FOUND,
-                "{path}"
-            );
+            let (status, html) = super::topcoat_frontend::native::home_fixture::document(
+                &fixture, "", path, false, None,
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "{path}: {html}");
         }
     }
 
@@ -2619,43 +2622,37 @@ mod public_surface_tests {
         let d = deploy();
         for path in ["/login", "/public/PUB/issues"] {
             let response = anonymous(&d.app, "GET", path).await;
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(
-                response.status(),
-                if path == "/login" {
-                    StatusCode::OK
-                } else {
-                    StatusCode::NOT_FOUND
-                },
-                "{path}"
+                response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
+                "DENY"
             );
-            if path == "/login" {
-                assert_eq!(
-                    response.headers().get(header::X_FRAME_OPTIONS).unwrap(),
-                    "DENY"
-                );
-                assert_eq!(
-                    response
-                        .headers()
-                        .get(header::X_CONTENT_TYPE_OPTIONS)
-                        .unwrap(),
-                    "nosniff"
-                );
-                assert_eq!(
-                    response
-                        .headers()
-                        .get(header::CONTENT_SECURITY_POLICY)
-                        .unwrap(),
-                    "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
-                );
-            }
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::X_CONTENT_TYPE_OPTIONS)
+                    .unwrap(),
+                "nosniff"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .unwrap(),
+                "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+            );
             let body = body_string(response).await;
             assert!(!body.contains("class=\"tc-shell\""), "{path}: {body}");
+            assert!(body.contains("/__topcoat-runtime.js"));
+            assert!(!body.contains("classified"));
             if path == "/login" {
                 assert!(body.contains("Welcome back."));
-                assert!(body.contains("/__topcoat-runtime.js"));
-                assert!(!body.contains("classified"));
             } else {
-                assert!(!body.contains("/__topcoat-runtime.js"), "{path}: {body}");
+                assert!(body.contains("data-native-public-shell"), "{path}: {body}");
+                assert!(body.contains("Public issue"), "{path}: {body}");
+                assert!(body.contains("/public/PUB/issues/PUB-1"), "{path}: {body}");
+                assert!(!body.contains("Private issue"), "{path}: {body}");
+                assert!(!body.contains("data-native-issue-peek"), "{path}: {body}");
             }
         }
 
