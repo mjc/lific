@@ -5,6 +5,8 @@ mod list;
 
 #[cfg(test)]
 mod module_interactions;
+#[cfg(test)]
+mod production;
 
 use super::super::shell::{Page, ParsedRoute};
 use super::{context, home_shell, navigation, project_authority, session};
