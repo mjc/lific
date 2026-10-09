@@ -274,6 +274,7 @@ impl ConnectionTarget {
         if let Some(remote) = self.remote {
             request.extensions_mut().insert(remote);
         }
+        super::super::native::public_request::strip_credentials(&mut request);
         Some(request)
     }
 
