@@ -101,6 +101,19 @@ mod tests {
         assert!(!html.contains("/__native_issue_edit/save"));
     }
 
+    fn json_contains_string(value: &serde_json::Value, expected: &str) -> bool {
+        match value {
+            serde_json::Value::String(value) => value == expected,
+            serde_json::Value::Array(values) => values
+                .iter()
+                .any(|value| json_contains_string(value, expected)),
+            serde_json::Value::Object(values) => values
+                .values()
+                .any(|value| json_contains_string(value, expected)),
+            _ => false,
+        }
+    }
+
     #[tokio::test]
     async fn native_issue_edit_controls_escape_hostile_title_and_body_as_data() {
         let mut snapshot = snapshot();
@@ -108,10 +121,11 @@ mod tests {
         snapshot.description = "--> --!></textarea><script>alert(1)</script> & body".into();
         for can_edit in [true, false] {
             let html = render(&Cx::default(), &snapshot, can_edit).await;
-            // Parse the same HTML tree the browser consumes. Protocol framing
-            // and its serialized terminator escapes remain separate assertions.
+            // Parse the same HTML tree the browser consumes. Check signal JSON
+            // as data so hostile values round-trip without comment termination.
             let document = Html::parse_fragment(&html);
-            let mut hostile_signal_comments = 0;
+            let mut hostile_title_signal = false;
+            let mut hostile_body_signal = false;
             for node in document.tree.nodes() {
                 if let Node::Comment(comment) = node.value() {
                     let payload: &str = comment.as_ref();
@@ -126,11 +140,17 @@ mod tests {
                             payload.ends_with(')'),
                             "complete signal declaration framing"
                         );
-                        if payload.contains("<img src=") || payload.contains("<script") {
-                            hostile_signal_comments += 1;
-                            assert!(payload.contains("--&gt;"));
-                            assert!(payload.contains("--!&gt;"));
-                        }
+                        assert!(!payload.contains('<'), "signal comment contains literal <");
+                        assert!(!payload.contains('>'), "signal comment contains literal >");
+                        let json = payload
+                            .strip_prefix("::topcoat::signal(")
+                            .and_then(|value| value.strip_suffix(')'))
+                            .expect("complete signal declaration framing");
+                        let declaration: serde_json::Value =
+                            serde_json::from_str(json).expect("signal declaration JSON");
+                        hostile_title_signal |= json_contains_string(&declaration, &snapshot.title);
+                        hostile_body_signal |=
+                            json_contains_string(&declaration, &snapshot.description);
                     }
                 }
             }
@@ -143,10 +163,8 @@ mod tests {
                     .count(),
                 0
             );
-            assert!(
-                hostile_signal_comments > 0,
-                "hostile signal payloads checked"
-            );
+            assert!(hostile_title_signal, "hostile title signal data checked");
+            assert!(hostile_body_signal, "hostile body signal data checked");
             assert!(
                 html.contains(
                     "--&gt; --!&gt;&lt;img src=\"x\" onerror=\"alert(1)\"&gt; &amp; title"

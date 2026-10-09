@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const {TextEncoder, TextDecoder, isDeepStrictEqual} = require('node:util');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const listeners = new Map();
 const timers = new Map();
 const archivedTimers = new Map();
@@ -44,12 +44,7 @@ const context = {
     addEventListener: (name, callback, options) => listen('window', name, callback, options),
   },
 };
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged runtime bootstrap');
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
-assert.ok(eventClass, 'packaged Event surrogate');
-vm.runInNewContext(runtime.replace(bootstrap,
-  `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass}};`), context);
+vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event']), context);
 const registry = new context.fixture.Registry();
 const cx = Object.assign(new context.fixture.Context(registry), {abortSignal});
 const writes = new Map();

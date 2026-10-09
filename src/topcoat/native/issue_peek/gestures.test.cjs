@@ -6,11 +6,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 const {source, signals, closeId} = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1, 'packaged bootstrap');
-const eventClass = runtime.match(/event\(\w+\)\{return new (\w+)\(\w+\)\}/)?.[1];
-assert.ok(eventClass, 'packaged Event surrogate');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 assert.equal(typeof source, 'string');
 assert.ok(Object.hasOwn(signals, closeId), 'close signal is in page signals');
 
@@ -60,8 +56,7 @@ function setup({height = 1000, width = 767} = {}) {
   };
   window.setTimeout = context.setTimeout;
   window.clearTimeout = context.clearTimeout;
-  vm.runInNewContext(runtime.replace(bootstrap,
-    `globalThis.fixture={Context:fe,Registry:ve,Event:${eventClass}};`), context);
+  vm.runInNewContext(fixtureRuntime(['Context', 'Registry', 'Event']), context);
   const registry = new context.fixture.Registry();
   const cx = Object.assign(new context.fixture.Context(registry), {
     event: event => new context.fixture.Event(event), abortSignal: abort.signal,

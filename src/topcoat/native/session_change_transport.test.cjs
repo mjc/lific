@@ -1,15 +1,11 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
+const {fixtureRuntime} = require('./runtime_fixture.cjs');
 const test = require('node:test');
 const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 
-const source = fs.readFileSync(path.join(__dirname, '../assets/runtime.js'), 'utf8');
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(source.split(bootstrap).length - 1, 1);
 
 const deferred = () => {
   let resolve, reject;
@@ -38,8 +34,7 @@ function fixture() {
       return response.promise;
     },
   };
-  vm.runInNewContext(source.replace(bootstrap,
-    'globalThis.fixture={Runtime:ye,Connection:me,Unit:_,Scope:E};'), context);
+  vm.runInNewContext(fixtureRuntime(['Runtime', 'Connection', 'Unit', 'Scope']), context);
   const runtime = new context.fixture.Runtime();
   runtime.reportError = error => errors.push(error);
   runtime.connection.open = () => {

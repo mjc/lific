@@ -165,10 +165,14 @@ pub(super) fn page_signals(html: &str) -> serde_json::Map<String, serde_json::Va
                 .strip_prefix("::topcoat::signal(")
                 .and_then(|value| value.strip_suffix(')'))
         {
-            let text = scraper::Html::parse_fragment(&value.replace('<', "&lt;"))
-                .root_element()
-                .text()
-                .collect::<String>();
+            let text = if value.starts_with("{&quot;") {
+                scraper::Html::parse_fragment(&value.replace('<', "&lt;"))
+                    .root_element()
+                    .text()
+                    .collect::<String>()
+            } else {
+                value.to_owned()
+            };
             let declaration: serde_json::Value = serde_json::from_str(&text).unwrap();
             signals.insert(
                 declaration["id"].as_str().unwrap().to_owned(),
@@ -177,6 +181,13 @@ pub(super) fn page_signals(html: &str) -> serde_json::Map<String, serde_json::Va
         }
     }
     signals
+}
+
+#[test]
+fn compact_signal_fixture_preserves_literal_entities() {
+    let html = r#"<!--::topcoat::signal({"t":"signal","id":"literal","v":"&quot; &amp; &#10; &#x3c;"})-->"#;
+    let signals = page_signals(html);
+    assert_eq!(signals["literal"], "&quot; &amp; &#10; &#x3c;");
 }
 
 pub(crate) fn fixture() -> Fixture {

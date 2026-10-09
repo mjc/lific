@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const {TextEncoder, TextDecoder} = require('node:util');
 
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
-const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
+const {fixtureRuntime} = require('../runtime_fixture.cjs');
 const calls = [], navigations = [];
 let failNextFetch = false, holdNextFetch = false, resolveFetch, rejectFetch;
 const context = {
@@ -32,10 +32,7 @@ const context = {
     };
   },
 };
-const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
-assert.equal(runtime.split(bootstrap).length - 1, 1);
-vm.runInNewContext(runtime.replace(bootstrap,
-  'globalThis.fixture={Context:fe,Registry:ve};'), context);
+vm.runInNewContext(fixtureRuntime(['Context', 'Registry']), context);
 const registry = new context.fixture.Registry();
 const controller = new AbortController();
 const cx = Object.assign(new context.fixture.Context(registry), {
