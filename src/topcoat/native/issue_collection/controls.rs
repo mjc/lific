@@ -10,6 +10,7 @@ use topcoat::{
 const BUTTON: &str = "flex items-center gap-1.5 rounded-md px-2 py-1.5 text-caption font-medium text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)] aria-pressed:bg-[var(--accent-subtle)] aria-pressed:text-[var(--accent)]";
 
 pub(super) struct State {
+    pub account: i64,
     pub wire: Signal<String>,
     pub tab: Signal<String>,
     pub lane: Signal<String>,
@@ -20,7 +21,7 @@ pub(super) struct State {
     pub storage_key: String,
     tab_key: String,
     project: String,
-    hydrated: Signal<bool>,
+    pub(super) hydrated: Signal<bool>,
     filter_open: Signal<bool>,
     sort_open: Signal<bool>,
     display_open: Signal<bool>,
@@ -28,9 +29,10 @@ pub(super) struct State {
 }
 
 impl State {
-    pub(super) fn new(cx: &Cx, project: &str, project_id: i64) -> Self {
+    pub(super) fn new(cx: &Cx, account: i64, project: &str, project_id: i64) -> Self {
         let stored = |key, value: &'static str| signal(&cx.keyed(key), || value.to_owned());
         Self {
+            account,
             wire: stored("state", persistence::DEFAULTS),
             tab: stored("tab", "all"),
             lane: stored("lane", "none"),
@@ -50,7 +52,7 @@ impl State {
     }
 }
 
-fn event(cx: &Cx, id: &str, name: &str, handler: topcoat::runtime::Js) -> Attributes {
+pub(super) fn event(cx: &Cx, id: &str, name: &str, handler: topcoat::runtime::Js) -> Attributes {
     let mut attrs = Attributes::with_capacity(2);
     attrs.insert(cx, "data-native-issue-control", id.to_owned());
     attrs.insert(cx, format!("data-topcoat-on:{name}"), handler);
@@ -83,6 +85,13 @@ fn filter_count(wire: Signal<String>) -> Expr<usize> {
             1_usize
         }) + (if browser
             .json_string(wire.get(), "filterModule".to_owned(), "".to_owned())
+            .is_empty()
+        {
+            0_usize
+        } else {
+            1_usize
+        }) + (if browser
+            .json_string(wire.get(), "filterAssignee".to_owned(), "".to_owned())
             .is_empty()
         {
             0_usize
@@ -126,6 +135,7 @@ pub(super) fn clear_for(cx: &Cx, wire: Signal<String>, key: String) -> Attribute
             let next = browser.json_set_string(next, "filterPriority".to_owned(), "".to_owned());
             let next = browser.json_set_string(next, "filterLabel".to_owned(), "".to_owned());
             let next = browser.json_set_string(next, "filterModule".to_owned(), "".to_owned());
+            let next = browser.json_set_string(next, "filterAssignee".to_owned(), "".to_owned());
             let next = browser.json_set_string(next, "searchQuery".to_owned(), "".to_owned());
             wire.set(next.clone());
             browser.store(key.clone(), next);
@@ -223,6 +233,7 @@ fn filter_option<'a>(
             "filterStatus" => "status",
             "filterPriority" => "priority",
             "filterLabel" => "label",
+            "filterAssignee" => "assignee",
             _ => "module",
         }
     );
@@ -354,6 +365,67 @@ pub(super) fn view<'a>(
             )
         }))
         .collect::<Vec<_>>();
+    let people = collection
+        .assignments
+        .values()
+        .flat_map(|assignment| assignment.assignees.iter())
+        .map(|person| {
+            (
+                person.user_id,
+                (
+                    person.username.clone(),
+                    person
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| person.username.clone()),
+                ),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut assignee = vec![
+        filter_option(
+            cx,
+            state,
+            "filterAssignee",
+            "",
+            "Any",
+            "No assignee filter.",
+        ),
+        filter_option(
+            cx,
+            state,
+            "filterAssignee",
+            "none",
+            "Unassigned",
+            "Issues without an assignee.",
+        ),
+        filter_option(
+            cx,
+            state,
+            "filterAssignee",
+            "human",
+            "Needs a person",
+            "Issues marked for human attention.",
+        ),
+        filter_option(
+            cx,
+            state,
+            "filterAssignee",
+            "me",
+            "Assigned to me",
+            "Issues assigned to your account.",
+        ),
+    ];
+    for (_, (username, display_name)) in people {
+        assignee.push(filter_option(
+            cx,
+            state,
+            "filterAssignee",
+            &format!("@{username}"),
+            &display_name,
+            &format!("Assigned to @{username}."),
+        ));
+    }
     let sorts = [
         ("priority", "Priority"),
         ("age", "Age"),
@@ -595,6 +667,7 @@ pub(super) fn view<'a>(
     let list_link = navigation::attrs(cx, &format!("/{identifier}/issues"));
     let board_link = navigation::attrs(cx, &format!("/{identifier}/board"));
     let layout = layout.to_owned();
+    let saved_views = super::saved_views::control(cx, collection, state, &layout);
     view! {
         cx =>
         <div
@@ -618,6 +691,7 @@ pub(super) fn view<'a>(
                     "Board"
                 </a>
             </div>
+            (saved_views)
             <div
                 class="hidden items-center gap-1 sm:flex"
                 aria-label="Issue status totals"
@@ -870,6 +944,16 @@ pub(super) fn view<'a>(
                                 }
                             </section>
                         }
+                        <section>
+                            <h3
+                                class="px-1 pb-1.5 text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+                            >
+                                "Assignee"
+                            </h3>
+                            for button in assignee {
+                                (button)
+                            }
+                        </section>
                     </div>
                     <footer
                         class="flex items-center justify-between border-t border-[var(--border)] px-5 py-2.5 text-micro text-[var(--text-faint)]"

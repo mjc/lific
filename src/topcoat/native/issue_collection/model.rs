@@ -3,7 +3,10 @@ use std::collections::HashMap;
 
 use super::super::super::runtime::whitespace::trim_ecmascript;
 use super::super::fuzzy;
-use crate::db::models::{Issue, Priority, Status};
+use crate::db::{
+    models::{Issue, Priority, Status},
+    queries::assignees::Assignment,
+};
 
 use super::data::Collection;
 
@@ -29,6 +32,7 @@ pub(super) struct ViewState {
     pub filter_priority: String,
     pub filter_label: String,
     pub filter_module: String,
+    pub filter_assignee: String,
     pub search_query: String,
     pub sort_field: String,
     pub sort_dir: String,
@@ -49,6 +53,7 @@ impl Default for ViewState {
             filter_priority: String::new(),
             filter_label: String::new(),
             filter_module: String::new(),
+            filter_assignee: String::new(),
             search_query: String::new(),
             sort_field: "priority".into(),
             sort_dir: "asc".into(),
@@ -71,6 +76,7 @@ impl ViewState {
             &self.filter_priority,
             &self.filter_label,
             &self.filter_module,
+            &self.filter_assignee,
         ]
         .into_iter()
         .filter(|value| !value.is_empty())
@@ -144,6 +150,7 @@ pub(super) fn select(collection: &Collection, state: &ViewState, layout: &str) -
                     || issue.priority.as_str() == state.filter_priority)
                 && (state.filter_label.is_empty() || issue.labels.contains(&state.filter_label))
                 && (state.filter_module.is_empty() || issue.module_id == module_id)
+                && assignee_matches(collection, issue.id, &state.filter_assignee)
         })
         .filter_map(|issue| {
             if !searching {
@@ -252,6 +259,48 @@ pub(super) fn select(collection: &Collection, state: &ViewState, layout: &str) -
         density: state.density.clone(),
         collapsed_columns: state.collapsed_columns.clone(),
         snippets,
+    }
+}
+
+fn assignee_matches(collection: &Collection, issue_id: i64, filter: &str) -> bool {
+    assignee_filter_matches(
+        collection.assignments.get(&issue_id),
+        collection.current_user_id,
+        filter,
+    )
+}
+
+fn assignee_filter_matches(
+    assignment: Option<&Assignment>,
+    current_user_id: i64,
+    filter: &str,
+) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    match filter {
+        "none" => assignment.is_none(),
+        "human" => assignment.is_some_and(|value| value.needs_human),
+        "me" => assignment.is_some_and(|value| {
+            value
+                .assignees
+                .iter()
+                .any(|person| person.user_id == current_user_id)
+        }),
+        _ => {
+            let Some(username) = filter.strip_prefix('@') else {
+                return true;
+            };
+            if username.is_empty() {
+                return true;
+            }
+            assignment.is_some_and(|value| {
+                value
+                    .assignees
+                    .iter()
+                    .any(|person| person.username.eq_ignore_ascii_case(username))
+            })
+        }
     }
 }
 
@@ -411,4 +460,29 @@ fn lanes(collection: &Collection, issues: &[Issue], state: &ViewState) -> Option
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod assignee_tests {
+    use super::assignee_filter_matches;
+    use crate::db::queries::assignees::{Assignment, IssueAssignee};
+
+    #[test]
+    fn issue_assignee_filter_matches_unassigned_human_me_and_username() {
+        let assignment = Assignment {
+            needs_human: true,
+            assignees: vec![IssueAssignee {
+                user_id: 17,
+                username: "Alice".into(),
+                display_name: Some("Alice Example".into()),
+            }],
+        };
+        assert!(assignee_filter_matches(None, 17, "none"));
+        assert!(!assignee_filter_matches(Some(&assignment), 17, "none"));
+        assert!(assignee_filter_matches(Some(&assignment), 17, "human"));
+        assert!(assignee_filter_matches(Some(&assignment), 17, "me"));
+        assert!(assignee_filter_matches(Some(&assignment), 18, "@alice"));
+        assert!(!assignee_filter_matches(Some(&assignment), 18, "@bob"));
+        assert!(assignee_filter_matches(None, 17, ""));
+    }
 }

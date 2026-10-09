@@ -62,6 +62,8 @@ fn collection(issues: Vec<Issue>) -> Collection {
         modules: vec![module(7, "Design"), module(8, "Empty")],
         labels: Vec::new(),
         issues,
+        assignments: Default::default(),
+        current_user_id: 17,
     }
 }
 

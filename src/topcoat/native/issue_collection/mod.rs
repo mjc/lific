@@ -3,12 +3,15 @@ mod controls;
 pub(super) mod data;
 pub(super) mod model;
 mod persistence;
+mod saved_views;
 pub(super) mod view;
 
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
 mod production;
+#[cfg(test)]
+mod saved_views_production;
 
 use super::{context, home_shell, session};
 use topcoat::{
@@ -50,7 +53,7 @@ async fn issue_collection_owner(
     layout: String,
 ) -> topcoat::Result<impl View> {
     let collection = data::load(cx, account, &project, &pending)?;
-    let state = controls::State::new(cx, &project, collection.project.id);
+    let state = controls::State::new(cx, account, &project, collection.project.id);
     let wire = state.wire.clone();
     let tab = state.tab.clone();
     let lane = state.lane.clone();
