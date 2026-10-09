@@ -5,6 +5,7 @@ mod comments;
 mod data;
 mod layout;
 mod pages;
+mod preferences;
 mod view;
 
 pub(crate) fn screen<'a>(
@@ -47,3 +48,6 @@ pub(super) mod paging_production;
 
 #[cfg(test)]
 mod anchor_production;
+
+#[cfg(test)]
+mod preferences_production;

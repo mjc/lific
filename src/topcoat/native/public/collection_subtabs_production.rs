@@ -59,7 +59,7 @@ async fn shard_rows(fixture: &home_fixture::Fixture, tab: &str) -> Vec<String> {
 #[tokio::test]
 async fn public_issue_list_emits_all_recent_open_and_closed_tabs() {
     let fixture = home_fixture::fixture();
-    {
+    let project_id = {
         let conn = fixture.db.write().unwrap();
         let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
         conn.execute(
@@ -67,7 +67,8 @@ async fn public_issue_list_emits_all_recent_open_and_closed_tabs() {
             [project_id],
         )
         .unwrap();
-    }
+        project_id
+    };
 
     let (status, html) =
         home_fixture::document(&fixture, "", "/public/ACC/issues", false, None).await;
@@ -98,18 +99,29 @@ async fn public_issue_list_emits_all_recent_open_and_closed_tabs() {
             tab.value().attr("data-topcoat-on:click").unwrap().into(),
         );
     }
+    let mount = document
+        .select(&Selector::parse("[data-native-public-preferences='issues']").unwrap())
+        .next()
+        .and_then(|node| node.value().attr("data-topcoat-on:mount"))
+        .expect("issue preferences have an emitted hydration handler");
     let output = home_fixture::evaluate_handler(
         "src/topcoat/native/public/collection_subtabs_handler.test.cjs",
         &serde_json::json!({
             "signals": home_fixture::page_signals(&html),
             "signal_ids": signal_ids,
             "handlers": handlers,
+            "mount": mount,
+            "project_id": project_id,
         }),
     );
     assert_eq!(
         output["after_clicks"],
         serde_json::json!(["all", "recent", "open", "closed"])
     );
+    assert_eq!(output["restored"], "recent");
+    assert_eq!(output["persisted"], "closed");
+    assert!(output["private_key_untouched"].as_bool().unwrap());
+    assert!(output["disposed_write_blocked"].as_bool().unwrap());
     assert!(output["disposed"].as_bool().unwrap());
 }
 
