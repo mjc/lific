@@ -21,6 +21,19 @@ pub(crate) struct Point {
     pub(crate) y: f64,
 }
 
+#[cfg(test)]
+fn dragged_position(origin: Point, start: Point, current: Point, zoom: f64) -> Point {
+    let scale = if zoom.is_finite() && zoom > 0.0 {
+        zoom
+    } else {
+        1.0
+    };
+    Point {
+        x: origin.x + (current.x - start.x) / scale,
+        y: origin.y + (current.y - start.y) / scale,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GraphLayout {
     pub(crate) positions: BTreeMap<i64, Point>,
@@ -485,6 +498,20 @@ mod tests {
             target_identifier: format!("G-{target}"),
             relation_type: relation_type.into(),
         }
+    }
+
+    #[test]
+    fn node_drag_projects_pointer_delta_into_graph_coordinates() {
+        let origin = Point { x: 120.0, y: 80.0 };
+        assert_eq!(
+            dragged_position(
+                origin,
+                Point { x: 10.0, y: 20.0 },
+                Point { x: 40.0, y: 60.0 },
+                2.0
+            ),
+            Point { x: 135.0, y: 100.0 },
+        );
     }
 
     #[test]

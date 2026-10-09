@@ -165,6 +165,58 @@ async fn production_graph_mount_renders_authorized_initial_canvas_and_readonly_c
 }
 
 #[tokio::test]
+async fn graph_nodes_emit_and_execute_pointer_drag_handlers() {
+    let (fixture, issue_id, _, _, _) = linked_graph_fixture();
+    let (status, html) = home_fixture::document(&fixture, "/app", "/ACC/graph", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = scraper::Html::parse_document(&html);
+    let node = document
+        .select(&scraper::Selector::parse("[data-native-graph-node]").unwrap())
+        .find(|node| {
+            node.value()
+                .attr("data-native-graph-node")
+                .and_then(|value| value.parse::<i64>().ok())
+                == Some(issue_id)
+        })
+        .unwrap();
+    assert!(
+        node.value().attr("data-topcoat-on:pointerdown").is_some(),
+        "node exposes its native pointer drag handler"
+    );
+    assert_eq!(node.value().attr("draggable"), Some("false"));
+    let handler = |name: &str| {
+        node.value()
+            .attr(&format!("data-topcoat-on:{name}"))
+            .expect("node drag event handler")
+    };
+    let edge = document
+        .select(&scraper::Selector::parse("[data-native-graph-edge] path").unwrap())
+        .next()
+        .unwrap();
+    let signals = home_fixture::page_signals(&html);
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/dependency_graph/node_drag_handler.test.cjs",
+        &serde_json::json!({
+            "handlers": {
+                "pointerdown":handler("pointerdown"),
+                "pointermove":handler("pointermove"),
+                "pointerup":handler("pointerup"),
+                "pointercancel":handler("pointercancel"),
+                "lostpointercapture":handler("lostpointercapture"),
+                "click":handler("click"),
+            },
+            "signals":signals,
+            "origin_x":node.value().attr("data-x").unwrap().parse::<f64>().unwrap(),
+            "origin_y":node.value().attr("data-y").unwrap().parse::<f64>().unwrap(),
+            "style_binding":node.value().attr("data-topcoat-bind:style"),
+            "edge_binding":edge.value().attr("data-topcoat-bind:d"),
+        }),
+    );
+    assert_ne!(result["moved"], result["before"]);
+    assert_ne!(result["edgeMoved"], result["edgeBefore"]);
+}
+
+#[tokio::test]
 async fn production_graph_relation_procedure_rechecks_viewer_role() {
     let (fixture, active_id, todo_id, _, _) = linked_graph_fixture();
     use topcoat::runtime::Surrogated;
