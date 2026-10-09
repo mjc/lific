@@ -90,6 +90,10 @@ pub(crate) enum UiIcon {
     DarkTheme,
     #[strum(serialize = "PanelLeftClose")]
     CollapseSidebar,
+    #[strum(serialize = "PanelLeftClose")]
+    CollapseColumn,
+    #[strum(serialize = "PanelLeftOpen")]
+    ExpandColumn,
     #[strum(serialize = "PanelRight")]
     DetailsPanel,
     #[strum(serialize = "Paperclip")]

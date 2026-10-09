@@ -51,3 +51,6 @@ mod anchor_production;
 
 #[cfg(test)]
 mod preferences_production;
+
+#[cfg(test)]
+mod display_preferences_production;

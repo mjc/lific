@@ -5,8 +5,8 @@ use super::preferences;
 use crate::services::issues::IssueCollection;
 use topcoat::{
     context::Cx,
-    runtime::{Event, expr, shard, signal},
-    view::{BoxView, View, ViewExt, view},
+    runtime::{Event, Signal, expr, shard, signal},
+    view::{Attributes, BoxView, View, ViewExt, view},
 };
 
 pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool) -> BoxView<'a> {
@@ -28,6 +28,9 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let group_by = signal(&preference_owner, || "status".to_owned());
     let issue_sub_tab = signal(&preference_owner, || "all".to_owned());
     let state_wire = signal(&preference_owner, || preferences::ISSUE_DEFAULTS.to_owned());
+    let display = signal(&preference_owner, || {
+        preferences::DISPLAY_DEFAULTS.to_owned()
+    });
     let hydrated = signal(&preference_owner, || false);
     let state_key = preferences::issue_storage_key(&project);
     let tab_key = preferences::issue_tab_storage_key(project_id);
@@ -79,6 +82,10 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
         state_key.clone(),
         "groupBy",
     );
+    let density_buttons = [("compact", "Compact"), ("comfortable", "Comfortable")]
+        .into_iter()
+        .map(|(value, label)| display_choice(cx, &display, &state_wire, &state_key, value, label))
+        .collect::<Vec<_>>();
     let preferences_attrs = preferences::issue_mount(
         cx,
         &project,
@@ -86,6 +93,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
         &layout,
         preferences::IssueSignals {
             wire: state_wire.clone(),
+            display: display.clone(),
             hydrated,
             query: query.clone(),
             status: status.clone(),
@@ -107,8 +115,8 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let clear_sort_dir = sort_dir.clone();
     let clear_group = group_by.clone();
     let clear_sub_tab = issue_sub_tab.clone();
-    let clear_wire = state_wire;
-    let clear_key = state_key;
+    let clear_wire = state_wire.clone();
+    let clear_key = state_key.clone();
     let clear_tab_key = tab_key.clone();
     let clear_defaults = preferences::ISSUE_DEFAULTS.to_owned();
     let browser = super::super::browser::bindings();
@@ -124,8 +132,12 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
             clear_group.set("status".to_owned());
             clear_sub_tab.set("all".to_owned());
             browser.store(clear_tab_key.clone(), "all".to_owned());
-            clear_wire.set(clear_defaults.clone());
-            browser.store(clear_key.clone(), clear_defaults.clone());
+            let density =
+                browser.json_string(clear_wire.get(), "density".to_owned(), "compact".to_owned());
+            let next =
+                browser.json_set_string(clear_defaults.clone(), "density".to_owned(), density);
+            clear_wire.set(next.clone());
+            browser.store(clear_key.clone(), next);
         }
     });
     let labels = collection
@@ -147,6 +159,8 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let sort_dir_for_rows = sort_dir.clone();
     let group_for_rows = group_by.clone();
     let sub_tab_for_rows = issue_sub_tab.clone();
+    let display_for_rows = display.clone();
+    let lane_by = lane_by_control(cx, display.clone(), &project);
     let body = view! {
         owner =>
         public_issue_rows(
@@ -162,7 +176,8 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
                 sort_dir_for_rows.get(),
                 group_for_rows.get(),
                 sub_tab_for_rows.get(),
-            ))
+            )),
+            display: display_for_rows.clone()
         )
     }
     .boxed();
@@ -355,6 +370,22 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
                         <option value="none">"None"</option>
                     </select>
                 </label>
+                <div
+                    class="flex flex-col gap-1 text-caption"
+                    role="group"
+                    aria-label="Density"
+                    data-native-public-density-controls=""
+                >
+                    <span>"Density"</span>
+                    <div class="flex gap-1">
+                        for choice in density_buttons {
+                            (choice)
+                        }
+                    </div>
+                </div>
+                if board {
+                    (lane_by)
+                }
                 <button
                     type="button"
                     class="rounded-md px-3 py-2 text-caption text-[var(--accent)] hover:bg-[var(--bg-subtle)]"
@@ -386,6 +417,7 @@ async fn public_issue_rows(
         String,
         String,
     ),
+    display: Signal<String>,
 ) -> topcoat::Result<impl View> {
     let route = match layout.as_str() {
         "list" => super::super::public_route::Route::Issues { project },
@@ -396,24 +428,294 @@ async fn public_issue_rows(
     let Body::Issues(collection) = snapshot.body else {
         return Err(crate::error::LificError::NotFound("not found".into()).into());
     };
-    let state = model::ViewState {
-        search_query: query,
-        filter_status: filters.0,
-        filter_priority: filters.1,
-        filter_label: filters.2,
-        filter_module: filters.3,
-        sort_field: filters.4,
-        sort_dir: filters.5,
-        group_by: filters.6,
-        issue_sub_tab: filters.7,
-        ..Default::default()
-    };
+    let mut state: model::ViewState = serde_json::from_str(&display.get()).unwrap_or_default();
+    if state.density != "comfortable" {
+        state.density = "compact".to_owned();
+    }
+    if state.lane_by != "module" && state.lane_by != "priority" {
+        state.lane_by = "none".to_owned();
+    }
+    state.search_query = query;
+    state.filter_status = filters.0;
+    state.filter_priority = filters.1;
+    state.filter_label = filters.2;
+    state.filter_module = filters.3;
+    state.sort_field = filters.4;
+    state.sort_dir = filters.5;
+    state.group_by = filters.6;
+    state.issue_sub_tab = filters.7;
     let selection = model::select(&collection, &state, &layout);
-    Ok(view::region(
+    let project_identifier = snapshot.project.identifier;
+    let display_for_disclosures = display.clone();
+    let disclosures = |disclosure: view::Disclosure<'_>| {
+        disclosure_attributes(
+            cx,
+            display_for_disclosures.clone(),
+            &project_identifier,
+            disclosure,
+        )
+    };
+    let region = view::region_with_disclosures(
         cx,
         &collection,
         &selection,
-        topcoat::view::Attributes::default(),
-        view::Audience::Published(&snapshot.project.identifier),
-    ))
+        Attributes::default(),
+        view::Audience::Published(&project_identifier),
+        Some(&disclosures),
+    );
+    let column_controls = if layout == "board" {
+        board_column_visibility(cx, &selection, display, &project_identifier)
+    } else {
+        view! { cx => <div></div> }.boxed()
+    };
+    Ok(view! {
+        cx =>
+        <div class="flex min-h-0 flex-1 flex-col">
+            (column_controls)
+            (region)
+        </div>
+    })
+}
+
+fn display_choice<'a>(
+    cx: &'a Cx,
+    display: &Signal<String>,
+    wire: &Signal<String>,
+    state_key: &str,
+    choice: &'static str,
+    label: &'static str,
+) -> BoxView<'a> {
+    let browser = super::super::browser::bindings();
+    let display_state = display.clone();
+    let persisted_state = wire.clone();
+    let storage_key = state_key.to_owned();
+    let value = choice.to_owned();
+    let handler = expr!(|_event: Event| {
+        if !browser.is_disposed() {
+            let next_display =
+                browser.json_set_string(display_state.get(), "density".to_owned(), value.clone());
+            display_state.set(next_display);
+            let next_state =
+                browser.json_set_string(persisted_state.get(), "density".to_owned(), value.clone());
+            persisted_state.set(next_state.clone());
+            browser.store(storage_key.clone(), next_state);
+        }
+    });
+    let aria_display = display.clone();
+    view! {
+        cx =>
+        <button
+            type="button"
+            class="rounded-md px-2 py-1 text-caption text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] aria-pressed:bg-[var(--accent-subtle)] aria-pressed:text-[var(--accent)]"
+            data-native-public-density=(choice)
+            :aria-pressed=$(browser.json_string(
+                    aria_display.get(),
+                    "density".to_owned(),
+                    "compact".to_owned(),
+                )
+                == choice)
+            data-topcoat-on:click=(handler.into_evaluated_and_js().1)
+        >
+            (label)
+        </button>
+    }
+    .boxed()
+}
+
+fn lane_by_control<'a>(cx: &'a Cx, display: Signal<String>, project: &str) -> BoxView<'a> {
+    let browser = super::super::browser::bindings();
+    let handler_state = display.clone();
+    let handler_key = preferences::lane_by_storage_key(project);
+    let handler = expr!(|event: Event| {
+        if !browser.is_disposed() {
+            let value = event.target.value.to_owned();
+            let value = if value == "none" {
+                "none".to_owned()
+            } else if value == "module" {
+                "module".to_owned()
+            } else if value == "priority" {
+                "priority".to_owned()
+            } else {
+                "".to_owned()
+            };
+            if !value.is_empty() {
+                let next = browser.json_set_string(
+                    handler_state.get(),
+                    "laneBy".to_owned(),
+                    value.clone(),
+                );
+                handler_state.set(next);
+                browser.store(handler_key.clone(), value);
+            }
+        }
+    });
+    view! {
+        cx =>
+        <label class="flex flex-col gap-1 text-caption">
+            "Swimlanes"
+            <select
+                aria-label="Swimlanes"
+                data-native-public-lane-by=""
+                class="rounded-md border border-solid border-[var(--border)] bg-[var(--surface)] px-2 py-2"
+                :value=$(browser.json_string(
+                    display.get(),
+                    "laneBy".to_owned(),
+                    "none".to_owned(),
+                ))
+                data-topcoat-on:change=(handler.into_evaluated_and_js().1)
+            >
+                <option value="none">"No swimlanes"</option>
+                <option value="module">"Module"</option>
+                <option value="priority">"Priority"</option>
+            </select>
+        </label>
+    }
+    .boxed()
+}
+
+fn toggle_array_attrs(
+    cx: &Cx,
+    display: Signal<String>,
+    field: &'static str,
+    value: String,
+    storage_key: String,
+    marker: (&'static str, String),
+) -> Attributes {
+    let browser = super::super::browser::bindings();
+    let handler_state = display;
+    let handler_field = field.to_owned();
+    let handler_value = value;
+    let handler_key = storage_key;
+    let handler = expr!(|_event: Event| {
+        if !browser.is_disposed() {
+            let current = browser.json_array_field(handler_state.get(), handler_field.clone());
+            let included = !browser.json_array_contains(current.clone(), handler_value.clone());
+            let next_array =
+                browser.json_array_set_string(current, handler_value.clone(), included);
+            let next_state = browser.json_set_array(
+                handler_state.get(),
+                handler_field.clone(),
+                next_array.clone(),
+            );
+            handler_state.set(next_state);
+            browser.store(handler_key.clone(), next_array);
+        }
+    });
+    let mut attrs = Attributes::with_capacity(2);
+    attrs.insert(cx, marker.0, marker.1);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:click",
+        handler.into_evaluated_and_js().1,
+    );
+    attrs
+}
+
+fn disclosure_attributes(
+    cx: &Cx,
+    display: Signal<String>,
+    project: &str,
+    disclosure: view::Disclosure<'_>,
+) -> Attributes {
+    match disclosure {
+        view::Disclosure::Group { kind, key } => toggle_array_attrs(
+            cx,
+            display,
+            "collapsedGroups",
+            format!("{kind}:{key}"),
+            preferences::collapsed_groups_storage_key(project),
+            ("data-native-public-toggle-group", format!("{kind}:{key}")),
+        ),
+        view::Disclosure::Lane { key } => toggle_array_attrs(
+            cx,
+            display,
+            "collapsedLanes",
+            key.to_owned(),
+            preferences::collapsed_lanes_storage_key(project),
+            ("data-native-public-toggle-lane", key.to_owned()),
+        ),
+        view::Disclosure::Column(status) => toggle_array_attrs(
+            cx,
+            display,
+            "collapsedColumns",
+            status.as_str().to_owned(),
+            preferences::collapsed_columns_storage_key(project),
+            (
+                "data-native-public-toggle-column",
+                status.as_str().to_owned(),
+            ),
+        ),
+    }
+}
+
+fn board_column_visibility<'a>(
+    cx: &'a Cx,
+    selection: &model::Selection,
+    display: Signal<String>,
+    project: &str,
+) -> BoxView<'a> {
+    let browser = super::super::browser::bindings();
+    let buttons = model::STATUSES
+        .into_iter()
+        .map(|status| {
+            let browser = browser.clone();
+            let value = status.as_str().to_owned();
+            let count = selection
+                .issues
+                .iter()
+                .filter(|issue| issue.status == status)
+                .count()
+                .to_string();
+            let attrs = toggle_array_attrs(
+                cx,
+                display.clone(),
+                "hiddenStatuses",
+                value.clone(),
+                preferences::hidden_statuses_storage_key(project),
+                ("data-native-public-column-visibility", value.clone()),
+            );
+            let state = display.clone();
+            view! {
+                cx =>
+                <button
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded px-2 py-1 text-caption font-medium text-[var(--text-muted)] hover:bg-[var(--bg-subtle)] aria-pressed:bg-[var(--chrome)] aria-pressed:text-[var(--text)]"
+                    :aria-pressed=$(!browser.json_array_contains(
+                        browser.json_array_field(
+                            state.get(),
+                            "hiddenStatuses".to_owned(),
+                        ),
+                        value.clone(),
+                    ))
+                    (attrs)
+                >
+                    (super::super::icons::status_icon(cx, status, 12))
+                    <span class="capitalize">(value)</span>
+                    <span class="text-micro text-[var(--text-faint)]">(count)</span>
+                </button>
+            }
+            .boxed()
+        })
+        .collect::<Vec<_>>();
+    view! {
+        cx =>
+        <div
+            class="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2"
+            data-native-public-column-controls=""
+        >
+            <span
+                class="text-micro font-semibold uppercase tracking-widest text-[var(--text-faint)]"
+            >
+                "Columns"
+            </span>
+            <div
+                class="flex flex-wrap items-center gap-0.5 rounded-md border border-solid border-[var(--border)] bg-[var(--bg-subtle)] p-0.5"
+            >
+                for button in buttons {
+                    (button)
+                }
+            </div>
+        </div>
+    }
+    .boxed()
 }

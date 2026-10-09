@@ -65,10 +65,23 @@ fn collection_arguments(sort: &str, direction: &str) -> serde_json::Value {
         "none".to_owned(),
         "all".to_owned(),
     );
-    serde_json::to_value(
+    let mut arguments = serde_json::to_value(
         ("ACC".to_owned(), String::new(), "list".to_owned(), filters).into_surrogate(),
     )
-    .unwrap()
+    .unwrap();
+    append_display_signal(&mut arguments, 1);
+    arguments
+}
+
+fn append_display_signal(arguments: &mut serde_json::Value, id: u64) {
+    arguments
+        .as_array_mut()
+        .expect("collection shard arguments are a tuple")
+        .push(serde_json::json!({
+            "t": "Signal",
+            "id": format!("{id:032x}"),
+            "v": r#"{"density":"compact","laneBy":"none"}"#,
+        }));
 }
 
 #[tokio::test]
@@ -149,10 +162,11 @@ async fn public_collection_shard_reloads_publication_state_on_each_read() {
         "status".to_owned(),
         "all".to_owned(),
     );
-    let arguments = serde_json::to_value(
+    let mut arguments = serde_json::to_value(
         ("ACC".to_owned(), String::new(), "list".to_owned(), filters).into_surrogate(),
     )
     .unwrap();
+    append_display_signal(&mut arguments, 2);
     let replay = || async {
         let request = Request::builder()
             .method("POST")
