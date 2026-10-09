@@ -829,7 +829,7 @@ async fn native_published_shards_cannot_replay_private_project_arguments() {
         tokio_tungstenite::connect_async(fixture.public_request("", "/public/PUB/issues", None))
             .await
             .unwrap();
-    let issue_arguments = serde_json::to_value(
+    let mut issue_arguments = serde_json::to_value(
         (
             "MEM".to_owned(),
             String::new(),
@@ -849,6 +849,13 @@ async fn native_published_shards_cannot_replay_private_project_arguments() {
     )
     .unwrap();
     let carried_signal = |id: u64, value: serde_json::Value| serde_json::json!({"t": "Signal", "id": format!("{id:032x}"), "v": value});
+    issue_arguments
+        .as_array_mut()
+        .expect("collection shard arguments are a tuple")
+        .push(carried_signal(
+            6,
+            serde_json::json!(r#"{"density":"compact","laneBy":"none"}"#),
+        ));
     let page_arguments = serde_json::json!([
         "MEM",
         "browse",

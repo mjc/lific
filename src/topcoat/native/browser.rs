@@ -73,6 +73,38 @@ impl Browser {
         values.contains(&value.into_real()).into_surrogate()
     }
 
+    /// Read a string-array field, normalizing invalid storage to an empty array.
+    pub(crate) fn json_array_field(
+        &self,
+        wire: StringSurrogate,
+        key: StringSurrogate,
+    ) -> StringSurrogate {
+        let values = serde_json::from_str::<serde_json::Value>(&wire.into_real())
+            .ok()
+            .and_then(|object| object.get(key.into_real()).cloned())
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value).ok())
+            .unwrap_or_default();
+        serde_json::to_string(&values)
+            .expect("string array is serializable")
+            .into_surrogate()
+    }
+
+    /// Replace one string-array field while retaining the other preference fields.
+    pub(crate) fn json_set_array(
+        &self,
+        wire: StringSurrogate,
+        key: StringSurrogate,
+        values: StringSurrogate,
+    ) -> StringSurrogate {
+        let mut object: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&wire.into_real()).unwrap_or_default();
+        let values: Vec<String> = serde_json::from_str(&values.into_real()).unwrap_or_default();
+        object.insert(key.into_real(), serde_json::json!(values));
+        serde_json::to_string(&object)
+            .expect("JSON object is serializable")
+            .into_surrogate()
+    }
+
     /// Parse a positive i64 copied from a DOM string without a lossy JS Number round trip.
     pub(crate) fn positive_i64(
         &self,
@@ -318,6 +350,26 @@ pub(crate) fn factory() -> Js {
                         return cx.hydrate(Array.isArray(items) && items.every(item => typeof item === 'string') && items.includes(value.toString()));
                     } catch { return cx.hydrate(false); }
                 },
+                json_array_field: (wire, key) => {
+                    let items = [];
+                    try { const fields = JSON.parse(wire.toString());
+                        if (fields !== null && typeof fields === 'object' && !Array.isArray(fields)) {
+                            const parsed = fields[key.toString()];
+                            if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) items = parsed;
+                        }
+                    } catch {}
+                    return cx.hydrate(JSON.stringify(items));
+                },
+                json_set_array: (wire, key, values) => {
+                    let fields = {}, items = [];
+                    try { const parsed = JSON.parse(wire.toString());
+                        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) fields = parsed;
+                    } catch {}
+                    try { const parsed = JSON.parse(values.toString());
+                        if (Array.isArray(parsed) && parsed.every(item => typeof item === 'string')) items = parsed;
+                    } catch {}
+                    return cx.hydrate(JSON.stringify({...fields, [key.toString()]: items}));
+                },
                 positive_i64: (value, fallback) => {
                     const decimal = value.toString();
                     if (!/^[1-9][0-9]{0,18}$/.test(decimal) ||
@@ -545,4 +597,53 @@ pub(crate) fn factory() -> Js {
                 open_tab: url => { window.open(url.toString(), '_blank', 'noopener'); }
             })"#,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_array_fields_agree_in_rust_and_emitted_browser_bindings() {
+        let cases = serde_json::json!([
+            {"wire": "{\"density\":\"compact\",\"hiddenStatuses\":[\"active\",\"&quot;\",\"-->\"]}",
+             "key": "hiddenStatuses", "values": "[\"todo\",\"a\\\"b\"]",
+             "read": ["active", "&quot;", "-->"], "written": {"density": "compact", "hiddenStatuses": ["todo", "a\"b"]}},
+            {"wire": "{\"density\":\"comfortable\",\"hiddenStatuses\":[\"active\",7]}",
+             "key": "hiddenStatuses", "values": "[\"todo\",null]",
+             "read": [], "written": {"density": "comfortable", "hiddenStatuses": []}},
+            {"wire": "null", "key": "collapsedGroups", "values": "[\"status:active\",\"module:a\"]",
+             "read": [], "written": {"collapsedGroups": ["status:active", "module:a"]}},
+            {"wire": "[[\"active\"]]", "key": "0", "values": "[]",
+             "read": [], "written": {"0": []}},
+            {"wire": "broken", "key": "collapsedColumns", "values": "false",
+             "read": [], "written": {"collapsedColumns": []}},
+            {"wire": "{}", "key": "__proto__", "values": "[\"active\"]",
+             "read": [], "written": {"__proto__": ["active"]}}
+        ]);
+        for case in cases.as_array().unwrap() {
+            let wire = case["wire"].as_str().unwrap().to_owned();
+            let key = case["key"].as_str().unwrap().to_owned();
+            let read = Browser
+                .json_array_field(wire.clone().into_surrogate(), key.clone().into_surrogate());
+            let written = Browser.json_set_array(
+                wire.into_surrogate(),
+                key.into_surrogate(),
+                case["values"].as_str().unwrap().to_owned().into_surrogate(),
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&read.into_real()).unwrap(),
+                case["read"]
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&written.into_real()).unwrap(),
+                case["written"]
+            );
+        }
+        let output = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/browser_json.test.cjs",
+            &serde_json::json!({"cases": cases}),
+        );
+        assert_eq!(output["passed"], 6);
+    }
 }

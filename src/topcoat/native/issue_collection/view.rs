@@ -13,6 +13,15 @@ pub(crate) enum Audience<'a> {
     Published(&'a str),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Disclosure<'a> {
+    Group { kind: &'a str, key: &'a str },
+    Lane { key: &'a str },
+    Column(Status),
+}
+
+type DisclosureAttributes<'a> = &'a dyn Fn(Disclosure<'_>) -> Attributes;
+
 pub(crate) fn region<'a>(
     cx: &'a Cx,
     collection: &Collection,
@@ -20,8 +29,19 @@ pub(crate) fn region<'a>(
     clear_filters: Attributes,
     audience: Audience<'_>,
 ) -> BoxView<'a> {
+    region_with_disclosures(cx, collection, selection, clear_filters, audience, None)
+}
+
+pub(crate) fn region_with_disclosures<'a>(
+    cx: &'a Cx,
+    collection: &Collection,
+    selection: &Selection,
+    clear_filters: Attributes,
+    audience: Audience<'_>,
+    disclosures: Option<DisclosureAttributes<'_>>,
+) -> BoxView<'a> {
     if selection.layout == "board" {
-        return board(cx, collection, selection, audience);
+        return board(cx, collection, selection, audience, disclosures);
     }
     let project = collection.project.identifier.clone();
     let body = if selection.issues.is_empty() {
@@ -32,18 +52,16 @@ pub(crate) fn region<'a>(
             let label_class = if group.kind == "module" { "font-semibold text-caption" } else { "font-semibold text-caption capitalize" };
             let count = group.issues.len().to_string();
             let rows = list_rows(cx, &project, &group.issues, selection, audience);
+            let attributes = disclosures.map(|disclose| disclose(Disclosure::Group { kind: &group.kind, key: &key }));
+            let heading = disclosure_heading(cx, label, label_class, count, collapsed, attributes,
+                "sticky top-0 z-10 flex items-center gap-2 px-6 py-2 bg-[var(--surface)] border-b border-solid border-[var(--border)]");
             view! {
                 cx =>
                 <section
                     data-native-issue-group=(key)
                     data-native-group-collapsed=(collapsed.to_string())
                 >
-                    <div
-                        class="sticky top-0 z-10 flex items-center gap-2 px-6 py-2 bg-[var(--surface)] border-b border-solid border-[var(--border)]"
-                    >
-                        <span class=(label_class)>(label)</span>
-                        <span class="text-micro text-[var(--text-faint)]">(count)</span>
-                    </div>
+                    (heading)
                     if !collapsed {
                         (rows)
                     }
@@ -85,6 +103,44 @@ pub(crate) fn region<'a>(
             (body)
         </div>
     }.boxed()
+}
+
+fn disclosure_heading<'a>(
+    cx: &'a Cx,
+    label: String,
+    label_class: &'static str,
+    count: String,
+    collapsed: bool,
+    attributes: Option<Attributes>,
+    class: &'static str,
+) -> BoxView<'a> {
+    let caption = view! {
+        cx =>
+        <span class=(label_class)>(label)</span>
+        <span class="text-micro text-[var(--text-faint)]">(count)</span>
+    }
+    .boxed();
+    if let Some(attributes) = attributes {
+        view! {
+            cx =>
+            <button
+                type="button"
+                class=(format!("{class} w-full text-left hover:bg-[var(--bg-subtle)]"))
+                aria-expanded=((!collapsed).to_string())
+                (attributes)
+            >
+                (icons::ui_icon(
+                    cx,
+                    if collapsed { icons::UiIcon::Next } else { icons::UiIcon::Expand },
+                    13,
+                ))
+                (caption)
+            </button>
+        }
+        .boxed()
+    } else {
+        view! { cx => <div class=(class)>(caption)</div> }.boxed()
+    }
 }
 
 fn empty<'a>(
@@ -197,13 +253,29 @@ fn board<'a>(
     collection: &Collection,
     selection: &Selection,
     audience: Audience<'_>,
+    disclosures: Option<DisclosureAttributes<'_>>,
 ) -> BoxView<'a> {
     let project = collection.project.identifier.clone();
     let lanes = if let Some(lanes) = &selection.lanes {
         lanes.iter().map(|lane| {
             let key = lane.key.clone(); let label = lane.label.clone(); let collapsed = lane.collapsed;
             let label_class = if lane.kind == "priority" { "text-caption font-semibold capitalize" } else { "text-caption font-semibold" };
-            let count = lane.issues.len().to_string(); let columns = columns(cx, &project, &lane.issues, selection, audience);
+            let count = lane.issues.len().to_string(); let columns = columns(cx, &project, &lane.issues, selection, audience, disclosures);
+            let heading = if let Some(disclose) = disclosures {
+                let attributes = disclose(Disclosure::Lane { key: &key });
+                disclosure_heading(cx, label, label_class, count, collapsed, Some(attributes),
+                    "flex items-center gap-2 px-4 py-2 border-b border-solid border-[var(--border)] bg-[var(--bg-subtle)]")
+            } else {
+                view! {
+                    cx =>
+                    <header
+                        class="flex items-center gap-2 px-4 py-2 border-b border-solid border-[var(--border)] bg-[var(--bg-subtle)]"
+                    >
+                        <span class=(label_class)>(label)</span>
+                        <span class="text-micro text-[var(--text-faint)]">(count)</span>
+                    </header>
+                }.boxed()
+            };
             view! {
                 cx =>
                 <section
@@ -211,12 +283,7 @@ fn board<'a>(
                     data-native-lane-collapsed=(collapsed.to_string())
                     class="flex flex-col min-h-0"
                 >
-                    <header
-                        class="flex items-center gap-2 px-4 py-2 border-b border-solid border-[var(--border)] bg-[var(--bg-subtle)]"
-                    >
-                        <span class=(label_class)>(label)</span>
-                        <span class="text-micro text-[var(--text-faint)]">(count)</span>
-                    </header>
+                    (heading)
                     if !collapsed {
                         (columns)
                     }
@@ -230,6 +297,7 @@ fn board<'a>(
             &selection.issues,
             selection,
             audience,
+            disclosures,
         )]
     };
     let count = selection.count_label.clone();
@@ -261,6 +329,7 @@ fn columns<'a>(
     issues: &[Issue],
     selection: &Selection,
     audience: Audience<'_>,
+    disclosures: Option<DisclosureAttributes<'_>>,
 ) -> BoxView<'a> {
     let columns = selection
         .visible_statuses
@@ -312,6 +381,31 @@ fn columns<'a>(
                 .collapsed_columns
                 .iter()
                 .any(|column| column == status.as_str());
+            let collapse_control = disclosures.map(|disclose| {
+                let attributes = disclose(Disclosure::Column(status));
+                let title = if collapsed { "Expand column" } else { "Collapse column" };
+                view! {
+                    cx =>
+                    <button
+                        type="button"
+                        class="ml-auto flex size-5 shrink-0 items-center justify-center rounded text-[var(--text-faint)] hover:bg-[var(--bg-subtle)] hover:text-[var(--text)]"
+                        aria-label=(format!("{title}: {}", status.as_str()))
+                        title=(title)
+                        aria-expanded=((!collapsed).to_string())
+                        (attributes)
+                    >
+                        (icons::ui_icon(
+                            cx,
+                            if collapsed {
+                                icons::UiIcon::ExpandColumn
+                            } else {
+                                icons::UiIcon::CollapseColumn
+                            },
+                            12,
+                        ))
+                    </button>
+                }.boxed()
+            });
             view! {
                 cx =>
                 <section
@@ -335,6 +429,9 @@ fn columns<'a>(
                         >
                             (count)
                         </span>
+                        if let Some(collapse_control) = collapse_control {
+                            (collapse_control)
+                        }
                     </header>
                     if !collapsed {
                         <div class="native-board__cards">

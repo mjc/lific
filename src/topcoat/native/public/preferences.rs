@@ -7,14 +7,39 @@ use topcoat::{
     view::Attributes,
 };
 
-pub(super) const ISSUE_DEFAULTS: &str = r#"{"filterStatus":"","filterPriority":"","filterLabel":"","filterModule":"","searchQuery":"","sortField":"priority","sortDir":"asc","groupBy":"status"}"#;
+pub(super) const ISSUE_DEFAULTS: &str = r#"{"filterStatus":"","filterPriority":"","filterLabel":"","filterModule":"","searchQuery":"","sortField":"priority","sortDir":"asc","groupBy":"status","density":"compact"}"#;
+pub(super) const DISPLAY_DEFAULTS: &str = r#"{"density":"compact","laneBy":"none","hiddenStatuses":[],"collapsedGroups":[],"collapsedLanes":[],"collapsedColumns":[]}"#;
 
 pub(super) fn issue_storage_key(project: &str) -> String {
     format!("lific:public:list:state:{project}")
 }
 
+pub(super) fn issue_layout_storage_key(project: &str) -> String {
+    format!("lific:public:list:layout:{project}")
+}
+
 pub(super) fn issue_tab_storage_key(project_id: i64) -> String {
     format!("lific:public:subtab:issues:{project_id}")
+}
+
+pub(super) fn collapsed_groups_storage_key(project: &str) -> String {
+    format!("lific:public:list:collapsed:{project}")
+}
+
+pub(super) fn hidden_statuses_storage_key(project: &str) -> String {
+    format!("lific:public:board:hidden-statuses:{project}")
+}
+
+pub(super) fn lane_by_storage_key(project: &str) -> String {
+    format!("lific:public:board:lanes:{project}")
+}
+
+pub(super) fn collapsed_lanes_storage_key(project: &str) -> String {
+    format!("lific:public:board:collapsed-lanes:{project}")
+}
+
+pub(super) fn collapsed_columns_storage_key(project: &str) -> String {
+    format!("lific:public:board:collapsed-columns:{project}")
 }
 
 pub(super) fn page_tab_storage_key(project_id: i64) -> String {
@@ -23,6 +48,7 @@ pub(super) fn page_tab_storage_key(project_id: i64) -> String {
 
 pub(super) struct IssueSignals {
     pub wire: Signal<String>,
+    pub display: Signal<String>,
     pub hydrated: Signal<bool>,
     pub query: Signal<String>,
     pub status: Signal<String>,
@@ -45,6 +71,7 @@ pub(super) fn issue_mount(
     let browser = browser::bindings();
     let IssueSignals {
         wire,
+        display,
         hydrated,
         query,
         status,
@@ -58,14 +85,61 @@ pub(super) fn issue_mount(
     } = signals;
     let key = issue_storage_key(project);
     let tab_key = issue_tab_storage_key(project_id);
-    let layout_key = format!("lific:public:list:layout:{project}");
+    let layout_key = issue_layout_storage_key(project);
     let defaults = ISSUE_DEFAULTS.to_owned();
     let layout = layout.to_owned();
+    let groups_key = collapsed_groups_storage_key(project);
+    let hidden_key = hidden_statuses_storage_key(project);
+    let lane_key = lane_by_storage_key(project);
+    let lanes_key = collapsed_lanes_storage_key(project);
+    let columns_key = collapsed_columns_storage_key(project);
+    let display_defaults = DISPLAY_DEFAULTS.to_owned();
     let handler = expr!(|_event: Event| {
         if !browser.is_disposed() {
             if !hydrated.get() {
                 let stored = browser.json_fields(browser.stored(key.clone()), defaults.clone());
                 wire.set(stored.clone());
+                let display_state = browser.json_fields(display.get(), display_defaults.clone());
+                let saved_density =
+                    browser.json_string(stored.clone(), "density".to_owned(), "compact".to_owned());
+                let density = if saved_density == "comfortable" {
+                    "comfortable".to_owned()
+                } else {
+                    "compact".to_owned()
+                };
+                let display_state =
+                    browser.json_set_string(display_state, "density".to_owned(), density);
+                let saved_lane = browser.stored(lane_key.clone());
+                let saved_lane = if saved_lane == "module" {
+                    "module".to_owned()
+                } else if saved_lane == "priority" {
+                    "priority".to_owned()
+                } else {
+                    "none".to_owned()
+                };
+                let display_state =
+                    browser.json_set_string(display_state, "laneBy".to_owned(), saved_lane);
+                let display_state = browser.json_set_array(
+                    display_state,
+                    "collapsedGroups".to_owned(),
+                    browser.stored(groups_key.clone()),
+                );
+                let display_state = browser.json_set_array(
+                    display_state,
+                    "hiddenStatuses".to_owned(),
+                    browser.stored(hidden_key.clone()),
+                );
+                let display_state = browser.json_set_array(
+                    display_state,
+                    "collapsedLanes".to_owned(),
+                    browser.stored(lanes_key.clone()),
+                );
+                let display_state = browser.json_set_array(
+                    display_state,
+                    "collapsedColumns".to_owned(),
+                    browser.stored(columns_key.clone()),
+                );
+                display.set(display_state);
                 query.set(browser.json_string(
                     stored.clone(),
                     "searchQuery".to_owned(),

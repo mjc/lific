@@ -19,10 +19,17 @@ async fn shard_rows(fixture: &home_fixture::Fixture, tab: &str) -> Vec<String> {
         "none".to_owned(),
         tab.to_owned(),
     );
-    let args = serde_json::to_value(
+    let mut args = serde_json::to_value(
         ("ACC".to_owned(), String::new(), "list".to_owned(), filters).into_surrogate(),
     )
     .unwrap();
+    args.as_array_mut()
+        .expect("collection shard arguments are a tuple")
+        .push(serde_json::json!({
+            "t": "Signal",
+            "id": "00000000000000000000000000000003",
+            "v": r#"{"density":"compact","laneBy":"none"}"#,
+        }));
     let mut request = Request::builder()
         .method("POST")
         .uri("/public/__native/issues")
