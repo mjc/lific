@@ -1,5 +1,5 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
-use super::super::{context, navigation, session, transport};
+use super::super::{browser, context, navigation, session, transport};
 use crate::{
     db::models::{Plan, PlanStepNode, Project, Role, UpdatePlan},
     error::LificError,
@@ -7,14 +7,16 @@ use crate::{
 };
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{Event, Signal, expr, procedure, shard, signal},
+    runtime::{Event, Expr, Js, Signal, expr, procedure, shard, signal},
     view::{Attributes, BoxView, Unescaped, View, ViewExt, component, view},
 };
 
 #[derive(Clone)]
 struct PlanEditor {
     revision: Signal<i64>,
+    canonical_title: Signal<String>,
     title_draft: Signal<String>,
+    title_editing: Signal<bool>,
     step_title_target: Signal<i64>,
     step_title_draft: Signal<String>,
     step_description_target: Signal<i64>,
@@ -104,9 +106,11 @@ async fn plan_detail_owner(
     plan: Plan,
 ) -> topcoat::Result<impl View> {
     let revision = signal(cx, || 0_i64);
+    let canonical_title = signal(cx, || plan.title.clone());
     let busy = signal(cx, || false);
     let message = signal(cx, String::new);
     let title_draft = signal(cx, || plan.title.clone());
+    let title_editing = signal(cx, || false);
     let step_title_target = signal(cx, || 0_i64);
     let step_title_draft = signal(cx, String::new);
     let step_description_target = signal(cx, || 0_i64);
@@ -127,7 +131,7 @@ async fn plan_detail_owner(
                 plan_id: plan.id,
                 revision_value: $(revision.get()),
                 revision_owner: revision,
-                title_draft: title_draft,
+                title_state: (canonical_title, title_draft, title_editing),
                 step_title_target: step_title_target,
                 step_title_draft: step_title_draft,
                 step_description_target: step_description_target,
@@ -156,7 +160,7 @@ mod shards {
         plan_id: i64,
         revision_value: i64,
         revision_owner: Signal<i64>,
-        title_draft: Signal<String>,
+        title_state: (Signal<String>, Signal<String>, Signal<bool>),
         step_title_target: Signal<i64>,
         step_title_draft: Signal<String>,
         step_description_target: Signal<i64>,
@@ -165,6 +169,7 @@ mod shards {
         message: Signal<String>,
     ) -> topcoat::Result<impl View> {
         let _ = revision_value;
+        let (canonical_title, title_draft, title_editing) = title_state;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
         if user.id != account {
@@ -226,7 +231,9 @@ mod shards {
             activity,
             PlanEditor {
                 revision: revision_owner,
+                canonical_title,
                 title_draft,
+                title_editing,
                 step_title_target,
                 step_title_draft,
                 step_description_target,
@@ -282,7 +289,14 @@ fn render_detail<'a>(
     let progress_text = format!("{}/{}", plan.done_count, plan.step_count);
     let dates = (plan.created_at.clone(), plan.updated_at.clone());
     let title_editor = if can_edit {
-        Some(title_form(cx, account, project, plan.id, editor.clone()))
+        Some(title_form(
+            cx,
+            account,
+            project,
+            plan.id,
+            editor.canonical_title.clone(),
+            editor.clone(),
+        ))
     } else {
         None
     };
@@ -854,65 +868,203 @@ fn title_form<'a>(
     account: i64,
     project: &str,
     plan_id: i64,
+    title: Signal<String>,
     editor: PlanEditor,
 ) -> BoxView<'a> {
     let draft = editor.title_draft;
+    let editing = editor.title_editing;
     let revision = editor.revision;
-    let busy = editor.busy;
     let message = editor.message;
     let project = project.to_owned();
+    let browser = browser::bindings();
+    let start_draft = draft.clone();
+    let start_editing = editing.clone();
+    let start_message = message.clone();
+    let start = expr!(|| {
+        if !browser.is_disposed() {
+            start_draft.set(title.get());
+            start_message.set("".to_owned());
+            start_editing.set(true);
+        }
+    });
+    let start_key = title_activation_handler(&start);
+
     let submit_draft = draft.clone();
-    let submit_revision = revision;
-    let submit_busy = busy.clone();
+    let submit_editing = editing.clone();
+    let submit_revision = revision.clone();
     let submit_message = message.clone();
-    let failed_busy = busy.clone();
-    let failed_message = message;
-    let handler = expr!(|event: Event| {
-        event.prevent_default();
-        let title = submit_draft.get().trim_ecmascript();
-        if !submit_busy.get() {
-            if !title.is_empty() {
-                submit_busy.set(true);
-                submit_message.set("".to_owned());
-                let _failed = || {
-                    failed_busy.set(false);
-                    failed_message.set("Unable to save plan title.".to_owned());
-                };
-                let _run = async || {
-                    mutate_plan(account, project, plan_id, 0_i64, "title".to_owned(), title).await;
-                    submit_busy.set(false);
-                    submit_revision.set(submit_revision.get() + 1_i64);
-                };
-                raw!(
-                    "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
-                    ()
-                );
+    let failed_message = message.clone();
+    let failed_message_async = failed_message.clone();
+    let submit_revision_async = submit_revision.clone();
+    let saved_title = title.clone();
+    let commit = expr!(|| {
+        if !browser.is_disposed() {
+            if submit_editing.get() {
+                submit_editing.set(false);
+                let next_title = submit_draft.get().trim_ecmascript();
+                if !next_title.is_empty() {
+                    if next_title != saved_title.get() {
+                        submit_message.set("".to_owned());
+                        let _failed = || {
+                            if !browser.is_disposed() {
+                                failed_message_async.set("Unable to save plan title.".to_owned());
+                            }
+                        };
+                        let _run = async || {
+                            let committed_title = mutate_plan(
+                                account,
+                                project,
+                                plan_id,
+                                0_i64,
+                                "title".to_owned(),
+                                next_title,
+                            )
+                            .await;
+                            if !browser.is_disposed() {
+                                saved_title.set(committed_title);
+                                submit_revision_async.set(submit_revision_async.get() + 1_i64);
+                            }
+                        };
+                        raw!(
+                            "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
+                            ()
+                        );
+                    }
+                }
             }
         }
     });
-    let mut submit = Attributes::with_capacity(1);
-    submit.insert(
-        cx,
-        "data-topcoat-on:submit",
-        handler.into_evaluated_and_js().1,
-    );
+    let cancel_draft = draft.clone();
+    let cancel_editing = editing.clone();
+    let cancel = expr!(|| {
+        if !browser.is_disposed() {
+            if cancel_editing.get() {
+                cancel_draft.set(title.get());
+                cancel_editing.set(false);
+            }
+        }
+    });
+    let finish_key = title_finish_handler(editing.clone(), &commit, &cancel, true);
+    let finish_blur = title_finish_handler(editing.clone(), &commit, &cancel, false);
+    let input_draft = draft.clone();
+    let input = expr!(|event: Event| {
+        if !browser.is_disposed() {
+            input_draft.set(event.target.value.to_owned());
+        }
+    });
+    let mut trigger = Attributes::with_capacity(2);
+    trigger.insert(cx, "data-native-plan-title-trigger", "true");
+    trigger.insert(cx, "data-topcoat-on:click", title_callback_handler(&start));
+    trigger.insert(cx, "data-topcoat-on:keydown", start_key);
+    let mut editor_attributes = Attributes::with_capacity(3);
+    editor_attributes.insert(cx, "data-native-plan-title-input", "true");
+    editor_attributes.insert(cx, "data-topcoat-on:input", input.into_evaluated_and_js().1);
+    editor_attributes.insert(cx, "data-topcoat-on:keydown", finish_key);
+    editor_attributes.insert(cx, "data-topcoat-on:blur", finish_blur);
     view! {
         cx =>
-        <form class="flex items-center gap-2 my-2" (submit)>
+        if editing.get() {
             <input
-                class="flex-1 bg-transparent outline-none text-heading text-[var(--text)] border-b border-[var(--accent)]"
+                type="text"
+                class="w-full text-title mb-4 font-display tracking-tight bg-transparent border-0 border-b-2 border-solid border-b-[var(--accent)] outline-none text-[var(--text)] py-1"
                 :value=$(draft.get())
-                @input=$(move |event: Event| draft.set(event.target.value))
+                autofocus="autofocus"
+                (editor_attributes)
             />
+        } else {
             <button
-                type="submit"
-                class="text-caption text-[var(--accent)] hover:underline"
-                :disabled=$(busy.get())
+                type="button"
+                class="text-title mb-4 w-full text-left font-display tracking-tight text-[var(--text)] py-1 rounded transition-colors bg-transparent border-0 cursor-text hover:bg-[var(--bg-subtle)]"
+                (trigger)
             >
-                "Save title"
+                $(title.get())
             </button>
-        </form>
+        }
     }.boxed()
+}
+
+fn title_callback_handler<C: FnOnce()>(callback: &Expr<C>) -> Js {
+    let browser = browser::bindings();
+    let factory = expr!(|_event: Event, callback: C| {
+        if !browser.is_disposed() {
+            browser.call0(callback);
+        }
+    });
+    Js::builder()
+        .source("event => (")
+        .expression(&factory)
+        .source(")(event, ")
+        .expression(callback)
+        .source(")")
+        .build()
+}
+
+fn title_activation_handler<C: FnOnce()>(callback: &Expr<C>) -> Js {
+    let browser = browser::bindings();
+    let factory = expr!(|event: Event, callback: C| {
+        if if event.key == "Enter" {
+            true
+        } else {
+            event.key == " "
+        } {
+            event.prevent_default();
+            if !browser.is_disposed() {
+                browser.call0(callback);
+            }
+        }
+    });
+    Js::builder()
+        .source("event => (")
+        .expression(&factory)
+        .source(")(event, ")
+        .expression(callback)
+        .source(")")
+        .build()
+}
+
+fn title_finish_handler<C: FnOnce(), D: FnOnce()>(
+    editing: Signal<bool>,
+    commit: &Expr<C>,
+    cancel: &Expr<D>,
+    keyboard: bool,
+) -> Js {
+    let browser = browser::bindings();
+    let factory = expr!(|event: Event, commit: C, cancel: D| {
+        if !browser.is_disposed() {
+            if editing.get() {
+                if keyboard {
+                    if event.key == "Escape" {
+                        event.prevent_default();
+                        browser.call0(cancel);
+                    } else {
+                        let save_shortcut = if event.key == "s" {
+                            if event.ctrl_key { true } else { event.meta_key }
+                        } else {
+                            false
+                        };
+                        if event.key == "Enter" {
+                            event.prevent_default();
+                            browser.call0(commit);
+                        } else if save_shortcut {
+                            event.prevent_default();
+                            browser.call0(commit);
+                        }
+                    }
+                } else {
+                    browser.call0(commit);
+                }
+            }
+        }
+    });
+    Js::builder()
+        .source("event => (")
+        .expression(&factory)
+        .source(")(event, ")
+        .expression(commit)
+        .source(", ")
+        .expression(cancel)
+        .source(")")
+        .build()
 }
 
 fn description_form<'a>(
@@ -1460,7 +1612,7 @@ async fn mutate_plan(
                             ..Default::default()
                         },
                     )
-                    .map(|_| "saved".to_owned()),
+                    .map(|plan| plan.title),
                     "status" => crate::services::plans::update(
                         &db,
                         &hub,
@@ -1596,15 +1748,14 @@ mod tests {
         use scraper::{Html, Selector};
 
         let fixture = super::super::super::home_fixture::fixture();
-        let plan = {
+        let (plan, account) = {
             let conn = fixture.db.write().unwrap();
             let account = queries::users::validate_session(&conn, &fixture.token)
                 .unwrap()
                 .id;
             let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
-            queries::members::upsert_member(&conn, project_id, account, Role::Maintainer)
-                .unwrap();
-            queries::plans::create_plan(
+            queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
+            let plan = queries::plans::create_plan(
                 &conn,
                 &CreatePlan {
                     project_id,
@@ -1613,7 +1764,8 @@ mod tests {
                     steps: Vec::new(),
                 },
             )
-            .unwrap()
+            .unwrap();
+            (plan, account)
         };
 
         let (status, html) = super::super::super::home_fixture::document(
@@ -1631,10 +1783,13 @@ mod tests {
             .next()
             .expect("editable plan title is initially rendered as a button");
         assert_eq!(trigger.text().collect::<String>(), "Inline title parity");
-        assert!(document
-            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
-            .next()
-            .is_none(), "title input is only rendered while editing");
+        assert!(
+            document
+                .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                .next()
+                .is_none(),
+            "title input is only rendered while editing"
+        );
 
         let result = super::super::super::home_fixture::evaluate_handler(
             "src/topcoat/native/plans/title_handler.test.cjs",
@@ -1645,8 +1800,272 @@ mod tests {
                 "title": "Inline title parity",
             }),
         );
-        assert_eq!(result["click_editing"], true);
-        assert_eq!(result["keyboard_editing"], true);
+        let mut click_editing_html = String::new();
+        for key in ["click_signals", "keyboard_signals", "space_signals"] {
+            let signals = result[key]
+                .as_object()
+                .expect("runtime returns the full changed signal snapshot")
+                .clone();
+            let (status, render_html) = super::super::super::home_fixture::document(
+                &fixture,
+                "/app",
+                &format!("/ACC/plans/{}", plan.id),
+                true,
+                Some(signals),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let editing_document = Html::parse_document(&render_html);
+            let input = editing_document
+                .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                .next()
+                .expect("click and keyboard activation render the title editor");
+            assert_eq!(input.value().attr("value"), Some("Inline title parity"));
+            assert!(
+                editing_document
+                    .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+                    .next()
+                    .is_none()
+            );
+            if key == "click_signals" {
+                click_editing_html = render_html;
+            }
+        }
+
+        let editing_document = Html::parse_document(&click_editing_html);
+        let input = editing_document
+            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+            .next()
+            .unwrap();
+        let signals = super::super::super::home_fixture::page_signals(&click_editing_html);
+        let emitted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "edit_signals": signals,
+                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+                "input_handler": input.value().attr("data-topcoat-on:input").unwrap(),
+                "edit_keydown_handler": input.value().attr("data-topcoat-on:keydown").unwrap(),
+                "blur_handler": input.value().attr("data-topcoat-on:blur").unwrap(),
+                "title": "Inline title parity",
+                "response": serde_json::to_value("Renamed plan title".to_owned().into_surrogate()).unwrap(),
+                "pending_response": serde_json::to_value("Saving title".to_owned().into_surrogate()).unwrap(),
+            }),
+        );
+        for (key, saved_title) in [
+            ("ctrl_save_request", "Saved by ctrl+s"),
+            ("meta_save_request", "Saved by meta+s"),
+            ("blur_save_request", "Saved by blur"),
+        ] {
+            assert_eq!(
+                emitted[key]["arguments"],
+                serde_json::to_value(
+                    (
+                        account,
+                        "ACC".to_owned(),
+                        plan.id,
+                        0_i64,
+                        "title".to_owned(),
+                        saved_title.to_owned(),
+                    )
+                        .into_surrogate(),
+                )
+                .unwrap(),
+                "{key} emits the trimmed title payload",
+            );
+        }
+        assert_eq!(emitted["cancel_prevented"], true);
+        for key in ["cancelled_signals", "empty_signals", "unchanged_signals"] {
+            let (status, closed_html) = super::super::super::home_fixture::document(
+                &fixture,
+                "/app",
+                &format!("/ACC/plans/{}", plan.id),
+                true,
+                Some(emitted[key].as_object().unwrap().clone()),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let closed_document = Html::parse_document(&closed_html);
+            assert!(
+                closed_document
+                    .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                    .next()
+                    .is_none(),
+                "Escape, empty and unchanged titles close the editor"
+            );
+            assert_eq!(
+                closed_document
+                    .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+                    .next()
+                    .unwrap()
+                    .text()
+                    .collect::<String>(),
+                "Inline title parity",
+            );
+        }
+        let (status, failed_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(emitted["failed_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let failed_document = Html::parse_document(&failed_html);
+        let alert = failed_document
+            .select(&Selector::parse("[data-native-plan-owner] > p[role='alert']").unwrap())
+            .next()
+            .expect("plan owner renders the title save error");
+        assert_eq!(
+            alert.text().collect::<String>(),
+            "Unable to save plan title."
+        );
+        let arguments = emitted["request"]["arguments"].clone();
+        let expected_arguments = serde_json::to_value(
+            (
+                account,
+                "ACC".to_owned(),
+                plan.id,
+                0_i64,
+                "title".to_owned(),
+                "Renamed plan title".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        assert_eq!(arguments, expected_arguments);
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            arguments,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let updated = queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id).unwrap();
+        assert_eq!(updated.title, "Renamed plan title");
+        assert!(fixture
+            .db
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM audit_log WHERE entity_type = 'plan' AND entity_id = ?1 AND field = 'title' AND new_value = 'Renamed plan title')",
+                [plan.id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+        let (status, saved_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(emitted["commit_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let saved_document = Html::parse_document(&saved_html);
+        let saved_title = saved_document
+            .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+            .next()
+            .expect("successful revision rerender uses canonical saved title");
+        assert_eq!(saved_title.text().collect::<String>(), "Renamed plan title");
+
+        let pending_arguments = emitted["pending_request"]["arguments"].clone();
+        let expected_pending_arguments = serde_json::to_value(
+            (
+                account,
+                "ACC".to_owned(),
+                plan.id,
+                0_i64,
+                "title".to_owned(),
+                "Saving title".to_owned(),
+            )
+                .into_surrogate(),
+        )
+        .unwrap();
+        assert_eq!(pending_arguments, expected_pending_arguments);
+        let (status, _) = super::super::super::home_fixture::procedure(
+            &fixture,
+            "/__native_plans/mutate",
+            pending_arguments,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let (status, pending_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(emitted["pending_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let pending_document = Html::parse_document(&pending_html);
+        let pending_input = pending_document
+            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+            .next()
+            .expect("saving an earlier title preserves a newer editing session");
+        assert_eq!(
+            pending_input.value().attr("value"),
+            Some("Newer unsaved draft")
+        );
+        let close = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "mode": "close",
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "edit_signals": super::super::super::home_fixture::page_signals(&pending_html),
+                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+                "input_handler": pending_input.value().attr("data-topcoat-on:input").unwrap(),
+                "edit_keydown_handler": pending_input.value().attr("data-topcoat-on:keydown").unwrap(),
+                "blur_handler": pending_input.value().attr("data-topcoat-on:blur").unwrap(),
+            }),
+        );
+        let (status, closed_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(close["close_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let closed_document = Html::parse_document(&closed_html);
+        let canonical_trigger = closed_document
+            .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(canonical_trigger.text().collect::<String>(), "Saving title");
+        let reopened = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&closed_html),
+                "click_handler": canonical_trigger.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": canonical_trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+            }),
+        );
+        let (status, reopened_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            Some(reopened["click_signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let reopened_document = Html::parse_document(&reopened_html);
+        assert_eq!(
+            reopened_document
+                .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("value"),
+            Some("Saving title"),
+            "a subsequent edit starts from the canonical saved title",
+        );
     }
 
     #[component]
@@ -1661,7 +2080,9 @@ mod tests {
             2,
             PlanEditor {
                 revision: signal(cx, || 0_i64),
+                canonical_title: signal(cx, String::new),
                 title_draft: signal(cx, String::new),
+                title_editing: signal(cx, || false),
                 step_title_target: signal(cx, || 0_i64),
                 step_title_draft: signal(cx, String::new),
                 step_description_target: signal(cx, || 0_i64),
