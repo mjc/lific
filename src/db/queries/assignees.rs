@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::db::models::IssueAssignee;
+pub(crate) use crate::db::models::IssueAssignee;
 use crate::error::LificError;
 
 /// The reserved name that marks an issue for any person.
@@ -88,7 +88,7 @@ pub fn assignments_by_issue(
     if issue_ids.is_empty() {
         return Ok(by_issue);
     }
-    let placeholders = issue_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let placeholders = super::placeholders(issue_ids.len());
     let mut stmt = conn.prepare(&format!(
         "{SELECT} WHERE a.issue_id IN ({placeholders}) ORDER BY u.username"
     ))?;

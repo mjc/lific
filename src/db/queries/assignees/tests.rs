@@ -371,3 +371,58 @@ fn describe_renders_each_state() {
         Some("@alice, @bob")
     );
 }
+
+
+#[test]
+fn assignments_batch_and_hard_issue_deletion_clear_derived_rows() {
+    let f = fixture();
+    set(&f, &["alice"]).unwrap();
+    {
+        let conn = f.db.read().unwrap();
+        let batch = queries::assignees::assignments_by_issue(&conn, &[f.issue, i64::MAX]).unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[&f.issue], queries::assignees::assignment(&conn, f.issue).unwrap());
+        assert!(queries::assignees::assignments_by_issue(&conn, &[]).unwrap().is_empty());
+    }
+    {
+        let conn = f.db.write().unwrap();
+        conn.execute("DELETE FROM issues WHERE id = ?1", params![f.issue])
+            .unwrap();
+        assert_eq!(assignment(&conn, f.issue).unwrap(), Assignment::default());
+    }
+}
+
+#[test]
+fn outer_transaction_rollback_reverts_assignment_cursor_and_audit() {
+    let f = fixture();
+    set(&f, &["alice"]).unwrap();
+    let conn = f.db.write().unwrap();
+    let before_seq = queries::issue_seq(&conn, f.issue).unwrap();
+    let before_audit: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM audit_log WHERE issue_id = ?1 AND action IN ('assign', 'unassign')",
+            params![f.issue],
+            |row| row.get(0),
+        )
+        .unwrap();
+    conn.execute_batch("BEGIN").unwrap();
+    set_assignment(&conn, f.issue, f.project, &names(&["human"]), None).unwrap();
+    assert_eq!(
+        assignment(&conn, f.issue).unwrap(),
+        Assignment {
+            needs_human: true,
+            assignees: vec![],
+        }
+    );
+    conn.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(assignment(&conn, f.issue).unwrap().assignees[0].username, "alice");
+    assert_eq!(queries::issue_seq(&conn, f.issue).unwrap(), before_seq);
+    let after_audit: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM audit_log WHERE issue_id = ?1 AND action IN ('assign', 'unassign')",
+            params![f.issue],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_audit, before_audit);
+}
