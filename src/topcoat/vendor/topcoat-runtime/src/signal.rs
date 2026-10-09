@@ -175,11 +175,7 @@ impl<T> Signal<T> {
             id: self.id,
             v: &value,
         };
-        // Keep HTML comment-token characters out of the JSON; JSON parsing restores them.
-        serde_json::to_string(&declaration)
-            .expect("failed to serialize signal declaration")
-            .replace('<', "\\u003c")
-            .replace('>', "\\u003e")
+        crate::js::comment_json(&declaration)
     }
 }
 

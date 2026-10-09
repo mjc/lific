@@ -21,7 +21,8 @@ pub(crate) use connection::{
 #[cfg(test)]
 pub(crate) use socket::SocketPolicy;
 pub(crate) use socket::{
-    SocketLifetime, SocketRetirement, SocketRunPolicy, requested as requests_runtime_socket,
+    SocketLifetime, SocketRequestPolicy, SocketRetirement, SocketRunPolicy,
+    requested as requests_runtime_socket,
 };
 
 /// Handles native runtime sockets before the framework layer's upgrade path.

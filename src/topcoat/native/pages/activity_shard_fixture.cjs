@@ -4,28 +4,39 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 
 function emittedShard(marker, context, cx, plain) {
-  const prefix = '::topcoat::shard::start(';
-  assert.ok(marker.startsWith(prefix), 'the argument source is an emitted Topcoat shard marker');
-  const pathEnd = marker.indexOf('\", \"', prefix.length);
-  assert.notEqual(pathEnd, -1, 'the shard marker contains its path and identity');
-  const path = marker.slice(prefix.length + 1, pathEnd);
-  const identityStart = pathEnd + 4;
-  const identityEnd = marker.indexOf('\", [', identityStart);
-  assert.notEqual(identityEnd, -1, 'the shard marker contains emitted argument expressions');
-  const identity = marker.slice(identityStart, identityEnd);
-  const expressionList = marker.slice(identityEnd + 4, marker.lastIndexOf('])'));
-  const expressions = [];
-  let offset = 0;
-  while (offset < expressionList.length) {
-    while (expressionList[offset] === ' ' || expressionList[offset] === ',') offset += 1;
-    if (offset >= expressionList.length) break;
-    assert.equal(expressionList[offset], '\"', 'shard argument expressions are quoted');
-    offset += 1;
-    const end = expressionList.indexOf('\"', offset);
-    assert.notEqual(end, -1, 'shard argument expression closes');
-    expressions.push(expressionList.slice(offset, end)
-      .replaceAll('&quot;', '\"').replaceAll('&amp;', '&'));
-    offset = end + 1;
+  const jsonPrefix = '::topcoat::shard::start-json(';
+  const legacyPrefix = '::topcoat::shard::start(';
+  assert.ok(
+    marker.startsWith(jsonPrefix) || marker.startsWith(legacyPrefix),
+    'the argument source is an emitted Topcoat shard marker',
+  );
+
+  let path;
+  let identity;
+  let expressions;
+  if (marker.startsWith(jsonPrefix)) {
+    const payload = marker.slice(jsonPrefix.length, marker.lastIndexOf(')'));
+    [path, identity, expressions] = JSON.parse(payload);
+    assert.equal(typeof path, 'string', 'the JSON shard payload has a path');
+    assert.equal(typeof identity, 'string', 'the JSON shard payload has an identity');
+    assert.ok(Array.isArray(expressions), 'the JSON shard payload has expression sources');
+    assert.ok(expressions.every(expression => typeof expression === 'string'));
+  } else {
+    const payload = marker.slice(legacyPrefix.length, marker.lastIndexOf(')'));
+    const match = /^("(?:\\.|[^"\\])*"), ("(?:\\.|[^"\\])*"), \[([\s\S]*)\]$/.exec(payload);
+    assert.ok(match, 'the legacy shard marker contains path, identity, and expressions');
+    path = JSON.parse(match[1]);
+    identity = JSON.parse(match[2]);
+    const expressionList = match[3];
+    expressions = [];
+    const quoted = /"((?:\\.|[^"\\])*)"/g;
+    for (const expression of expressionList.matchAll(quoted)) {
+      expressions.push(expression[1]
+        .replaceAll('&quot;', '\"')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&amp;', '&'));
+    }
   }
   return {
     path,

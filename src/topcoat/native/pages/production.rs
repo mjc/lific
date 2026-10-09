@@ -3242,13 +3242,12 @@ pub(super) fn shard_marker(html: &str, path: &str) -> String {
     document
         .tree
         .nodes()
-        .find_map(|node| match node.value() {
-            scraper::Node::Comment(comment)
-                if comment.starts_with("::topcoat::shard::start(") && comment.contains(path) =>
-            {
-                Some(comment.to_string())
-            }
-            _ => None,
+        .find_map(|node| {
+            let scraper::Node::Comment(comment) = node.value() else {
+                return None;
+            };
+            let marker = home_fixture::parse_shard_marker(comment)?;
+            (marker.path == path).then(|| comment.to_string())
         })
         .expect("the authenticated Page SSR emits its activity shard marker")
 }

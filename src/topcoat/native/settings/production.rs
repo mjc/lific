@@ -5,6 +5,29 @@ use tower::ServiceExt;
 
 use super::super::home_fixture;
 
+fn marker_comments(html: &str) -> Vec<(usize, String)> {
+    regex::Regex::new(r"(?s)<!--\s*(.*?)\s*-->")
+        .unwrap()
+        .captures_iter(html)
+        .map(|capture| (capture.get(0).unwrap().start(), capture[1].to_owned()))
+        .collect()
+}
+
+fn shard_owner_at(html: &str, position: usize) -> Option<String> {
+    let mut owners = Vec::new();
+    for (_, comment) in marker_comments(html)
+        .into_iter()
+        .take_while(|(start, _)| *start < position)
+    {
+        if let Some(marker) = home_fixture::parse_shard_marker(&comment) {
+            owners.push(marker.path);
+        } else if comment.starts_with("::topcoat::shard::end(") {
+            owners.pop().expect("balanced shard boundaries");
+        }
+    }
+    owners.pop()
+}
+
 #[tokio::test]
 async fn native_account_settings_unchanged_profile_cannot_be_saved() {
     let fixture = home_fixture::fixture();
@@ -128,30 +151,19 @@ async fn native_account_settings_client_controls_do_not_refresh_their_async_owne
     let fixture = home_fixture::fixture();
     let (status, html) = home_fixture::document(&fixture, "", "/settings", true, None).await;
     assert_eq!(status, StatusCode::OK);
-    let markers =
-        regex::Regex::new(r#"<!--::topcoat::(?:(shard)::(start|end)|(dep))\("([^"]+)""#).unwrap();
-    let mut owners = Vec::new();
     let mut refreshing_controls = Vec::new();
-    for marker in markers.captures_iter(&html) {
-        match marker.get(2).map(|kind| kind.as_str()) {
-            Some("start") => owners.push(marker[4].to_owned()),
-            Some("end") => {
-                owners.pop().expect("balanced shard boundaries");
-            }
-            None => {
-                if let Some(owner) = owners.last()
-                    && matches!(
-                        owner.as_str(),
-                        "/__native_settings/tools"
-                            | "/__native_settings/profile"
-                            | "/__native_settings/security"
-                            | "/__native_workspace/common_page"
-                    )
-                {
-                    refreshing_controls.push((owner.clone(), marker[4].to_owned()));
-                }
-            }
-            Some(kind) => panic!("unexpected shard marker {kind}"),
+    for (position, comment) in marker_comments(&html) {
+        if comment.starts_with("::topcoat::dep(")
+            && let Some(owner) = shard_owner_at(&html, position)
+            && matches!(
+                owner.as_str(),
+                "/__native_settings/tools"
+                    | "/__native_settings/profile"
+                    | "/__native_settings/security"
+                    | "/__native_workspace/common_page"
+            )
+        {
+            refreshing_controls.push((owner, comment));
         }
     }
     assert!(
@@ -196,20 +208,11 @@ async fn native_account_settings_sections_refresh_without_replacing_sibling_acti
 
     // Topcoat attributes signal refreshes and handler disposal to the enclosing
     // shard. A profile/password refresh must not cancel a pending tool connection.
-    let markers = regex::Regex::new(r#"<!--::topcoat::shard::(start|end)\("([^"]+)""#).unwrap();
     let owner = |label: &str| {
         let position = html
             .find(label)
             .unwrap_or_else(|| panic!("missing {label}"));
-        let mut shards = Vec::new();
-        for marker in markers.captures_iter(&html[..position]) {
-            if &marker[1] == "start" {
-                shards.push(marker[2].to_owned());
-            } else {
-                shards.pop().expect("balanced shard boundaries");
-            }
-        }
-        shards.pop().expect("section has a refresh owner")
+        shard_owner_at(&html, position).expect("section has a refresh owner")
     };
     let tools = owner("Connected tools");
     let profile = owner("Save changes");

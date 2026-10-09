@@ -29,8 +29,11 @@ async fn native_project_import_admin_sees_the_archive_form_consent_and_limits() 
         .next()
         .expect("selected file size has a stable DOM owner");
     assert!(
-        file_size.html().contains("::topcoat::expr::start("),
-        "selected file size is a reactive text expression"
+        file_size.children().any(|node| {
+            matches!(node.value(), scraper::Node::Comment(comment)
+                if home_fixture::parse_expression_marker(comment).is_some())
+        }),
+        "selected file size has a parseable reactive text expression"
     );
     for text in [
         "Import project archive",
