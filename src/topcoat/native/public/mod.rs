@@ -1,6 +1,7 @@
 //! Anonymous readers of explicitly published projects.
 
 mod collection;
+mod comments;
 mod data;
 mod layout;
 mod pages;
@@ -40,3 +41,6 @@ mod detail_production;
 
 #[cfg(test)]
 mod detail_state_production;
+
+#[cfg(test)]
+pub(super) mod paging_production;

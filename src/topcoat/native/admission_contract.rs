@@ -911,6 +911,121 @@ async fn native_published_shards_cannot_replay_private_project_arguments() {
 }
 
 #[tokio::test]
+async fn native_published_comment_shard_rechecks_parent_and_recovers_after_rejection() {
+    use crate::db::queries::comments::{self, CommentCursor, CommentParent};
+    let fixture = Fixture::new().await;
+    fixture.publish();
+    let (public_parent, private_parent, cursor, public_project) = {
+        let conn = fixture.db.write().unwrap();
+        let public_project = queries::resolve_project_identifier(&conn, "PUB").unwrap();
+        let private_project = queries::resolve_project_identifier(&conn, "MEM").unwrap();
+        let public_issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: public_project,
+                title: "Published comment thread".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let private_issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: private_project,
+                title: "Private comment thread".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let public_parent = CommentParent::Issue(public_issue.id);
+        let private_parent = CommentParent::Issue(private_issue.id);
+        comments::create_comment(
+            &conn,
+            public_parent,
+            fixture.operator_id,
+            "Published older row",
+        )
+        .unwrap();
+        let latest = comments::create_comment(
+            &conn,
+            public_parent,
+            fixture.operator_id,
+            "Published latest row",
+        )
+        .unwrap();
+        comments::create_comment(
+            &conn,
+            private_parent,
+            fixture.operator_id,
+            "Private row must stay private",
+        )
+        .unwrap();
+        (
+            public_parent,
+            private_parent,
+            CommentCursor::before(&latest),
+            public_project,
+        )
+    };
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(fixture.public_request("", "/public/PUB/issues", None))
+            .await
+            .unwrap();
+    let arguments = |project: &str, parent| {
+        super::public::paging_production::comment_arguments(
+            project,
+            parent,
+            &cursor,
+            vec![cursor.id],
+        )
+    };
+    let request = |run: u64, args: serde_json::Value| {
+        Message::Text(serde_json::json!({
+        "run": run, "method": "POST", "path": "/public/__native/comments",
+        "headers": {"x-topcoat-identity": topcoat::core::identity::Identity::ROOT.to_string(), "content-type": "application/json"},
+        "body": serde_json::json!({"args": args, "signals": {}}).to_string(),
+    }).to_string().into())
+    };
+    for (run, project, parent) in [(1, "MEM", private_parent), (2, "PUB", private_parent)] {
+        socket
+            .send(request(run, arguments(project, parent)))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_runtime_frame(&mut socket).await,
+            serde_json::json!({"run": run, "frame": {"t": "error", "status": 404}})
+        );
+    }
+    socket
+        .send(request(3, arguments("PUB", public_parent)))
+        .await
+        .unwrap();
+    let html = runtime_snapshot(&mut socket, 3).await;
+    assert!(html.contains("Published older row"), "{html}");
+    assert!(!html.contains("Private row must stay private"));
+    fixture
+        .db
+        .write()
+        .unwrap()
+        .execute(
+            "UPDATE projects SET is_public = 0 WHERE id = ?1",
+            [public_project],
+        )
+        .unwrap();
+    socket
+        .send(request(4, arguments("PUB", public_parent)))
+        .await
+        .unwrap();
+    assert_eq!(
+        next_runtime_frame(&mut socket).await,
+        serde_json::json!({"run": 4, "frame": {"t": "error", "status": 404}})
+    );
+    assert_eq!(fixture.hub.revocation_receiver_count(), 0);
+    close(socket).await;
+    fixture.wait_for_total(0).await;
+}
+
+#[tokio::test]
 async fn native_idle_no_render_sockets_exhaust_rest_and_release_on_disconnect() {
     let fixture = Fixture::new().await;
     assert_eq!(

@@ -1,4 +1,5 @@
 use super::super::home_fixture;
+use super::paging_production::comment_shard;
 use crate::db::{
     models::{CreateFolder, CreateLabel, CreatePage},
     queries,
@@ -15,13 +16,17 @@ fn signal_id(binding: &str) -> &str {
 #[test]
 fn public_comment_deep_links_accept_fragment_and_query_forms() {
     assert_eq!(
-        super::view::linked_comment_id("https://example.test/public/ACC/issues/ACC-1#comment-91"),
+        super::comments::linked_comment_id(
+            "https://example.test/public/ACC/issues/ACC-1#comment-91"
+        ),
         Some(91)
     );
-    assert_eq!(super::view::linked_comment_query_id("comment=92"), Some(92));
-    assert_eq!(super::view::linked_comment_query_id("tab=activity"), None);
+    assert_eq!(super::comments::query_id("comment=92"), Some(92));
+    assert_eq!(super::comments::query_id("tab=activity"), None);
     assert_eq!(
-        super::view::linked_comment_id("https://example.test/public/ACC/issues/ACC-1#comment-nope"),
+        super::comments::linked_comment_id(
+            "https://example.test/public/ACC/issues/ACC-1#comment-nope"
+        ),
         None
     );
 }
@@ -114,7 +119,7 @@ async fn public_page_detail_renders_readonly_breadcrumb_labels_and_timestamps() 
 }
 
 #[tokio::test]
-async fn public_comment_fragment_mount_hashchange_and_query_reveal_older_comments() {
+async fn public_comment_fragment_hashchange_and_query_load_actual_older_pages() {
     use crate::db::queries::comments::{self, CommentParent};
     use scraper::{Html, Selector};
 
@@ -142,7 +147,6 @@ async fn public_comment_fragment_mount_hashchange_and_query_reveal_older_comment
             })
             .collect::<Vec<_>>()
     };
-
     let path = "/public/ACC/issues/ACC-1";
     let (status, html) = home_fixture::document(&fixture, "", path, false, None).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{html}");
@@ -151,40 +155,97 @@ async fn public_comment_fragment_mount_hashchange_and_query_reveal_older_comment
         .select(&Selector::parse("[data-public-comments]").unwrap())
         .next()
         .unwrap();
-    let visible_binding = comments_root
-        .value()
-        .attr("data-topcoat-bind:data-native-public-visible-count")
-        .expect("SSR emits the visible comment count binding");
-    let mount_handler = comments_root
-        .select(&Selector::parse("span[hidden]").unwrap())
+    let count_signal = signal_id(
+        comments_root
+            .value()
+            .attr("data-topcoat-bind:data-native-public-visible-count")
+            .unwrap(),
+    );
+    let mount_handler = document
+        .select(&Selector::parse("[data-native-public-comment-segment='0']").unwrap())
         .next()
-        .and_then(|element| element.value().attr("data-topcoat-on:mount"))
-        .or_else(|| comments_root.value().attr("data-topcoat-on:mount"))
-        .expect("comment list owns the mount and hashchange handler");
-    let signals = home_fixture::page_signals(&html);
-    let visible_signal = signal_id(visible_binding).to_owned();
-    let required_visible = serde_json::Map::from_iter([
-        (format!("#comment-{}", comments[5]), serde_json::json!(55)),
-        (format!("#comment-{}", comments[0]), serde_json::json!(60)),
-    ]);
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:mount")
+        .unwrap();
+    let button = document
+        .select(&Selector::parse("[data-native-public-load-older]").unwrap())
+        .next()
+        .unwrap();
+    let click_handler = button.value().attr("data-topcoat-on:click").unwrap();
+    assert!(button.value().attr("data-topcoat-bind:disabled").is_some());
+    assert!(button.value().attr("data-topcoat-bind:aria-busy").is_some());
+    let (identity, expressions) = comment_shard(&html);
+    let href = format!("http://localhost{path}#comment-{}", comments[5]);
     let output = home_fixture::evaluate_handler(
         "src/topcoat/native/public/detail_handler.test.cjs",
         &serde_json::json!({
-            "signals": signals,
-            "visible_signal": visible_signal,
-            "mount_handler": mount_handler,
-            "href": format!("http://localhost{path}#comment-{}", comments[5]),
-            "hashchange_href": format!("http://localhost{path}#comment-{}", comments[0]),
-            "disposed_href": format!("http://localhost{path}#comment-{}", comments[3]),
-            "mount_comment": comments[5],
-            "hashchange_comment": comments[0],
-            "initial_visible": 50,
-            "required_visible": required_visible,
+            "signals": home_fixture::page_signals(&html), "mount_handler": mount_handler,
+            "shard_expressions": expressions, "href": href, "count_signal": count_signal,
+            "expected_count": 50, "expected_revision": 1, "expected_attempts": 1,
         }),
     );
-    assert_eq!(output["after_mount"], "55");
-    assert_eq!(output["after_hashchange"], "60");
-
+    let (status, older) = super::paging_production::replay_comments_with_identity(
+        &fixture,
+        output["args"].clone(),
+        &identity,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{older}");
+    let older_document = Html::parse_fragment(&older);
+    assert_eq!(
+        older_document
+            .select(&Selector::parse("li[id^='comment-']").unwrap())
+            .count(),
+        10
+    );
+    let completion = older_document
+        .select(&Selector::parse("[data-native-public-comment-segment='1']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-on:mount")
+        .unwrap();
+    let mut resumed = home_fixture::page_signals(&older);
+    resumed.extend(output["signals"].as_object().unwrap().clone());
+    let completed = home_fixture::evaluate_handler(
+        "src/topcoat/native/public/detail_handler.test.cjs",
+        &serde_json::json!({
+        "signals": resumed, "mount_handler": completion, "href": href,
+        "repeat_mount": true,
+            "count_signal": count_signal, "expected_count": 60,
+            "rows": comments.iter().map(|id| format!("#comment-{id}")).collect::<Vec<_>>(),
+            "expected_scroll": format!("#comment-{}", comments[5]),
+            "hashchange_href": format!("http://localhost{path}#comment-{}", comments[0]),
+            "disposed_href": format!("http://localhost{path}#comment-{}", comments[3]),
+        }),
+    );
+    assert!(
+        completed["scrolled"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(format!("#comment-{}", comments[0])))
+    );
+    home_fixture::evaluate_handler(
+        "src/topcoat/native/public/detail_handler.test.cjs",
+        &serde_json::json!({
+            "signals": resumed, "mount_handler": completion, "href": href,
+            "cancel_scroll": true,
+            "rows": comments.iter().map(|id| format!("#comment-{id}")).collect::<Vec<_>>(),
+            "hashchange_href": format!("http://localhost{path}#comment-{}", comments[0]),
+            "expected_scroll": format!("#comment-{}", comments[0]),
+            "forbidden_scroll": format!("#comment-{}", comments[5]),
+        }),
+    );
+    home_fixture::evaluate_handler(
+        "src/topcoat/native/public/detail_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&html), "mount_handler": mount_handler,
+            "click_handler": click_handler, "shard_expressions": expressions, "href": href,
+            "expected_revision": 1, "expected_attempts": 1, "fail": true,
+            "render_path": "/public/__native/comments", "disposed_href": format!("http://localhost{path}#comment-{}", comments[0]),
+        }),
+    );
     let (status, linked_html) = home_fixture::document(
         &fixture,
         "",
@@ -203,7 +264,31 @@ async fn public_comment_fragment_mount_hashchange_and_query_reveal_older_comment
         comments_root
             .value()
             .attr("data-native-public-visible-count"),
-        Some("60"),
-        "query deep links render all comments through their target"
+        Some("50"),
+        "query deep links start bounded and request older pages after hydration"
     );
+    let (query_identity, query_expressions) = comment_shard(&linked_html);
+    let query_mount = linked
+        .select(&Selector::parse("[data-native-public-comment-segment='0']").unwrap())
+        .next()
+        .unwrap()
+        .attr("data-topcoat-on:mount")
+        .unwrap();
+    let query_output = home_fixture::evaluate_handler(
+        "src/topcoat/native/public/detail_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&linked_html),
+            "mount_handler": query_mount, "shard_expressions": query_expressions,
+            "href": format!("http://localhost{path}?comment={}", comments[0]),
+            "expected_revision": 1, "expected_attempts": 1,
+        }),
+    );
+    let (status, query_older) = super::paging_production::replay_comments_with_identity(
+        &fixture,
+        query_output["args"].clone(),
+        &query_identity,
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{query_older}");
+    assert!(query_older.contains(&format!("id=\"comment-{}\"", comments[0])));
 }

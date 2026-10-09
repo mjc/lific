@@ -5,10 +5,14 @@ use topcoat::context::Cx;
 use crate::{
     db::{
         models::{
-            Attachment, AttachmentEntity, Comment, Folder, Issue, Label, ListIssuesQuery, Module,
-            Page, Project,
+            Attachment, AttachmentEntity, Folder, Issue, Label, ListIssuesQuery, Module, Page,
+            Project,
         },
-        queries::{self, comments::CommentParent, public as q},
+        queries::{
+            self,
+            comments::{CommentCursor, CommentPage, CommentParent},
+            public as q,
+        },
     },
     error::LificError,
     services::issues::IssueCollection,
@@ -30,14 +34,14 @@ pub(super) enum Body {
     },
     Issue {
         issue: Issue,
-        comments: Vec<Comment>,
+        comments: CommentPage,
         attachments: Vec<Attachment>,
         modules: Vec<Module>,
         labels: Vec<Label>,
     },
     Page {
         page: Page,
-        comments: Vec<Comment>,
+        comments: CommentPage,
         attachments: Vec<Attachment>,
         folders: Vec<Folder>,
     },
@@ -87,7 +91,7 @@ pub(super) fn load(cx: &Cx, route: &Route) -> Result<Snapshot, LificError> {
             Route::IssueDetail { identifier, .. } => {
                 let issue = q::public_issue_by_identifier(conn, project, identifier)?
                     .ok_or_else(not_found)?;
-                let comments = all_comments(conn, CommentParent::Issue(issue.id))?;
+                let comments = comments_page(conn, project, CommentParent::Issue(issue.id), None)?;
                 let attachments =
                     q::public_entity_attachments(conn, project, AttachmentEntity::Issue, issue.id)?
                         .ok_or_else(not_found)?;
@@ -101,7 +105,7 @@ pub(super) fn load(cx: &Cx, route: &Route) -> Result<Snapshot, LificError> {
             }
             Route::PageDetail { page_id, .. } => {
                 let page = q::public_page(conn, project, *page_id)?.ok_or_else(not_found)?;
-                let comments = all_comments(conn, CommentParent::Page(page.id))?;
+                let comments = comments_page(conn, project, CommentParent::Page(page.id), None)?;
                 let attachments =
                     q::public_entity_attachments(conn, project, AttachmentEntity::Page, page.id)?
                         .ok_or_else(not_found)?;
@@ -121,6 +125,31 @@ pub(super) fn load(cx: &Cx, route: &Route) -> Result<Snapshot, LificError> {
             body,
         })
     })
+}
+
+/// Read the next public comment page from the published project snapshot.
+/// The live parent check and comment query share the same database read.
+pub(super) fn read_comments(
+    cx: &Cx,
+    project_identifier: &str,
+    parent: CommentParent,
+    before: Option<&CommentCursor>,
+) -> Result<CommentPage, LificError> {
+    super::super::context::with_published(cx, project_identifier, |conn, project| {
+        comments_page(conn, project, parent, before)
+    })
+}
+
+fn comments_page(
+    conn: &rusqlite::Connection,
+    project: &Project,
+    parent: CommentParent,
+    before: Option<&CommentCursor>,
+) -> Result<CommentPage, LificError> {
+    if !q::public_parent_exists(conn, project, parent)? {
+        return Err(not_found());
+    }
+    q::public_comments(conn, parent, Some("desc"), Some(50), None, before)
 }
 
 fn issue_collection(
@@ -221,23 +250,6 @@ fn populate_relations(
         }
     }
     Ok(())
-}
-
-fn all_comments(
-    conn: &rusqlite::Connection,
-    parent: CommentParent,
-) -> Result<Vec<Comment>, LificError> {
-    let mut comments = Vec::new();
-    let mut offset = 0;
-    loop {
-        let page = q::public_comments(conn, parent, None, Some(500), Some(offset), None)?;
-        comments.extend(page.items);
-        if !page.has_more {
-            break;
-        }
-        offset = page.next_offset;
-    }
-    Ok(comments)
 }
 
 fn not_found() -> LificError {
