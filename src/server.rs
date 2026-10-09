@@ -1223,7 +1223,10 @@ fn build_app_with_store_and_frontend(
             // (text/event-stream — so MCP streaming is untouched), gRPC,
             // already-compressed images, and bodies under 32 bytes.
             .layer(middleware::from_fn(add_security_headers))
-            .layer(axum::Extension(trusted_proxies)),
+            .layer(axum::Extension(trusted_proxies))
+            .layer(middleware::from_fn(
+                topcoat_frontend::native::public_request::layer,
+            )),
     )
 }
 
@@ -2335,6 +2338,10 @@ mod public_surface_tests {
     /// Auth required, one published project with an issue, a comment and an
     /// attachment, and one private project holding a secret.
     fn deploy() -> Deployed {
+        deploy_with_frontend(topcoat_app::router_builder())
+    }
+
+    fn deploy_with_frontend(frontend: topcoat::router::RouterBuilder) -> Deployed {
         let pool = db::open_memory().expect("test db");
         let tmp = tempfile::tempdir().expect("attachment tempdir");
         let store = storage::AttachmentStore::new(tmp.path().to_path_buf());
@@ -2436,12 +2443,13 @@ mod public_surface_tests {
         let trusted_proxies = Arc::<[ratelimit::IpNetwork]>::from(
             cfg.server.trusted_proxy_ranges().expect("proxy ranges"),
         );
-        let app = build_app_with_store(
+        let app = build_app_with_store_and_frontend(
             &cfg,
             pool,
             realtime::RealtimeHub::new(),
             trusted_proxies,
             store,
+            frontend,
         );
 
         Deployed {
@@ -2615,6 +2623,200 @@ mod public_surface_tests {
         let d = deploy();
         let response = anonymous(&d.app, "GET", "/public/PUB").await;
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[derive(Clone)]
+    struct HeaderObservation {
+        path: String,
+        current: axum::http::HeaderMap,
+        original: axum::http::HeaderMap,
+    }
+
+    #[derive(Clone)]
+    struct ObserveHeaders(Arc<std::sync::Mutex<Vec<HeaderObservation>>>);
+
+    impl topcoat::router::Layer for ObserveHeaders {
+        fn path(&self) -> Option<&topcoat::router::Path> {
+            None
+        }
+
+        fn handle<'a>(
+            &'a self,
+            cx: &'a topcoat::context::Cx,
+            body: topcoat::router::Body,
+            next: topcoat::router::Next<'a>,
+        ) -> topcoat::router::LayerFuture<'a> {
+            use topcoat::router::request::{headers, original_headers, uri};
+            self.0.lock().unwrap().push(HeaderObservation {
+                path: uri(cx).path().to_owned(),
+                current: headers(cx).clone(),
+                original: original_headers(cx).clone(),
+            });
+            next.run(cx, body)
+        }
+    }
+
+    async fn serve_public_fixture(
+        app: Router,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        (address, server)
+    }
+
+    #[tokio::test]
+    async fn public_socket_handshakes_discard_credentials_before_original_capture() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let d = deploy_with_frontend(
+            topcoat_app::router_builder().layer(ObserveHeaders(Arc::clone(&observed))),
+        );
+        let (address, server) = serve_public_fixture(d.app.clone()).await;
+        let mut request = format!("ws://{address}/public/PUB/issues")
+            .into_client_request()
+            .unwrap();
+        request.headers_mut().insert(
+            header::COOKIE,
+            format!("lific_token={}", d.session_token).parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            "Bearer private-credential".parse().unwrap(),
+        );
+        request.headers_mut().insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            topcoat::runtime::RUNTIME_PROTOCOL.parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert(header::ORIGIN, format!("http://{address}").parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let observation = observed.lock().unwrap().last().unwrap().clone();
+        assert_eq!(observation.path, "/public/PUB/issues");
+        for headers in [&observation.current, &observation.original] {
+            assert!(!headers.contains_key(header::COOKIE));
+            assert!(!headers.contains_key(header::AUTHORIZATION));
+            assert_eq!(headers[header::UPGRADE], "websocket");
+            assert_eq!(headers[header::HOST], address.to_string());
+        }
+        socket.close(None).await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn public_http_and_socket_runs_discard_credentials_before_context_capture() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let d = deploy_with_frontend(
+            topcoat_app::router_builder().layer(ObserveHeaders(Arc::clone(&observed))),
+        );
+        let cookie = format!("lific_token={}", d.session_token);
+        let response = d
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/public/PUB/issues")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::AUTHORIZATION, "Bearer private-credential")
+                    .header(header::HOST, "public.test")
+                    .header(header::ORIGIN, "https://public.test")
+                    .header("x-forwarded-prefix", "/team/lific")
+                    .header("x-forwarded-proto", "https")
+                    .extension(axum::extract::ConnectInfo(
+                        "127.0.0.1:4000".parse::<std::net::SocketAddr>().unwrap(),
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(html.contains("/team/lific/public/PUB"), "{html}");
+        let http = observed.lock().unwrap().last().unwrap().clone();
+        for headers in [&http.current, &http.original] {
+            assert!(!headers.contains_key(header::COOKIE));
+            assert!(!headers.contains_key(header::AUTHORIZATION));
+            assert_eq!(headers[header::HOST], "public.test");
+            assert_eq!(headers[header::ORIGIN], "https://public.test");
+            assert_eq!(headers["x-forwarded-prefix"], "/team/lific");
+            assert_eq!(headers["x-forwarded-proto"], "https");
+        }
+
+        let (address, server) = serve_public_fixture(d.app.clone()).await;
+        let mut request = format!("ws://{address}/").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert(header::COOKIE, cookie.parse().unwrap());
+        request.headers_mut().insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            topcoat::runtime::RUNTIME_PROTOCOL.parse().unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert(header::ORIGIN, format!("http://{address}").parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        for (run, path) in [(1, "/public/PUB/issues"), (2, "/PRIV/issues")] {
+            socket
+                .send(Message::text(
+                    serde_json::json!({
+                        "run": run, "method": "GET", "path": path,
+                    })
+                    .to_string(),
+                ))
+                .await
+                .unwrap();
+            let html = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if let Message::Text(text) = socket.next().await.unwrap().unwrap() {
+                        let envelope: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        if envelope["run"] == run {
+                            assert_ne!(envelope["frame"]["t"], "error", "{envelope}");
+                            if envelope["frame"]["t"] == "snapshot" {
+                                break envelope["frame"]["html"].as_str().unwrap().to_owned();
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert!(html.contains(if run == 1 {
+                "Public issue"
+            } else {
+                "Private issue"
+            }));
+            let observation = observed
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|item| item.path == path)
+                .unwrap()
+                .clone();
+            for headers in [&observation.current, &observation.original] {
+                if run == 1 {
+                    assert!(!headers.contains_key(header::COOKIE));
+                    assert!(!headers.contains_key(header::AUTHORIZATION));
+                } else {
+                    assert_eq!(headers[header::COOKIE], cookie);
+                }
+            }
+        }
+        socket.close(None).await.unwrap();
+        server.abort();
     }
 
     #[tokio::test]
