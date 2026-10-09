@@ -3,7 +3,11 @@
 use scraper::{Html, Selector};
 
 use super::super::home_fixture;
-use crate::db::{models::{CreateModule, Role}, queries};
+use crate::db::{
+    models::{CreateModule, Role},
+    queries,
+};
+use topcoat::runtime::Surrogated;
 
 #[tokio::test]
 async fn native_module_detail_breadcrumbs_show_project_modules_and_current_name_at_all_mounts() {
@@ -74,24 +78,30 @@ async fn native_module_detail_breadcrumbs_show_project_modules_and_current_name_
             .select(&Selector::parse("a[title='ACC']").unwrap())
             .next()
             .unwrap();
-        assert!(project
-            .value()
-            .attr("class")
-            .unwrap_or_default()
-            .split_whitespace()
-            .any(|class| class == "font-mono"));
-        assert!(items[0]
-            .value()
-            .attr("class")
-            .unwrap_or_default()
-            .split_whitespace()
-            .any(|class| class == "hidden"));
-        assert!(items[0]
-            .value()
-            .attr("class")
-            .unwrap_or_default()
-            .split_whitespace()
-            .any(|class| class == "sm:flex"));
+        assert!(
+            project
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .any(|class| class == "font-mono")
+        );
+        assert!(
+            items[0]
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .any(|class| class == "hidden")
+        );
+        assert!(
+            items[0]
+                .value()
+                .attr("class")
+                .unwrap_or_default()
+                .split_whitespace()
+                .any(|class| class == "sm:flex")
+        );
         assert_eq!(
             breadcrumb
                 .select(&Selector::parse("a[title='Modules']").unwrap())
@@ -156,15 +166,70 @@ async fn native_module_detail_breadcrumb_copy_has_the_shared_live_toast_owner() 
         .select(&Selector::parse("button[aria-label='Copy ACC']").unwrap())
         .next()
         .expect("the project crumb emits its shared copy handler");
-    assert!(project_copy.value().attr("data-topcoat-on:click").is_some());
+    let copy_handler = project_copy
+        .value()
+        .attr("data-topcoat-on:click")
+        .expect("the project crumb emits its shared copy handler");
     let owner = document
         .select(&Selector::parse("#native-deferred-delete-owner").unwrap())
         .next()
         .expect("the emitted copy failure has a live workspace toast owner");
+    let account_id = queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+        .unwrap()
+        .id;
+    let failure = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/breadcrumb_copy.test.cjs",
+        &serde_json::json!({
+            "phase": "single_copy_failure",
+            "account_id": account_id,
+            "project_id": "ACC",
+            "signals": home_fixture::page_signals(&html),
+            "handler": copy_handler,
+        }),
+    );
+    assert_eq!(failure["passed"], true);
     assert_eq!(
         owner
             .select(&Selector::parse("[data-native-toast-slot]").unwrap())
             .count(),
         4
     );
+}
+
+#[tokio::test]
+async fn native_module_name_update_returns_the_committed_canonical_name() {
+    let fixture = home_fixture::fixture();
+    let (account, project_id, module_id) = {
+        let conn = fixture.db.write().unwrap();
+        let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+        let user = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::members::upsert_member(&conn, project_id, user.id, Role::Maintainer).unwrap();
+        let module = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id,
+                name: "Original module name".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        (user.id, project_id, module.id)
+    };
+    let arguments = serde_json::to_value(
+        (
+            account,
+            project_id,
+            module_id,
+            "name".to_owned(),
+            "  Canonical module name  ".to_owned(),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let (status, reply) =
+        home_fixture::procedure(&fixture, "/__native_modules/update", arguments).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{reply}");
+    assert_eq!(reply["v"].as_str(), Some("Canonical module name"));
 }

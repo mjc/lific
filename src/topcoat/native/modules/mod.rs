@@ -9,7 +9,7 @@ mod module_interactions;
 mod production;
 
 use super::super::shell::{Page, ParsedRoute};
-use super::{context, home_shell, navigation, project_authority, session};
+use super::{context, home_shell, project_authority, session};
 use crate::{db::queries, error::LificError, services::modules as module_service};
 use topcoat::{
     context::Cx,
@@ -71,32 +71,34 @@ pub(crate) fn region<'a>(
     )?;
 
     let (project, authority, page) = data;
-    let content = match page {
+    let (content, topbar) = match page {
         ModulePage::List(data) => {
-            list::content(cx, account, &project, &authority, data, route.query)
+            let content = list::content(cx, account, &project, &authority, data, route.query);
+            let overview = super::navigation::attrs(cx, &format!("/{identifier}/overview"));
+            let modules = super::navigation::attrs(cx, &format!("/{identifier}/modules"));
+            let topbar = view! {
+                cx =>
+                <div class="flex items-center gap-1.5 px-6 py-2 w-full text-body-sm">
+                    <a
+                        class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                        (overview)
+                    >
+                        (identifier.clone())
+                    </a>
+                    <span class="text-[var(--text-faint)]">"›"</span>
+                    <a
+                        class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
+                        (modules)
+                    >
+                        "Modules"
+                    </a>
+                </div>
+            }
+            .boxed();
+            (content, topbar)
         }
         ModulePage::Detail(data) => detail::content(cx, account, &project, &authority, data),
     };
-    let overview = navigation::attrs(cx, &format!("/{identifier}/overview"));
-    let modules = navigation::attrs(cx, &format!("/{identifier}/modules"));
-    let topbar = view! {
-        cx =>
-        <div class="flex items-center gap-1.5 px-6 py-2 w-full text-body-sm">
-            <a
-                class="font-mono font-medium text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
-                (overview)
-            >
-                (identifier.clone())
-            </a>
-            <span class="text-[var(--text-faint)]">"›"</span>
-            <a
-                class="text-[var(--text-muted)] hover:text-[var(--text)] no-underline"
-                (modules)
-            >
-                "Modules"
-            </a>
-        </div>
-    }.boxed();
     Ok(home_shell::page_region(
         cx,
         content,
