@@ -1311,7 +1311,7 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 [[package]]
 name = "topcoat"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "serde",
  "topcoat-asset",
@@ -1333,7 +1333,7 @@ dependencies = [
 [[package]]
 name = "topcoat-asset"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "http",
  "memchr",
@@ -1350,7 +1350,7 @@ dependencies = [
 [[package]]
 name = "topcoat-cookie"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "cookie",
  "getrandom 0.2.17",
@@ -1364,7 +1364,7 @@ dependencies = [
 [[package]]
 name = "topcoat-core"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "anymap3",
  "base64 0.22.1",
@@ -1379,7 +1379,7 @@ dependencies = [
 [[package]]
 name = "topcoat-core-grammar"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1390,7 +1390,7 @@ dependencies = [
 [[package]]
 name = "topcoat-core-macro"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -1400,7 +1400,7 @@ dependencies = [
 [[package]]
 name = "topcoat-font"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "heck",
  "serde",
@@ -1415,7 +1415,7 @@ dependencies = [
 [[package]]
 name = "topcoat-font-grammar"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1427,7 +1427,7 @@ dependencies = [
 [[package]]
 name = "topcoat-font-macro"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -1437,7 +1437,7 @@ dependencies = [
 [[package]]
 name = "topcoat-mail"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "lettre",
  "thiserror",
@@ -1450,7 +1450,7 @@ dependencies = [
 [[package]]
 name = "topcoat-router"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "bytes",
  "form_urlencoded",
@@ -1481,7 +1481,7 @@ dependencies = [
 [[package]]
 name = "topcoat-router-grammar"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1493,7 +1493,7 @@ dependencies = [
 [[package]]
 name = "topcoat-router-macro"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -1522,7 +1522,7 @@ dependencies = [
 [[package]]
 name = "topcoat-runtime-grammar"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1538,7 +1538,7 @@ dependencies = [
 [[package]]
 name = "topcoat-runtime-macro"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -1548,7 +1548,7 @@ dependencies = [
 [[package]]
 name = "topcoat-session"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.4.3",
@@ -1563,7 +1563,7 @@ dependencies = [
 [[package]]
 name = "topcoat-view"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "futures-core",
  "futures-util",
@@ -1578,7 +1578,7 @@ dependencies = [
 [[package]]
 name = "topcoat-view-grammar"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -1591,7 +1591,7 @@ dependencies = [
 [[package]]
 name = "topcoat-view-macro"
 version = "0.10.0"
-source = "git+https://github.com/mjc/topcoat?rev=9c909ed4ea16b7058ae23c5e1938c83039f3e985#9c909ed4ea16b7058ae23c5e1938c83039f3e985"
+source = "git+https://github.com/mjc/topcoat?rev=8c3e6adee4694b504e6df13c90428666100ea167#8c3e6adee4694b504e6df13c90428666100ea167"
 dependencies = [
  "quote",
  "syn 3.0.6",

@@ -16,11 +16,11 @@ router = [
 ]
 
 [dependencies]
-topcoat-asset = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
-topcoat-core = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
-topcoat-router = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985", optional = true }
-topcoat-view = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
-topcoat-view-macro = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985" }
+topcoat-asset = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
+topcoat-core = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
+topcoat-router = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167", optional = true }
+topcoat-view = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
+topcoat-view-macro = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
 
 pin-project-lite = { version = "0.2", optional = true }
 ref-cast = "1.0"
@@ -31,11 +31,11 @@ rand = "0.9"
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 futures-util = { version = "0.3", optional = true, features = ["sink"] }
 tokio = { version = "1.51.1", optional = true, features = ["rt", "sync", "time", "macros"] }
-topcoat-router = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985", optional = true, features = ["websocket"] }
+topcoat-router = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167", optional = true, features = ["websocket"] }
 
 [dev-dependencies]
 tokio = { version = "1.51.1", features = ["rt-multi-thread"] }
-topcoat = { git = "https://github.com/mjc/topcoat", rev = "9c909ed4ea16b7058ae23c5e1938c83039f3e985", default-features = false, features = ["asset", "router", "view", "runtime"] }
+topcoat = { git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167", default-features = false, features = ["asset", "router", "view", "runtime"] }
 
 [patch."https://github.com/mjc/topcoat"]
 topcoat-runtime = { path = "." }

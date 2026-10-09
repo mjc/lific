@@ -175,7 +175,11 @@ impl<T> Signal<T> {
             id: self.id,
             v: &value,
         };
-        serde_json::to_string(&declaration).expect("failed to serialize signal declaration")
+        // Keep HTML comment-token characters out of the JSON; JSON parsing restores them.
+        serde_json::to_string(&declaration)
+            .expect("failed to serialize signal declaration")
+            .replace('<', "\\u003c")
+            .replace('>', "\\u003e")
     }
 }
 
@@ -310,11 +314,9 @@ where
     let declaration = signal.declaration();
     hoist(move |parts| {
         parts.push_comment(|comment| {
-            // The declaration carries untrusted application data, so it is
-            // escaped like any other comment body rather than pushed raw.
             comment
                 .push_promoted_str_unescaped(&"::topcoat::signal(")
-                .push_string(declaration)
+                .push_string_unescaped(declaration)
                 .push_promoted_str_unescaped(&")");
         });
     });
@@ -361,6 +363,26 @@ mod tests {
             Ok(view! { cx => <p>(signal.read_untracked())</p> })
         }));
         block_on(view.single()).unwrap().render(cx)
+    }
+
+    /// Reads the JSON declaration directly from the rendered HTML comment.
+    fn rendered_signal_comment(html: &str) -> &str {
+        html.strip_prefix("<!--")
+            .expect("signal declaration starts the HTML")
+            .split_once("-->")
+            .expect("signal declaration is a closed HTML comment")
+            .0
+    }
+
+    /// Parses the signal declaration directly from its rendered comment.
+    fn rendered_signal_declaration(html: &str) -> serde_json::Value {
+        let comment = rendered_signal_comment(html);
+        let payload = comment
+            .strip_prefix("::topcoat::signal(")
+            .expect("comment contains a signal declaration")
+            .strip_suffix(')')
+            .expect("signal declaration closes its call");
+        serde_json::from_str(payload).expect("signal payload is JSON without HTML decoding")
     }
 
     /// Renders a body creating one number signal and reading it with
@@ -524,17 +546,34 @@ mod tests {
     }
 
     #[test]
-    fn payload_cannot_terminate_the_comment() {
-        // A value carrying `-->`, a quote, and an ampersand: the characters
-        // that could break out of the comment or corrupt its JSON payload.
-        let html = render_with_signal("a-->b\"c&d");
+    fn signal_payload_is_directly_parseable_and_preserves_its_value() {
+        let value = "<!-- --> --!> <script> &amp; &quot; &#10; &#x3c; & < > \" ' \n\r\0\u{2603} \\";
+        let html = render_with_signal(value);
 
-        // The comment context escaped `>`, so the only `-->` left is the
-        // marker's own terminator; the payload cannot end the comment early.
-        assert_eq!(html.matches("-->").count(), 1, "{html}");
-        assert!(html.contains("--&gt;"), "{html}");
-        // The JSON's own quotes round-trip as entities the client decodes.
-        assert!(html.contains("&quot;"), "{html}");
+        let comment = rendered_signal_comment(&html);
+        assert!(!comment.contains('<'), "{comment}");
+        assert!(!comment.contains('>'), "{comment}");
+        let declaration = rendered_signal_declaration(&html);
+        assert_eq!(declaration["t"], "signal");
+        assert_eq!(declaration["v"], value);
+        let content_start = html.find("-->").unwrap() + "-->".len();
+        assert!(html[content_start..].starts_with("<p>"), "{html}");
+        assert!(html.ends_with("</p>"), "{html}");
+    }
+
+    #[test]
+    fn nested_signal_values_are_directly_parseable() {
+        let value = vec![String::from("<script>&amp;"), String::from("--!>\r")];
+        let cx = &Cx::default();
+        let view = HoistView::new(ThenView::new(async move {
+            let _signal = signal(cx, || value);
+            Ok(view! { cx => <p></p> })
+        }));
+        let html = block_on(view.single()).unwrap().render(cx);
+
+        let declaration = rendered_signal_declaration(&html);
+        assert_eq!(declaration["v"]["v"][0], "<script>&amp;");
+        assert_eq!(declaration["v"]["v"][1], "--!>\r");
     }
 
     #[test]

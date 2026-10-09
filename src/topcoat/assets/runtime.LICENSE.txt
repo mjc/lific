@@ -24,10 +24,10 @@ SOFTWARE.
 
 - Package: `topcoat-runtime` 0.10.0, pinned by Cargo metadata.
 - Source file: `crates/topcoat-runtime/browser/dist/index.js`.
-- Rebased fork source: <https://github.com/mjc/topcoat/blob/9c909ed4ea16b7058ae23c5e1938c83039f3e985/crates/topcoat-runtime/browser/dist/index.js>.
-- The unmodified fork asset SHA-256 is `deb99dd257cc94b3142561f99c47891a7d36cf3f79ea21dec7acaa12d68bc965`; it matches the rebased upstream/main asset at `8cdc2bfd61c01491853a55e74046162ebcfc8331`.
+- Fork source: <https://github.com/mjc/topcoat/blob/8c3e6adee4694b504e6df13c90428666100ea167/crates/topcoat-runtime/browser/dist/index.js>.
+- The unmodified fork asset SHA-256 is `ca88337f3e12d9654c570bfe90d8474cea9abad3264824ba20f44fb43f2e3495`.
 - Framework crates use this exact Git revision; this is not a crates.io archive.
-- Lific patched asset SHA-256: `2c92d3af33e29a08e773e8a023d792bab7210e94d583da4e43f500910e95e2f1`.
-- Lific prepends the mounted-endpoint and scoped-mount helpers, then applies twenty-nine reversible substitutions. They cover mounted HTTP paths and logical page Run paths, no-HTTP-fallback connected refresh, comment decoding, scoped `@mount` and ordinary event contexts, native Event access, vector signal writes, Unicode uppercase/scalar operations, ECMAScript trimming, procedure keepalive/manual redirects, document-wide redirect arbitration including runless socket redirects, scoped render-error events, fresh page socket ownership, programmatic native navigation, and cancellable page-owner commit/transfer events.
-- Topcoat 0.10 upstream already implements tuple surrogate support and the shared document WebSocket Run/Stop protocol. The local asset keeps those implementations unchanged.
-- `transport.test.cjs` reconstructs the fork asset by removing the exact helper prefix and reversing each declared substitution.
+- Lific patched asset SHA-256: `93f04dcd16443fc8bdba72a30008e36ce19dd47c1f10b81aa7556a809cbb4ab1`.
+- Lific prepends the mounted-endpoint, navigation-owner, and scoped-mount helpers, then applies forty reversible substitutions. They cover mounted HTTP paths and logical page Run paths, no-HTTP-fallback connected refresh, raw compact signal JSON with legacy-only comment decoding, scoped `@mount` and ordinary event contexts, native Event access, vector signal writes and helpers, Unicode uppercase/scalar operations, ECMAScript trimming, procedure keepalive/manual redirects, document-wide redirect arbitration including runless socket redirects, scoped render-error events, fresh page socket ownership, programmatic native navigation, and cancellable page-owner commit/transfer events.
+- The fork bundle already contains compact signal marker parsing, deferred local closures, tuple surrogates, and the shared document WebSocket Run/Stop protocol; the Lific patches retain those implementations.
+- `transport.test.cjs` reconstructs the fork asset by removing the exact helper prefix and reversing each declared substitution, then checks the source SHA-256.
