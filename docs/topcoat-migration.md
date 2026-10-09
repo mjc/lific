@@ -41,6 +41,9 @@ with six initially visible and expandable description changes. Shared plan actio
 ignore retired owners and late replies.
 Plan titles start in read mode and edit inline, with Enter, blur, and Ctrl/Cmd+S
 commits and Escape cancellation. Empty or unchanged titles do not write.
+The Plan owner handles title events so child refreshes retain pending saves.
+Fresh child snapshots reconcile the canonical title without replacing an active
+draft; an older revision cannot overwrite a newer save.
 Both reuse the workspace/sidebar and shared authorized services. This is a
 partial port of those feature families, not a completed parity claim.
 
