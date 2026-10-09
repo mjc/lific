@@ -2068,6 +2068,187 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn native_plan_title_refreshes_from_fresh_saved_shard_data() {
+        use crate::db::{models::{CreatePlan, UpdatePlan}, queries};
+        use scraper::{Html, Selector};
+
+        let fixture = super::super::super::home_fixture::fixture();
+        let plan = {
+            let conn = fixture.db.write().unwrap();
+            let account = queries::users::validate_session(&conn, &fixture.token).unwrap().id;
+            let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
+            queries::plans::create_plan(&conn, &CreatePlan {
+                project_id,
+                title: "Initial server title".into(),
+                issue_id: None,
+                steps: Vec::new(),
+            }).unwrap()
+        };
+        let path = format!("/ACC/plans/{}", plan.id);
+        let (status, initial_html) = super::super::super::home_fixture::document(
+            &fixture, "/app", &path, true, None,
+        ).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        {
+            let conn = fixture.db.write().unwrap();
+            queries::plans::update_plan(&conn, plan.id, &UpdatePlan {
+                title: Some("Renamed by another client".into()),
+                ..Default::default()
+            }).unwrap();
+        }
+        let (status, shard_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(super::super::super::home_fixture::page_signals(&initial_html)),
+        ).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let shard = Html::parse_document(&shard_html);
+        let detail = shard
+            .select(&Selector::parse("main[data-native-plan-detail]").unwrap())
+            .next()
+            .expect("saved shard renders the plan detail root");
+        let mount_handler = detail
+            .value()
+            .attr("data-topcoat-on:mount")
+            .expect("saved shard reconciles its fresh title when mounted");
+        let mounted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "mode": "mount_sync",
+                "signals": super::super::super::home_fixture::page_signals(&shard_html),
+                "mount_handler": mount_handler,
+            }),
+        );
+        let (status, mounted_html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &path,
+            true,
+            Some(mounted["signals"].as_object().unwrap().clone()),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let mounted_document = Html::parse_document(&mounted_html);
+        let title = mounted_document
+            .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+            .next()
+            .expect("maintainer title remains editable after shard refresh");
+        assert_eq!(title.text().collect::<String>(), "Renamed by another client");
+    }
+
+    #[tokio::test]
+    async fn native_plan_title_parent_handlers_keep_overlapping_saves_alive() {
+        use crate::db::{models::CreatePlan, queries};
+        use scraper::{Html, Selector};
+
+        let fixture = super::super::super::home_fixture::fixture();
+        let plan = {
+            let conn = fixture.db.write().unwrap();
+            let account = queries::users::validate_session(&conn, &fixture.token).unwrap().id;
+            let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            queries::members::upsert_member(&conn, project_id, account, Role::Maintainer).unwrap();
+            queries::plans::create_plan(&conn, &CreatePlan {
+                project_id,
+                title: "Concurrent title saves".into(),
+                issue_id: None,
+                steps: Vec::new(),
+            }).unwrap()
+        };
+        let path = format!("/ACC/plans/{}", plan.id);
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture, "/app", &path, true, None,
+        ).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = Html::parse_document(&html);
+        let owner = document
+            .select(&Selector::parse("[data-native-plan-owner]").unwrap())
+            .next()
+            .unwrap()
+            .value();
+        let handlers = ["click", "keydown", "input", "focusout"]
+            .into_iter()
+            .map(|event| {
+                (
+                    event.to_owned(),
+                    serde_json::Value::String(
+                        owner
+                            .attr(&format!("data-topcoat-on:{event}"))
+                            .unwrap_or_else(|| {
+                                panic!("persistent plan owner delegates {event}")
+                            })
+                            .to_owned(),
+                    ),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let emitted = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "mode": "parent_overlap",
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "handlers": handlers,
+                "responses": [
+                    serde_json::to_value("First overlapping title".to_owned().into_surrogate()).unwrap(),
+                    serde_json::to_value("Second overlapping title".to_owned().into_surrogate()).unwrap(),
+                ],
+            }),
+        );
+        let requests = emitted["requests"].as_array().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            emitted["signals"]
+                .as_object()
+                .unwrap()
+                .values()
+                .any(|value| value == "Second overlapping title"),
+            "the later response becomes canonical after the earlier shard is retired"
+        );
+        for (request, title) in requests.iter().zip([
+            "First overlapping title",
+            "Second overlapping title",
+        ]) {
+            let expected = serde_json::to_value(
+                (
+                    queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+                        .unwrap()
+                        .id,
+                    "ACC".to_owned(),
+                    plan.id,
+                    0_i64,
+                    "title".to_owned(),
+                    title.to_owned(),
+                )
+                    .into_surrogate(),
+            )
+            .unwrap();
+            assert_eq!(request["path"], "/__native_plans/mutate");
+            assert_eq!(request["arguments"], expected);
+            let (status, _) = super::super::super::home_fixture::procedure(
+                &fixture,
+                "/__native_plans/mutate",
+                request["arguments"].clone(),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+        }
+        assert_eq!(
+            queries::plans::get_plan(&fixture.db.read().unwrap(), plan.id)
+                .unwrap()
+                .title,
+            "Second overlapping title"
+        );
+        let audits = fixture.db.read().unwrap().query_row(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_type = 'plan' AND entity_id = ?1 AND field = 'title'",
+            [plan.id],
+            |row| row.get::<_, i64>(0),
+        ).unwrap();
+        assert_eq!(audits, 2, "both overlapping title requests are persisted");
+    }
+
     #[component]
     async fn step_render_fixture(cx: &Cx, step: PlanStepNode) -> topcoat::Result<impl View> {
         let rendered = step_node(

@@ -14,6 +14,74 @@ function snapshot(cx, signals) {
 }
 
 async function run() {
+  if (input.mode === 'mount_sync') {
+    const fixture = handlerFixture(input.signals, async () => {
+      throw new Error('canonical title reconciliation must not perform network I/O');
+    }, input.browser_source);
+    fixture.handler(input.mount_handler)(fixture.cx.event({
+      type: 'mount', target: {}, currentTarget: {}, preventDefault() {}, stopPropagation() {},
+    }));
+    await flush();
+    return {signals: snapshot(fixture.cx, input.signals)};
+  }
+
+  if (input.mode === 'parent_overlap') {
+    const pending = [];
+    const fixture = handlerFixture(input.signals, (url, options) => {
+      return new Promise(resolve => pending.push({
+        path: new URL(url, 'http://localhost').pathname,
+        arguments: JSON.parse(options.body),
+        signal: options.signal,
+        resolve,
+      }));
+    }, input.browser_source);
+    const retiredChildController = new AbortController();
+    const retiredChild = new fixture.context.fixture.Context(fixture.registry);
+    retiredChild.abortSignal = retiredChildController.signal;
+    const handlers = Object.fromEntries(Object.entries(input.handlers).map(([name, source]) => [
+      name, fixture.handler(source),
+    ]));
+    const marker = selector => ({
+      value: '',
+      closest(candidate) { return candidate === selector ? this : null; },
+      getAttribute() { return 'title'; },
+    });
+    const event = (type, target, key) => ({
+      type, key, target, currentTarget: {},
+      preventDefault() { this.prevented = true; }, stopPropagation() {},
+    });
+    const trigger = marker('[data-native-plan-title-trigger]');
+    const editor = marker('[data-native-plan-title-input]');
+    const click = () => handlers.click(fixture.cx.event(event('click', trigger)));
+    const inputDraft = value => {
+      editor.value = value;
+      handlers.input(fixture.cx.event(event('input', editor)));
+    };
+    const commit = () => handlers.keydown(fixture.cx.event(event('keydown', editor, 'Enter')));
+
+    click();
+    inputDraft('First overlapping title');
+    commit();
+    await flush();
+    click();
+    inputDraft('Second overlapping title');
+    commit();
+    await flush();
+    assert.equal(pending.length, 2, 'both commits reach the parent-owned save handler');
+    pending[0].resolve({ok: true, json: async () => input.responses[0]});
+    await flush();
+    retiredChildController.abort();
+    assert.equal(retiredChild.abortSignal.aborted, true, 'the replaced saved-shard child is retired');
+    assert.equal(pending[1].signal.aborted, false,
+      'the second pending save is owned by the persistent parent context');
+    pending[1].resolve({ok: true, json: async () => input.responses[1]});
+    await flush();
+    return {
+      requests: pending.map(({path, arguments: args}) => ({path, arguments: args})),
+      signals: snapshot(fixture.cx, input.signals),
+    };
+  }
+
   const clickFixture = handlerFixture(input.signals, async () => {
     throw new Error('starting title edit must not perform network I/O');
   }, input.browser_source);
