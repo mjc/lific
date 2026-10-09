@@ -1,7 +1,7 @@
 //! Read-only native views for published issues and pages.
 use super::super::{
     breadcrumbs::{self, Segment},
-    navigation, transport,
+    browser, navigation, transport,
 };
 use super::data::{Body, Snapshot};
 use crate::db::{
@@ -10,6 +10,7 @@ use crate::db::{
 };
 use topcoat::{
     context::Cx,
+    runtime::{expr, signal},
     view::{BoxView, View, ViewExt, component, view},
 };
 
@@ -151,14 +152,14 @@ fn issue_detail<'a>(
     let relations = relation_groups(cx, project, issue);
     let comments = super::comments::thread(cx, project, CommentParent::Issue(issue.id), comments);
     let attachments = attachments_view(cx, project, attachments);
-    let back = navigation::attrs(cx, &format!("/public/{project}/issues"));
+    let back = public_issue_back_link(cx, project, &identifier);
     view! {
         cx =>
         <main
             class="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-6 md:px-8"
             data-public-issue=(identifier.clone())
         >
-            <a (back) class="text-caption text-[var(--text-muted)]">"Back to issues"</a>
+            (back)
             <header class="border-b border-solid border-[var(--border)] pb-5">
                 <div
                     class="flex flex-wrap items-center gap-2 text-caption text-[var(--text-muted)]"
@@ -214,6 +215,57 @@ fn issue_detail<'a>(
             </section>
         </main>
     }.boxed()
+}
+
+fn public_issue_back_link<'a>(cx: &'a Cx, project: &str, identifier: &str) -> BoxView<'a> {
+    let owner = cx.keyed(("public-issue-list-return", project.to_owned(), identifier));
+    let list_path = format!("/public/{project}/issues");
+    let board_path = format!("/public/{project}/board");
+    let initial_href = transport::mounted_url(cx, &list_path);
+    let href = signal(&owner, move || initial_href);
+    let label = signal(&owner, || "Back to issues".to_owned());
+    let mount = transport::trusted_mount(cx).unwrap_or_default().to_owned();
+    let board = board_path.clone();
+    let update_href = href.clone();
+    let update_label = label.clone();
+    let browser = browser::bindings();
+    let update = expr!(|destination: String| {
+        if !browser.is_disposed() {
+            if destination == board {
+                update_label.set("Back to board".to_owned());
+            } else {
+                update_label.set("Back to issues".to_owned());
+            }
+            update_href.set(mount.clone());
+            update_href.push_str(destination.clone());
+        }
+    });
+    let storage_key = super::preferences::issue_layout_storage_key(project);
+    let handler = super::super::issue_edit::list_return::handler_for_paths(
+        &storage_key,
+        &list_path,
+        &board_path,
+        &update,
+    );
+    let mut attributes = navigation::attrs(cx, &list_path);
+    let _ = attributes.remove("href");
+    attributes.insert(cx, "data-native-public-issue-back", String::new());
+    attributes.insert(cx, "data-topcoat-on:mount", handler);
+
+    view! {
+        cx =>
+        <a
+            :href=$(href.get())
+            :title=$(label.get())
+            class=(super::super::breadcrumbs::LINK_CLASS)
+            (attributes)
+        >
+            <span class=(super::super::breadcrumbs::LABEL_CLASS) data-label="">
+                $(label.get())
+            </span>
+        </a>
+    }
+    .boxed()
 }
 
 fn page_detail<'a>(

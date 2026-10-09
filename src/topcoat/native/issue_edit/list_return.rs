@@ -10,15 +10,15 @@ pub(crate) fn board_path(project: &str) -> String {
 }
 
 /// Storage only supplies a preference; Rust chooses the two genuine routes.
-fn destination(project: &str) -> Expr<String> {
-    let key = format!("lific:list:layout:{project}");
+fn destination(key: &str, list: &str, board: &str) -> Expr<String> {
+    let key = key.to_owned();
     let preferred = expr!(raw!(
         "cx.hydrate((() => { try { return localStorage.getItem(${key}.toString()) === 'board'; } catch { return false; } })())",
         false
     ));
-    let list = format!("/{project}/issues");
+    let list = list.to_owned();
     let initial = list.clone();
-    let board = board_path(project);
+    let board = board.to_owned();
     let choose = expr!(|preferred: bool| {
         if preferred {
             board.clone()
@@ -39,11 +39,27 @@ fn destination(project: &str) -> Expr<String> {
 
 /// Re-read at invocation, matching the original backHref() at Delete time.
 pub(crate) fn handler<T>(project: &str, callback: &Expr<T>) -> Js {
+    let key = format!("lific:list:layout:{project}");
+    let list = format!("/{project}/issues");
+    let board = board_path(project);
+    handler_for_paths(&key, &list, &board, callback)
+}
+
+/// Invoke the callback with one of two route paths selected by saved layout.
+/// The caller supplies the storage scope and logical paths so public readers
+/// can share the choice logic without ever consulting private preferences.
+pub(crate) fn handler_for_paths<T>(
+    storage_key: &str,
+    list_path: &str,
+    board_path: &str,
+    callback: &Expr<T>,
+) -> Js {
+    let destination = destination(storage_key, list_path, board_path);
     Js::builder()
         .source("() => ")
         .expression(callback)
         .source("(")
-        .expression(&destination(project))
+        .expression(&destination)
         .source(")")
         .build()
 }

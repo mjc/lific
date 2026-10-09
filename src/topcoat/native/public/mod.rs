@@ -54,3 +54,6 @@ mod preferences_production;
 
 #[cfg(test)]
 mod display_preferences_production;
+
+#[cfg(test)]
+mod navigation_production;
