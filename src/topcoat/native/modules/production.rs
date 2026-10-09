@@ -115,7 +115,13 @@ async fn native_module_detail_breadcrumbs_show_project_modules_and_current_name_
         assert_eq!(copy_buttons.len(), 1, "only the project crumb is copyable");
         assert_eq!(copy_buttons[0].value().attr("aria-label"), Some("Copy ACC"));
         assert!(html.contains("Module &lt;script&gt;alert('x')&lt;/script&gt; &amp; detail"));
-        assert!(!html.contains("<script>alert('x')</script>"));
+        assert!(
+            breadcrumb
+                .select(&Selector::parse("script").unwrap())
+                .next()
+                .is_none(),
+            "hostile module text must not become an executable element"
+        );
 
         let toast_owner = document
             .select(&Selector::parse("#native-deferred-delete-owner").unwrap())
@@ -231,5 +237,5 @@ async fn native_module_name_update_returns_the_committed_canonical_name() {
     let (status, reply) =
         home_fixture::procedure(&fixture, "/__native_modules/update", arguments).await;
     assert_eq!(status, axum::http::StatusCode::OK, "{reply}");
-    assert_eq!(reply["v"].as_str(), Some("Canonical module name"));
+    assert_eq!(reply.as_str(), Some("Canonical module name"));
 }
