@@ -569,6 +569,450 @@ async fn native_issue_detail_module_assignment_picker_matches_main_for_both_role
 }
 
 #[tokio::test]
+async fn native_issue_assignees_render_project_scoped_human_choices_and_viewer_readonly_value() {
+    let fixture = fixture();
+    let (issue_id, peer, outsider, inactive, bot, global_admin, member_admin) = {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Maintainer)
+            .unwrap();
+        let create = |username: &str, is_bot: bool| {
+            queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: username.into(),
+                    email: format!("{username}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(username.into()),
+                    is_admin: false,
+                    is_bot,
+                },
+            )
+            .unwrap()
+        };
+        let peer = create("assignee-peer", false);
+        queries::members::upsert_member(&conn, issue.project_id, peer.id, Role::Viewer).unwrap();
+        let outsider = create("assignee-outsider", false);
+        let inactive = create("assignee-inactive", false);
+        conn.execute(
+            "UPDATE users SET is_active = 0 WHERE id = ?1",
+            [inactive.id],
+        )
+        .unwrap();
+        let bot = create("assignee-bot", true);
+        let global_admin = create("assignee-global-admin", false);
+        conn.execute(
+            "UPDATE users SET is_admin = 1 WHERE id = ?1",
+            [global_admin.id],
+        )
+        .unwrap();
+        let member_admin = create("assignee-member-admin", false);
+        conn.execute(
+            "UPDATE users SET is_admin = 1 WHERE id = ?1",
+            [member_admin.id],
+        )
+        .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, member_admin.id, Role::Viewer)
+            .unwrap();
+        (
+            issue.id,
+            peer,
+            outsider,
+            inactive,
+            bot,
+            global_admin,
+            member_admin,
+        )
+    };
+
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let maintainer = Html::parse_document(&source);
+    let section = named_section(&maintainer, "Assignees");
+    assert!(
+        section
+            .select(&Selector::parse("button[aria-haspopup='dialog']").unwrap())
+            .next()
+            .is_some(),
+        "Maintainers can open the assignment picker"
+    );
+    let values = section
+        .select(&Selector::parse("[data-native-issue-assignee-option]").unwrap())
+        .map(|option| option.attr("data-native-issue-assignee-option").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values.first().copied(),
+        Some(""),
+        "Any agent clears assignment"
+    );
+    assert!(values.contains(&"human"), "Any person assigns human work");
+    assert!(values.contains(&peer.username.as_str()));
+    assert!(values.contains(&member_admin.username.as_str()));
+    assert!(!values.contains(&outsider.username.as_str()));
+    assert!(
+        values.contains(&global_admin.username.as_str()),
+        "administrators need no project membership"
+    );
+    assert!(!values.contains(&inactive.username.as_str()));
+    assert!(!values.contains(&bot.username.as_str()));
+    assert!(values.contains(&"human"));
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [actor.id])
+            .unwrap();
+    }
+    let (status, admin_source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let admin_document = Html::parse_document(&admin_source);
+    let admin_section = named_section(&admin_document, "Assignees");
+    assert!(
+        !admin_section
+            .select(&Selector::parse("[data-native-issue-assignee-option]").unwrap())
+            .any(|option| option.attr("data-native-issue-assignee-option")
+                == Some(outsider.username.as_str())),
+        "an administrator caller cannot assign people who lack project access"
+    );
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=0 WHERE id=?1", [actor.id])
+            .unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Viewer).unwrap();
+    }
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let viewer = Html::parse_document(&source);
+    let section = named_section(&viewer, "Assignees");
+    assert_eq!(
+        section.select(&Selector::parse("button").unwrap()).count(),
+        0,
+        "Viewers see assignment state without write controls"
+    );
+    assert_eq!(
+        queries::assignees::assignment(&fixture.db.read().unwrap(), issue_id).unwrap(),
+        crate::db::queries::assignees::Assignment::default(),
+        "rendering the picker does not mutate assignment"
+    );
+}
+
+#[tokio::test]
+async fn assignee_search_shard_rechecks_current_role_before_returning_project_people() {
+    let fixture = fixture();
+    let (account, issue_id) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        for index in 0..7 {
+            let person = queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: format!("assignee-shard-{index}"),
+                    email: format!("assignee-shard-{index}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(format!("Assignee Shard {index}")),
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, person.id, Role::Viewer)
+                .unwrap();
+        }
+        (account, issue_id)
+    };
+
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let shard_marker = document
+        .tree
+        .nodes()
+        .find_map(|node| match node.value() {
+            scraper::Node::Comment(comment)
+                if comment.starts_with("::topcoat::shard::start(")
+                    && comment.contains("/__native_issue_edit/assignee_options") =>
+            {
+                Some(comment.to_string())
+            }
+            _ => None,
+        })
+        .expect("search options are rendered through a native Topcoat shard");
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/assignee_shard_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&source),
+            "shard_marker": shard_marker,
+        }),
+    );
+    assert_eq!(emitted["path"], "/__native_issue_edit/assignee_options");
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(
+            &conn,
+            queries::get_issue(&conn, issue_id).unwrap().project_id,
+            account,
+            Role::Viewer,
+        )
+        .unwrap();
+    }
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(emitted["path"].as_str().unwrap())
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("content-type", "application/json")
+        .header("cookie", format!("lific_token={}", fixture.token))
+        .header(
+            topcoat::router::request::IDENTITY_HEADER,
+            emitted["identity"].as_str().unwrap(),
+        )
+        .body(Body::from(
+            serde_json::json!({
+                "args": emitted["args"],
+                "signals": home_fixture::page_signals(&source),
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a revoked editor receives a safe empty shard"
+    );
+    assert!(
+        !body.contains("assignee-shard-"),
+        "the stale picker cannot reveal roster entries"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_assignee_procedure_rechecks_role_and_expected_sequence() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, peer) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let peer = queries::users::create_user(
+            &conn,
+            &crate::db::models::CreateUser {
+                username: "assignee-procedure-peer".into(),
+                email: "assignee-procedure-peer@example.test".into(),
+                password: "test-password".into(),
+                display_name: Some("Procedure Peer".into()),
+                is_admin: false,
+                is_bot: false,
+            },
+        )
+        .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, peer.id, Role::Viewer).unwrap();
+        (account, issue, peer)
+    };
+    let request = super::assignees::AssignmentRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        expected_seq: issue.seq,
+        names: vec![peer.username.clone()],
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "typed assignment response: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    let assignment = queries::assignees::assignment(&fixture.db.read().unwrap(), issue.id).unwrap();
+    let expected = super::assignees::AssignmentReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        needs_human: assignment.needs_human,
+        people: assignment
+            .assignees
+            .into_iter()
+            .map(|person| super::assignees::AssignmentPerson {
+                user_id: person.user_id,
+                username: person.username,
+                display_name: person.display_name,
+            })
+            .collect(),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied = super::assignees::AssignmentRequest {
+        expected_seq: saved.seq,
+        names: vec![],
+        ..request.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((denied,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reply["v"]["status"]["err"].is_string());
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        saved.seq,
+        "a Viewer cannot replace the assignment"
+    );
+
+    let stale = super::assignees::AssignmentRequest {
+        expected_seq: issue.seq,
+        ..request
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+    }
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((stale,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reply["v"]["status"]["err"].is_string());
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        saved.seq,
+        "stale assignment requests do not write"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_assignee_picker_emits_replacement_requests_from_rust_handlers() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, first, second) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let create = |username: &str| {
+            queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: username.into(),
+                    email: format!("{username}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(username.into()),
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap()
+        };
+        let first = create("assignee-alpha");
+        let second = create("assignee-beta");
+        queries::members::upsert_member(&conn, issue.project_id, first.id, Role::Viewer).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, second.id, Role::Viewer).unwrap();
+        for index in 0..5 {
+            let person = create(&format!("assignee-extra-{index}"));
+            queries::members::upsert_member(&conn, issue.project_id, person.id, Role::Viewer)
+                .unwrap();
+        }
+        (account, issue, first, second)
+    };
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let handler = |selector: &str, event: &str| {
+        document
+            .select(&Selector::parse(selector).unwrap())
+            .next()
+            .unwrap_or_else(|| panic!("missing assignee handler: {selector}"))
+            .value()
+            .attr(&format!("data-topcoat-on:{event}"))
+            .unwrap()
+            .to_owned()
+    };
+    let request = |names: Vec<String>| super::assignees::AssignmentRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        expected_seq: issue.seq,
+        names,
+    };
+    let clear_request = request(Vec::new());
+    let human_request = request(vec!["human".into()]);
+    let named_request = request(vec![first.username.clone(), second.username.clone()]);
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/assignee_handler.test.cjs",
+        &serde_json::json!({
+            "signals":home_fixture::page_signals(&source),
+            "clear_handler":handler("[data-native-issue-assignee-option='']", "click"),
+            "human_handler":handler("[data-native-issue-assignee-option='human']", "click"),
+            "toggle_handler":handler("button[aria-haspopup='dialog']", "click"),
+            "first_person_handler":handler("[data-native-issue-assignee-option='assignee-alpha']", "click"),
+            "second_person_handler":handler("[data-native-issue-assignee-option='assignee-beta']", "click"),
+            "cancel_handler":handler("[data-native-issue-assignee-cancel]", "click"),
+            "search_handler":handler("input[aria-label='Filter people']", "input"),
+            "apply_handler":handler("[data-native-issue-assignee-apply]", "click"),
+            "first_person":"assignee-alpha",
+            "second_person":"assignee-beta",
+            "clear_request":serde_json::to_value(clear_request.into_surrogate()).unwrap(),
+            "human_request":serde_json::to_value(human_request.into_surrogate()).unwrap(),
+            "named_request":serde_json::to_value(named_request.clone().into_surrogate()).unwrap(),
+        }),
+    );
+    assert_eq!(
+        emitted["request"],
+        serde_json::to_value(named_request.into_surrogate()).unwrap()
+    );
+}
+
+#[tokio::test]
 async fn native_issue_module_choice_emits_typed_request_and_same_choice_is_a_noop() {
     let fixture = fixture();
     let (issue, account, current, next) = {

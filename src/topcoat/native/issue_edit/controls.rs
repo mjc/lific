@@ -138,6 +138,7 @@ struct Controls {
     catalog_revision: Signal<i64>,
     label_picker_open: Signal<bool>,
     module_picker_open: Signal<bool>,
+    assignee_picker_open: Signal<bool>,
     label_query: Signal<String>,
     label_color: Signal<String>,
     label_error: Signal<String>,
@@ -180,6 +181,7 @@ impl Controls {
             catalog_revision: signal(cx, || 0i64),
             label_picker_open: signal(cx, || false),
             module_picker_open: signal(cx, || false),
+            assignee_picker_open: signal(cx, || false),
             label_query: signal(cx, String::new),
             label_color: signal(cx, String::new),
             label_error: signal(cx, String::new),
@@ -638,6 +640,7 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
     let priority_open = controls.priority_open.clone();
     let disposed_revision = controls.description_revision.clone();
     let module_seq = controls.seq.clone();
+    let assignment_seq = module_seq.clone();
     let module_account = controls.account_id;
     let module_issue = controls.issue_id;
     let module_title = controls.title.clone();
@@ -653,6 +656,7 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
     let module_title_draft = controls.title_draft.clone();
     let module_description_draft = controls.description_draft.clone();
     let module_catalog_revision = controls.catalog_revision.clone();
+    let assignment_catalog_revision = module_catalog_revision.clone();
     let module_label_query = controls.label_query.clone();
     let module_label_color = controls.label_color.clone();
     let module_label_color_open = controls.label_color_open.clone();
@@ -753,6 +757,22 @@ fn document_mount(cx: &Cx, controls: &Controls) -> Attributes {
         };
         raw!(
             "window.addEventListener('lific:native-issue-module-applied', event => ${_module_applied}(event.detail), {signal:cx.abortSignal})",
+            ()
+        );
+        let _assignment_applied = |reply: super::assignees::AssignmentReply| {
+            if reply.account_id == module_account {
+                if reply.issue_id == module_issue {
+                    if reply.status.is_ok() {
+                        if reply.seq >= assignment_seq.get() {
+                            assignment_seq.set(reply.seq);
+                            assignment_catalog_revision.increment();
+                        }
+                    }
+                }
+            }
+        };
+        raw!(
+            "window.addEventListener('lific:native-issue-assignee-applied', event => ${_assignment_applied}(event.detail), {signal:cx.abortSignal})",
             ()
         );
         let _label_applied = |reply: super::labels::LabelReply| {
@@ -1088,7 +1108,7 @@ use metadata_shard::native_issue_metadata;
 )]
 mod metadata_shard {
     use super::super::super::{context, session};
-    use super::super::{labels, module_assignment, route};
+    use super::super::{labels, route};
     use super::*;
 
     #[shard("/__native_issue_edit/metadata")]
@@ -1099,42 +1119,20 @@ mod metadata_shard {
         catalog_revision: i64,
         dates: bool,
         menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+        assignment_open: Signal<bool>,
         picker_state: labels::PickerState,
     ) -> topcoat::Result<impl View> {
         // The saved cursor invalidates this read; it never supplies authority.
         let _ = (revision, catalog_revision);
         let caller = session::read(cx, context::caller(cx))?;
-        let user = session::read(cx, crate::api::require_user(&caller.identity))?;
-        let db = context::db(cx);
-        let issue = session::read(
-            cx,
-            crate::services::issues::resolve_issue(db, &caller.identity, &identifier),
-        )?;
-        let can_edit = match crate::authz::require_role(
-            db,
-            &caller.identity,
-            issue.project_id,
-            crate::db::models::Role::Maintainer,
-        ) {
-            Ok(()) => true,
-            Err(crate::error::LificError::Forbidden(_)) => false,
-            Err(error) => return session::read(cx, Err(error)),
-        };
-        let metadata = session::read(cx, route::metadata(cx, &issue))?;
-        let module_request = module_assignment::ModuleRequest {
-            account_id: user.id,
-            issue_id: issue.id,
-            identifier: issue.identifier.clone(),
-            previous_module_id: issue.module_id,
-            next_module_id: None,
-        };
+        let metadata = session::read(cx, route::metadata(cx, &identifier, &caller.identity))?;
         Ok(metadata_view(
             cx,
             metadata,
+            revision,
             dates,
-            can_edit,
-            module_request,
             menu_signals,
+            assignment_open,
             picker_state,
         ))
     }
@@ -1143,10 +1141,10 @@ mod metadata_shard {
 fn metadata_view<'a>(
     cx: &'a Cx,
     metadata: super::route::DocumentMetadata,
+    revision: i64,
     dates: bool,
-    can_edit: bool,
-    module_request: super::module_assignment::ModuleRequest,
     menu_signals: (Signal<bool>, Signal<bool>, Signal<bool>, Signal<bool>),
+    assignment_open: Signal<bool>,
     picker_state: super::labels::PickerState,
 ) -> BoxView<'a> {
     if dates {
@@ -1170,6 +1168,14 @@ fn metadata_view<'a>(
         }
         .boxed();
     }
+    let can_edit = metadata.can_edit;
+    let module_request = super::module_assignment::ModuleRequest {
+        account_id: metadata.account_id,
+        issue_id: metadata.issue.id,
+        identifier: metadata.issue.identifier.clone(),
+        previous_module_id: metadata.issue.module_id,
+        next_module_id: None,
+    };
     let waits = metadata
         .waits
         .iter()
@@ -1196,13 +1202,30 @@ fn metadata_view<'a>(
         .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
     let issue_identifier = module_request.identifier.clone();
-    let label_open = picker_state.0.clone();
+    let module_label_open = picker_state.0.clone();
+    let assignee_label_open = picker_state.0.clone();
     let module_open = menu_signals.3.clone();
     let module_menus = (
         menu_signals.0.clone(),
         menu_signals.1.clone(),
         menu_signals.2.clone(),
-        label_open,
+        module_label_open,
+    );
+    let assignee_menus = (
+        menu_signals.0.clone(),
+        menu_signals.1.clone(),
+        menu_signals.2.clone(),
+        menu_signals.3.clone(),
+        assignee_label_open,
+    );
+    let assignee_field = super::assignees::field(
+        cx,
+        &metadata,
+        module_request.issue_id,
+        revision,
+        &issue_identifier,
+        assignment_open,
+        assignee_menus,
     );
     let label_picker = super::labels::picker(
         cx,
@@ -1230,6 +1253,10 @@ fn metadata_view<'a>(
                     module_menus,
                     module_open,
                 ))
+            </section>
+            <section>
+                <h2>"Assignees"</h2>
+                (assignee_field)
             </section>
             <section>
                 <h2>"Labels"</h2>
@@ -1632,6 +1659,7 @@ fn editor_fields<'a>(
         controls.module_picker_open.clone(),
     );
     let catalog_revision = controls.catalog_revision.clone();
+    let assignee_picker_open = controls.assignee_picker_open.clone();
     let label_picker_open = controls.label_picker_open.clone();
     let status_module_open = controls.module_picker_open.clone();
     let status_labels_open = controls.label_picker_open.clone();
@@ -1853,6 +1881,7 @@ fn editor_fields<'a>(
                     catalog_revision: $(catalog_revision.get()),
                     dates: false,
                     menu_signals: module_menu_signals.clone(),
+                    assignment_open: assignee_picker_open.clone(),
                     picker_state: (
                         label_picker_open.clone(),
                         label_query.clone(),
@@ -1880,6 +1909,7 @@ fn editor_fields<'a>(
                     catalog_revision: 0,
                     dates: true,
                     menu_signals: module_menu_signals,
+                    assignment_open: assignee_picker_open,
                     picker_state: (
                         label_picker_open.clone(),
                         label_query.clone(),

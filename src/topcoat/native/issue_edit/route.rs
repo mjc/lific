@@ -15,6 +15,9 @@ use super::super::{context, session};
 use super::{actions, controls, delete_menu};
 
 pub(crate) struct DocumentMetadata {
+    pub(crate) issue: crate::db::models::Issue,
+    pub(crate) account_id: i64,
+    pub(crate) can_edit: bool,
     pub(crate) project_identifier: String,
     pub(crate) module_id: Option<i64>,
     pub(crate) module: String,
@@ -24,32 +27,60 @@ pub(crate) struct DocumentMetadata {
     pub(crate) waits: Vec<crate::db::models::IssueWait>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
+    pub(crate) assignment: queries::assignees::Assignment,
+    pub(crate) assignee_people: Vec<queries::assignees::IssueAssignee>,
 }
 
 /// The issue has already crossed the shared Viewer and relation boundary.
 pub(crate) fn metadata(
     cx: &Cx,
-    issue: &crate::db::models::Issue,
+    identifier: &str,
+    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
 ) -> Result<DocumentMetadata, LificError> {
-    let modules = {
-        let conn = context::db(cx).read()?;
-        queries::list_modules(&conn, issue.project_id)?
-    };
-    let module = match issue.module_id {
-        None => "None".to_owned(),
-        Some(id) => modules
-            .iter()
-            .find(|module| module.id == id)
-            .map_or_else(|| "Unknown".to_owned(), |module| module.name.clone()),
-    };
-    let project_identifier = {
-        let conn = context::db(cx).read()?;
-        queries::get_project(&conn, issue.project_id)?.identifier
-    };
-    let label_catalog = {
-        let conn = context::db(cx).read()?;
-        queries::list_labels(&conn, issue.project_id)?
-    };
+    let conn = context::db(cx).read()?;
+    let tx = conn.unchecked_transaction()?;
+    let identity = crate::auth::refresh_identity(&tx, identity.as_ref())?;
+    let user = crate::api::require_user(&identity)?;
+    let issue_id = queries::resolve_identifier(&tx, identifier)?;
+    let issue = queries::get_issue(&tx, issue_id)?;
+    crate::authz::require_role_conn(&tx, &identity, issue.project_id, Role::Viewer)?;
+    let can_edit =
+        match crate::authz::require_role_conn(&tx, &identity, issue.project_id, Role::Maintainer) {
+            Ok(()) => true,
+            Err(LificError::Forbidden(_)) => false,
+            Err(error) => return Err(error),
+        };
+    let modules = queries::list_modules(&tx, issue.project_id)?;
+    let assignment = queries::assignees::assignment(&tx, issue.id)?;
+    let settings = queries::settings::get(&tx)?;
+    let member_ids = queries::members::list_members(&tx, issue.project_id)?
+        .into_iter()
+        .map(|member| member.user_id)
+        .collect::<std::collections::HashSet<_>>();
+    let mut assignee_people = queries::users::list_users(&tx)?
+        .into_iter()
+        .filter(|person| {
+            person.is_active
+                && !person.is_bot
+                && (!settings.authz_enforced || person.is_admin || member_ids.contains(&person.id))
+        })
+        .map(|person| queries::assignees::IssueAssignee {
+            user_id: person.id,
+            username: person.username.clone(),
+            display_name: (person.display_name != person.username).then_some(person.display_name),
+        })
+        .collect::<Vec<_>>();
+    assignee_people.sort_by(|left, right| {
+        (left.user_id != user.id)
+            .cmp(&(right.user_id != user.id))
+            .then_with(|| {
+                assignment_person_name(left)
+                    .to_lowercase()
+                    .cmp(&assignment_person_name(right).to_lowercase())
+            })
+    });
+    let project_identifier = queries::get_project(&tx, issue.project_id)?.identifier;
+    let label_catalog = queries::list_labels(&tx, issue.project_id)?;
     let labels = issue
         .labels
         .iter()
@@ -61,17 +92,41 @@ pub(crate) fn metadata(
             (name.clone(), color)
         })
         .collect();
+    tx.commit()?;
+    let module = match issue.module_id {
+        None => "None".to_owned(),
+        Some(id) => modules
+            .iter()
+            .find(|module| module.id == id)
+            .map_or_else(|| "Unknown".to_owned(), |module| module.name.clone()),
+    };
+    let waits = issue.waits.clone();
+    let created_at = issue.created_at.clone();
+    let updated_at = issue.updated_at.clone();
     Ok(DocumentMetadata {
+        account_id: user.id,
+        can_edit,
         project_identifier,
         module_id: issue.module_id,
         module,
         modules,
         labels,
         label_catalog,
-        waits: issue.waits.clone(),
-        created_at: issue.created_at.clone(),
-        updated_at: issue.updated_at.clone(),
+        waits,
+        created_at,
+        updated_at,
+        assignment,
+        assignee_people,
+        issue,
     })
+}
+
+fn assignment_person_name(person: &queries::assignees::IssueAssignee) -> &str {
+    person
+        .display_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(&person.username)
 }
 
 struct AuthorizedDocument {
