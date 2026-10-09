@@ -3,7 +3,7 @@
 use super::{browser, deferred_delete::ToastErrorRequest, icons, navigation};
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, expr, signal},
+    runtime::{BoolSurrogate, Event, Signal, expr, signal},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -35,11 +35,7 @@ pub(crate) fn link<'a>(cx: &'a Cx, label: &str, path: &str, mono: bool) -> BoxVi
 
 pub(crate) fn current<'a>(cx: &'a Cx, label: &str, mono: bool) -> BoxView<'a> {
     let label = label.to_owned();
-    let class = if mono {
-        "flex min-w-0 items-center gap-1.5 font-mono text-body-sm font-medium text-[var(--text)]"
-    } else {
-        "flex min-w-0 items-center gap-1.5 text-body-sm font-medium text-[var(--text)]"
-    };
+    let class = current_class(mono);
     view! {
         cx =>
         <span title=(label.clone()) aria-current="page" class=(class)>
@@ -47,6 +43,25 @@ pub(crate) fn current<'a>(cx: &'a Cx, label: &str, mono: bool) -> BoxView<'a> {
         </span>
     }
     .boxed()
+}
+
+pub(crate) fn current_signal<'a>(cx: &'a Cx, label: Signal<String>, mono: bool) -> BoxView<'a> {
+    let class = current_class(mono);
+    view! {
+        cx =>
+        <span :title=$(label.get()) aria-current="page" class=(class)>
+            <span class=(LABEL_CLASS) data-label="">$(label.get())</span>
+        </span>
+    }
+    .boxed()
+}
+
+fn current_class(mono: bool) -> &'static str {
+    if mono {
+        "flex min-w-0 items-center gap-1.5 font-mono text-body-sm font-medium text-[var(--text)]"
+    } else {
+        "flex min-w-0 items-center gap-1.5 text-body-sm font-medium text-[var(--text)]"
+    }
 }
 
 pub(crate) fn render<'a>(cx: &'a Cx, account_id: i64, segments: Vec<Segment<'a>>) -> BoxView<'a> {

@@ -212,6 +212,17 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
         .select(&scraper::Selector::parse("[data-native-module-name-editor]").unwrap())
         .next()
         .unwrap();
+    let current_title_binding = document
+        .select(
+            &scraper::Selector::parse("nav[aria-label='Breadcrumb'] [aria-current='page']")
+                .unwrap(),
+        )
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:title")
+        .expect("the current breadcrumb title follows the live module name")
+        .to_owned();
     let details_toggle = document
         .select(&scraper::Selector::parse("button[aria-label='Show details']").unwrap())
         .next()
@@ -231,8 +242,10 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
         .collect::<Vec<_>>();
     let args = serde_json::json!({
         "mount": "/app",
+        "late_outcome": "failure",
         "destination": "/app/ACC/modules/".to_owned() + &module_id.to_string(),
         "signals": home_fixture::page_signals(&html),
+        "current_title_binding": current_title_binding,
         "input": {
             "input": input.value().attr("data-topcoat-on:input").unwrap(),
             "blur": input.value().attr("data-topcoat-on:blur").unwrap(),
@@ -258,6 +271,9 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
     );
     assert_eq!(output["name_arguments"][3], "name");
     assert_eq!(output["name_arguments"][4], "Renamed once");
+    assert_eq!(output["current_title_after_name"], "Renamed once");
+    assert_eq!(output["current_title_after_failed_name"], "Renamed once");
+    assert_eq!(output["late_response_ignored"], true);
     assert_eq!(
         output["status_requests"], 1,
         "selecting the current status is a no-op"
@@ -265,6 +281,14 @@ async fn native_module_detail_emitted_handlers_commit_once_cancel_and_save_statu
     assert_eq!(output["status_arguments"][3], "status");
     assert_eq!(output["status_arguments"][4], "planned");
     assert_eq!(output["navigations"], 2);
+
+    let mut late_success_args = args;
+    late_success_args["late_outcome"] = serde_json::json!("success");
+    let late_success = home_fixture::evaluate_handler(
+        "src/topcoat/native/modules/detail_interactions.test.cjs",
+        &late_success_args,
+    );
+    assert_eq!(late_success["late_response_ignored"], true);
 }
 
 #[tokio::test]

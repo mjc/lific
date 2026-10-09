@@ -7,22 +7,29 @@ const {TextEncoder, TextDecoder} = require('node:util');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const runtime = fs.readFileSync('src/topcoat/assets/runtime.js', 'utf8');
 const calls = [], navigations = [];
-let failNextFetch = false, holdNextFetch = false, rejectFetch;
+let failNextFetch = false, holdNextFetch = false, resolveFetch, rejectFetch;
 const context = {
   TextEncoder, TextDecoder, queueMicrotask,
   requestAnimationFrame: callback => callback(),
   document: {documentElement: {getAttribute: () => input.mount}},
   fetch: async (url, options) => {
-    calls.push({url, arguments: JSON.parse(options.body)});
+    const arguments_ = JSON.parse(options.body);
+    calls.push({url, arguments: arguments_});
     if (failNextFetch) {
       failNextFetch = false;
       throw new Error('fixture request failure');
     }
     if (holdNextFetch) {
       holdNextFetch = false;
-      return await new Promise((_, reject) => { rejectFetch = reject; });
+      return await new Promise((resolve, reject) => {
+        resolveFetch = () => resolve({ok: true, json: async () => arguments_[4]});
+        rejectFetch = () => reject(new Error('late fixture request failure'));
+      });
     }
-    return {ok: true, json: async () => null};
+    return {
+      ok: true,
+      json: async () => arguments_[3] === 'name' ? arguments_[4] : null,
+    };
   },
 };
 const bootstrap = 'var et=new ye;et.start(document);et.page.listenForDevRefresh();';
@@ -90,6 +97,7 @@ const readBinding = source => {
   fire(input.input.keydown, {type: 'keydown', key: 'Enter', preventDefault() {}});
   fire(input.input.blur, {type: 'blur'});
   await flush();
+  const currentTitleAfterName = readBinding(input.current_title_binding);
   const nameCalls = calls.filter(call => call.arguments[3] === 'name');
   assert.equal(nameCalls.length, 1, 'Enter followed by blur commits once');
   assert.equal(nameCalls[0].arguments[4], 'Renamed once', 'the committed name is trimmed');
@@ -116,6 +124,7 @@ const readBinding = source => {
   fire(input.input.input, {type: 'input', target: {value: 'Rejected name'}});
   fire(input.input.keydown, {type: 'keydown', key: 'Enter', preventDefault() {}});
   await flush();
+  const currentTitleAfterFailedName = readBinding(input.current_title_binding);
   assert.ok(Object.values(snapshot()).includes('Unable to save module name.'),
     'a live owner publishes name-save failure feedback');
   assert.deepEqual(navigations, [input.destination, input.destination],
@@ -136,23 +145,29 @@ const readBinding = source => {
   const priorNavigationCount = navigations.length;
   holdNextFetch = true;
   fire(input.trigger, {type: 'click'});
-  fire(input.input.input, {type: 'input', target: {value: 'Stale module edit'}});
+  const lateName = input.late_outcome === 'success' ? 'Late successful name' : 'Stale module edit';
+  fire(input.input.input, {type: 'input', target: {value: lateName}});
   fire(input.input.keydown, {type: 'keydown', key: 'Enter', preventDefault() {}});
-  for (let i = 0; i < 30 && !rejectFetch; i++) await Promise.resolve();
-  assert.equal(typeof rejectFetch, 'function', 'the pending update reached the procedure boundary');
-  const beforeLateFailure = snapshot();
+  for (let i = 0; i < 30 && !resolveFetch; i++) await Promise.resolve();
+  assert.equal(typeof resolveFetch, 'function', 'the pending update reached the procedure boundary');
+  const beforeLateResult = snapshot();
   controller.abort();
-  rejectFetch(new Error('late fixture request failure'));
+  if (input.late_outcome === 'success') resolveFetch();
+  else rejectFetch();
   await flush();
+  assert.deepEqual(snapshot(), beforeLateResult,
+    'a disposed owner ignores a late name response without changing any signal');
+  assert.equal(readBinding(input.current_title_binding), 'Renamed once',
+    'a late name response cannot update the breadcrumb title after disposal');
   assert.equal(navigations.length, priorNavigationCount,
     'a disposed module owner cannot navigate after its pending update');
-  assert.deepEqual(snapshot(), beforeLateFailure,
-    'a disposed owner ignores a late rejected save without publishing feedback or rollback');
-  assert.deepEqual(navigations, [input.destination, input.destination]);
   process.stdout.write(JSON.stringify({
     cancel_requests: 0,
     name_requests: nameCalls.length,
     name_arguments: nameCalls[0].arguments,
+    current_title_after_name: currentTitleAfterName,
+    current_title_after_failed_name: currentTitleAfterFailedName,
+    late_response_ignored: readBinding(input.current_title_binding) === 'Renamed once',
     status_requests: statusCalls.length,
     status_arguments: statusCalls[0].arguments,
     navigations: navigations.length,

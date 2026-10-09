@@ -1,7 +1,7 @@
 use super::super::super::runtime::whitespace::StrEcmaTrimExt;
 use super::super::{
-    browser, context, dates, icons, markdown, mascot, navigation, project_authority, session,
-    transport,
+    breadcrumbs, browser, context, dates, icons, markdown, mascot, navigation, project_authority,
+    session, transport,
 };
 use super::icon;
 use crate::{
@@ -70,7 +70,7 @@ pub(super) fn content<'a>(
     project: &Project,
     authority: &project_authority::Snapshot,
     data: ModuleDetail,
-) -> BoxView<'a> {
+) -> (BoxView<'a>, BoxView<'a>) {
     let owner = cx.keyed(format!("native-module-detail-{account}-{}", data.module.id));
     let module = data.module;
     let can_edit = authority.can_edit_structure;
@@ -179,7 +179,7 @@ pub(super) fn content<'a>(
     let name_input = name_input_attributes(
         cx,
         mutation.clone(),
-        title,
+        title.clone(),
         title_draft.clone(),
         name_editing.clone(),
         name_error.clone(),
@@ -242,7 +242,38 @@ pub(super) fn content<'a>(
         status_trigger,
         status_choices,
     );
-    view! {
+    let project_identifier = project.identifier.clone();
+    let overview_path = format!("/{project_identifier}/overview");
+    let modules_path = format!("/{project_identifier}/modules");
+    let breadcrumb = breadcrumbs::render(
+        cx,
+        account,
+        vec![
+            breadcrumbs::Segment {
+                content: breadcrumbs::link(cx, &project_identifier, &overview_path, true),
+                hide_below_sm: true,
+                copy: Some(project_identifier.clone()),
+            },
+            breadcrumbs::Segment {
+                content: breadcrumbs::link(cx, "Modules", &modules_path, false),
+                hide_below_sm: false,
+                copy: None,
+            },
+            breadcrumbs::Segment {
+                content: breadcrumbs::current_signal(cx, title.clone(), false),
+                hide_below_sm: false,
+                copy: None,
+            },
+        ],
+    );
+    let topbar = view! {
+        cx =>
+        <div class="flex min-w-0 items-center px-3 sm:px-6 py-2 w-full text-body-sm">
+            (breadcrumb)
+        </div>
+    }
+    .boxed();
+    let content = view! {
         owner =>
         <main
             data-native-module-detail=(module_id.to_string())
@@ -441,7 +472,9 @@ pub(super) fn content<'a>(
                 </aside>
             </div>
         </main>
-    }.boxed()
+    }
+    .boxed();
+    (content, topbar)
 }
 
 fn status_sidebar<'a>(
@@ -989,6 +1022,7 @@ fn name_input_attributes(
     let input = expr!(|event: Event| {
         draft.set(event.target.value);
     });
+    let updated_title = title.clone();
     let finish = expr!(|event: Event| {
         let key = raw!("cx.hydrate(${event}.inner.key ?? '')", String::new());
         if key == "Escape" {
@@ -1026,11 +1060,12 @@ fn name_input_attributes(
             }
         };
         let _run = async || {
-            update_module(account, project_id, module_id, "name".to_owned(), value).await;
-            raw!(
-                "if (!cx.abortSignal.aborted) cx.navigate(${destination}.toString());",
-                ()
-            );
+            let saved_name =
+                update_module(account, project_id, module_id, "name".to_owned(), value).await;
+            if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
+                updated_title.set(saved_name);
+                raw!("cx.navigate(${destination}.toString());", ());
+            }
         };
         raw!(
             "Promise.resolve().then(()=>${_run}()).catch(()=>${_failed}());",
@@ -1412,7 +1447,7 @@ pub(super) async fn update_module(
     module_id: i64,
     field: String,
     value: String,
-) -> topcoat::Result<()> {
+) -> topcoat::Result<String> {
     let caller = session::read(cx, context::caller(cx))?;
     let user = session::read(cx, crate::api::require_user(&caller.identity))?;
     if user.id != account {
@@ -1467,11 +1502,10 @@ pub(super) async fn update_module(
                     Some(project_id),
                     input,
                 )
-                .map(|_| ())
+                .map(|module| module.name)
             })
             .await,
-    )?;
-    Ok(())
+    )
 }
 
 #[procedure("/__native_modules/delete")]
