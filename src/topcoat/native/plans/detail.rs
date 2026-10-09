@@ -182,6 +182,7 @@ mod shards {
         busy: Signal<bool>,
         message: Signal<String>,
     ) -> topcoat::Result<impl View> {
+        let _ = revision_value;
         let (canonical_title, title_draft, title_editing) = title_state;
         let caller = session::read(cx, context::caller(cx))?;
         let user = session::read(cx, crate::api::require_user(&caller.identity))?;
