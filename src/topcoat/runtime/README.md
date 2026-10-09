@@ -1,10 +1,17 @@
 # Lific Topcoat runtime bridge
 
 The vendored framework source under `src/topcoat/vendor/topcoat-runtime` is from
-`mjc/topcoat` commit `8c3e6adee4694b504e6df13c90428666100ea167`, based on
+`mjc/topcoat` commit `e2444306b237c9b771ec33f76f9ae891392a0554`, based on
 official Topcoat `main` commit `341f3ff2`. `UPSTREAM-SHA256SUMS` records the
 fork package files before Lific's path and manifest changes. These source hashes
 do not represent a crates.io package checksum.
+
+The application serves `src/topcoat/assets/runtime.js`, not the vendored
+browser bundle directly. It retains Lific's transport patches on the prior
+minified baseline and carries the JSON expression and shard marker parser from
+the pinned fork revision. `src/topcoat/native/transport.test.cjs` checks the
+packaged parser in Node's VM and reconstructs the original baseline by reversing
+the declared local transformations.
 
 Lific compiles the vendored runtime's canonical bridge files from
 `src/topcoat/runtime/connection.rs` and `socket.rs`, both in the application and
@@ -24,6 +31,11 @@ The bridge preserves handshake authority headers and allows per-run overrides
 only for `Content-Type`, `X-Topcoat-Runtime` and the shard identity header. An
 optional route-agnostic `SocketRunPolicy`, installed by the application's
 admission layer, authorizes every requested method and URI before dispatch.
+An optional `SocketRequestPolicy` transforms each fresh synthetic request
+after its handshake headers and per-run values are assembled, before router
+context capture. Generic Topcoat connections leave it unset; Lific uses it to
+remove private credentials only when a run targets a published route, while
+preserving the original handshake headers for later private runs.
 Application authentication, public/private route scope and socket quotas stay
 in Lific.
 

@@ -55,7 +55,7 @@ impl<V: View> View for ShardScope<'_, V> {
     fn poll_first(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<ViewFirst>> {
         let this = self.project();
         let first = ready!(this.view.poll_first(cx))?;
-        let identity = serde_json::to_string(&this.identity.to_string()).unwrap();
+        let identity = this.identity.to_string();
         let content = Builder::block(this.cx, |builder| {
             builder.node(StartMarker {
                 url: this.url,
@@ -80,38 +80,25 @@ impl<V: View> View for ShardScope<'_, V> {
 ///
 /// The browser runtime posts re-render requests to the URL. The identity
 /// is stable across renders, so a re-render of the enclosing content
-/// produces the same markers and the browser can keep them. Each
-/// parameter's JavaScript source is wrapped in a quoted string. The source
-/// parts are sealed with the comment context, so any `"` inside the source
-/// renders as `&quot;` and the quotes stay unambiguous delimiters on the
-/// client.
+/// produces the same markers and the browser can keep them. Parameter
+/// sources are JSON encoded as a single array so comment contents do not
+/// pass through HTML entity decoding.
 struct StartMarker<'a> {
     url: &'static str,
-    /// The identity as a JSON string, quotes included.
+    /// The identity of this shard invocation.
     identity: &'a str,
     exprs: &'a [Js],
 }
 
 impl NodeViewParts for StartMarker<'_> {
     fn into_view_parts(self, _cx: &Cx, parts: &mut PartsWriter<'_>) {
-        // <!-- ::topcoat::shard::start("<url>", "<identity>", ["<js>", ...]) -->
+        let exprs = self.exprs.iter().map(Js::to_source).collect::<Vec<_>>();
+        let payload = crate::js::comment_json(&(self.url, self.identity, exprs));
         parts.push_comment(|comment| {
             comment
-                .push_promoted_str_unescaped(&"::topcoat::shard::start(")
-                .push_string_unescaped(serde_json::to_string(self.url).unwrap())
-                .push_promoted_str_unescaped(&", ")
-                .push_string_unescaped(self.identity.to_owned())
-                .push_promoted_str_unescaped(&", [");
-            let last = self.exprs.len().saturating_sub(1);
-            for (index, expr) in self.exprs.iter().enumerate() {
-                comment.push_promoted_str_unescaped(&"\"");
-                expr.write(comment);
-                comment.push_promoted_str_unescaped(&"\"");
-                if index != last {
-                    comment.push_promoted_str_unescaped(&", ");
-                }
-            }
-            comment.push_promoted_str_unescaped(&"])");
+                .push_promoted_str_unescaped(&"::topcoat::shard::start-json(")
+                .push_string_unescaped(payload)
+                .push_promoted_str_unescaped(&")");
         });
     }
 }
@@ -128,7 +115,7 @@ impl NodeViewParts for EndMarker {
         parts.push_comment(|comment| {
             comment
                 .push_promoted_str_unescaped(&"::topcoat::shard::end(")
-                .push_string_unescaped(self.identity)
+                .push_string_unescaped(serde_json::to_string(&self.identity).unwrap())
                 .push_promoted_str_unescaped(&")");
         });
     }

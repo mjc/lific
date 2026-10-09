@@ -122,6 +122,26 @@ impl Default for SocketPolicy {
 
 type RunAuthorization = dyn Fn(&Method, &Uri) -> bool + Send + Sync;
 
+type RequestSanitizer = dyn Fn(&mut Request) + Send + Sync;
+
+/// App-provided, route-agnostic sanitization for each request made on a socket.
+///
+/// Install this in the upgrade request context when synthetic requests need
+/// application-specific header handling before the router captures them.
+#[derive(Clone)]
+pub struct SocketRequestPolicy(Arc<RequestSanitizer>);
+
+impl SocketRequestPolicy {
+    #[must_use]
+    pub fn new(sanitize: impl Fn(&mut Request) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(sanitize))
+    }
+
+    fn apply(&self, request: &mut Request) {
+        (self.0)(request);
+    }
+}
+
 /// App-provided, route-agnostic authorization for each path requested on a socket.
 ///
 /// Install this in the upgrade request context when requests on the socket need
@@ -228,6 +248,7 @@ struct ConnectionTarget {
     _connection_context: Cx,
     headers: HeaderMap,
     remote: Option<RemoteAddr>,
+    request_policy: Option<SocketRequestPolicy>,
 }
 
 impl ConnectionTarget {
@@ -250,6 +271,7 @@ impl ConnectionTarget {
             _connection_context: cx.clone(),
             headers,
             remote: extensions(cx).get::<RemoteAddr>().copied(),
+            request_policy: try_request_context::<SocketRequestPolicy>(cx).cloned(),
         }
     }
 
@@ -274,7 +296,9 @@ impl ConnectionTarget {
         if let Some(remote) = self.remote {
             request.extensions_mut().insert(remote);
         }
-        super::super::native::public_request::strip_credentials(&mut request);
+        if let Some(policy) = &self.request_policy {
+            policy.apply(&mut request);
+        }
         Some(request)
     }
 
@@ -598,6 +622,65 @@ mod tests {
                 "{forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn request_sanitization_is_opt_in_and_applies_to_each_fresh_run() {
+        fn target(
+            headers: HeaderMap,
+            request_policy: Option<SocketRequestPolicy>,
+        ) -> ConnectionTarget {
+            ConnectionTarget {
+                epoch: ConnectionEpoch("test".into()),
+                router: Router::builder().build(),
+                _connection_context: Cx::default(),
+                headers,
+                remote: None,
+                request_policy,
+            }
+        }
+
+        fn run(path: &str) -> RunRequest {
+            RunRequest {
+                run: 1,
+                method: "POST".into(),
+                path: path.into(),
+                headers: HashMap::new(),
+                body: String::new(),
+            }
+        }
+
+        let mut handshake_headers = HeaderMap::new();
+        handshake_headers.insert(header::COOKIE, HeaderValue::from_static("session=secret"));
+        handshake_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer secret"),
+        );
+        handshake_headers.insert("x-forwarded-prefix", HeaderValue::from_static("/team"));
+
+        // A generic runtime connection retains handshake headers by default.
+        let generic = target(handshake_headers.clone(), None);
+        let private = generic.request(run("/account")).unwrap();
+        assert_eq!(private.headers(), &handshake_headers);
+
+        let policy = SocketRequestPolicy::new(|request| {
+            if request.uri().path().starts_with("/published/") {
+                request.headers_mut().remove(header::COOKIE);
+                request.headers_mut().remove(header::AUTHORIZATION);
+            }
+        });
+
+        // Sanitization applies to the fresh run request, not to captured headers.
+        let app = target(handshake_headers.clone(), Some(policy));
+        let published = app.request(run("/published/items")).unwrap();
+        assert!(!published.headers().contains_key(header::COOKIE));
+        assert!(!published.headers().contains_key(header::AUTHORIZATION));
+        assert_eq!(published.headers()["x-forwarded-prefix"], "/team");
+
+        // A later private run gets the original authority from the handshake.
+        let private = app.request(run("/account")).unwrap();
+        assert_eq!(private.headers()[header::COOKIE], "session=secret");
+        assert_eq!(private.headers()[header::AUTHORIZATION], "Bearer secret");
     }
 
     #[test]

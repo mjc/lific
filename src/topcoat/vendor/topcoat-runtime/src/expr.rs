@@ -88,15 +88,13 @@ where
             return;
         }
 
-        // <!-- ::topcoat::expr::start("<js>") -->
-        //
-        // The comment context seals the source, so a `"` inside it renders
-        // as `&quot;` and the quotes stay unambiguous delimiters on the
-        // client.
+        // <!-- ::topcoat::expr::start-json("<json js source>") -->
+        let source = crate::js::comment_json(&self.js.to_source());
         parts.push_comment(|comment| {
-            comment.push_promoted_str_unescaped(&"::topcoat::expr::start(\"");
-            self.js.write(comment);
-            comment.push_promoted_str_unescaped(&"\")");
+            comment
+                .push_promoted_str_unescaped(&"::topcoat::expr::start-json(")
+                .push_string_unescaped(source)
+                .push_promoted_str_unescaped(&")");
         });
         self.evaluated.into_view_parts(cx, parts);
         parts.push_comment(|comment| {

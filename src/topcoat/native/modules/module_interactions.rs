@@ -413,8 +413,11 @@ async fn native_module_detail_picker_saves_immediately_clears_and_respects_viewe
         })
         .expect("Main surfaces an icon update failure to the maintainer");
     assert!(
-        alert.html().contains("::topcoat::expr::start("),
-        "failure feedback has a reactive text binding, not just a server-rendered value"
+        alert.children().any(|node| {
+            matches!(node.value(), scraper::Node::Comment(comment)
+                if home_fixture::parse_expression_marker(comment).is_some())
+        }),
+        "failure feedback has a parseable reactive text binding, not just a server-rendered value"
     );
     assert!(
         failed_document

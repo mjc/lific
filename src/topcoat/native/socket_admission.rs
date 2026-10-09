@@ -24,6 +24,10 @@ impl Layer for SocketAdmission {
             if !super::super::runtime::requests_runtime_socket(cx) {
                 return next.run(cx, body).await;
             }
+            let socket_context = cx.with(super::super::runtime::SocketRequestPolicy::new(
+                super::public_request::strip_credentials,
+            ));
+            let cx = &socket_context;
             let hub = app_context::<RealtimeHub>(cx);
             let path = uri(cx).path();
             if path.starts_with("/public/") {

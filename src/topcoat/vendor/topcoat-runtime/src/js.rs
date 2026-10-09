@@ -85,6 +85,17 @@ impl Js {
     }
 }
 
+/// Serializes a marker payload without allowing HTML comment delimiters.
+///
+/// Comment marker parsers use JSON directly, so unlike attribute values the
+/// payload must not be HTML entity escaped.
+pub(crate) fn comment_json(value: &(impl Serialize + ?Sized)) -> String {
+    serde_json::to_string(value)
+        .expect("failed to serialize comment marker")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+}
+
 /// The source as the value of a `data-topcoat-*` attribute, like an event
 /// handler or a bind expression.
 impl AttributeValueViewParts for Js {

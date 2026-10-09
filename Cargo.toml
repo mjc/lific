@@ -54,11 +54,11 @@ regex = "1"
 strum = { version = "=0.28.0", default-features = false, features = ["derive"] }
 # HTTP
 axum = { version = "0.8", features = ["json", "multipart", "ws"] }
-topcoat = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
+topcoat = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "e2444306b237c9b771ec33f76f9ae891392a0554", default-features = false, features = ["asset", "discover", "router", "runtime", "tower", "view"] }
 # Shared framework types used by the packaged native socket bridge.
-topcoat-core = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
-topcoat-router = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167", features = ["websocket"] }
-topcoat-view = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "8c3e6adee4694b504e6df13c90428666100ea167" }
+topcoat-core = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "e2444306b237c9b771ec33f76f9ae891392a0554" }
+topcoat-router = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "e2444306b237c9b771ec33f76f9ae891392a0554", features = ["websocket"] }
+topcoat-view = { version = "=0.10.0", git = "https://github.com/mjc/topcoat", rev = "e2444306b237c9b771ec33f76f9ae891392a0554" }
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }

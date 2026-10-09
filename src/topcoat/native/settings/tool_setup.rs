@@ -474,15 +474,7 @@ mod tests {
                 let scraper::Node::Comment(comment) = node.value() else {
                     return None;
                 };
-                let encoded = comment
-                    .strip_prefix("::topcoat::expr::start(\"")?
-                    .strip_suffix("\")")?;
-                Some(
-                    scraper::Html::parse_fragment(encoded)
-                        .root_element()
-                        .text()
-                        .collect::<String>(),
-                )
+                home_fixture::parse_expression_marker(comment)
             })
             .expect("copy button emits its reactive label expression");
         let codex_template = *TOOL_TEMPLATES

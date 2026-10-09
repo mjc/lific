@@ -183,11 +183,123 @@ pub(super) fn page_signals(html: &str) -> serde_json::Map<String, serde_json::Va
     signals
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ShardMarker {
+    pub(super) path: String,
+    pub(super) identity: String,
+    pub(super) expressions: Vec<String>,
+}
+
+pub(super) fn parse_shard_marker(comment: &str) -> Option<ShardMarker> {
+    if let Some(payload) = comment
+        .strip_prefix("::topcoat::shard::start-json(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        let (path, identity, expressions): (String, String, Vec<String>) =
+            serde_json::from_str(payload).ok()?;
+        return Some(ShardMarker {
+            path,
+            identity,
+            expressions,
+        });
+    }
+
+    let payload = comment
+        .strip_prefix("::topcoat::shard::start(")?
+        .strip_suffix(')')?;
+    let (path, rest) = payload.split_once(", ")?;
+    let (identity, expressions) = rest.split_once(", [")?;
+    let path: String = serde_json::from_str(path).ok()?;
+    let identity: String = serde_json::from_str(identity).ok()?;
+    let expressions = expressions.strip_suffix(']')?;
+    let quoted = regex::Regex::new(r#"\"((?:\\.|[^\"\\])*)\""#).ok()?;
+    let expressions = quoted
+        .captures_iter(expressions)
+        .map(|capture| {
+            scraper::Html::parse_fragment(&capture[1].replace('<', "&lt;"))
+                .root_element()
+                .text()
+                .collect()
+        })
+        .collect();
+    Some(ShardMarker {
+        path,
+        identity,
+        expressions,
+    })
+}
+
+pub(super) fn shard_marker(html: &str, path: &str) -> Option<ShardMarker> {
+    let document = scraper::Html::parse_document(html);
+    document.tree.nodes().find_map(|node| {
+        let scraper::Node::Comment(comment) = node.value() else {
+            return None;
+        };
+        let marker = parse_shard_marker(comment)?;
+        (marker.path == path).then_some(marker)
+    })
+}
+
+pub(super) fn parse_expression_marker(comment: &str) -> Option<String> {
+    if let Some(payload) = comment
+        .strip_prefix("::topcoat::expr::start-json(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        return serde_json::from_str(payload).ok();
+    }
+
+    let encoded = comment
+        .strip_prefix("::topcoat::expr::start(\"")?
+        .strip_suffix("\")")?;
+    Some(
+        scraper::Html::parse_fragment(&encoded.replace('<', "&lt;"))
+            .root_element()
+            .text()
+            .collect(),
+    )
+}
+
 #[test]
 fn compact_signal_fixture_preserves_literal_entities() {
     let html = r#"<!--::topcoat::signal({"t":"signal","id":"literal","v":"&quot; &amp; &#10; &#x3c;"})-->"#;
     let signals = page_signals(html);
     assert_eq!(signals["literal"], "&quot; &amp; &#10; &#x3c;");
+}
+
+#[test]
+fn shard_marker_parser_accepts_json_and_legacy_payloads() {
+    let current = parse_shard_marker(
+        r#"::topcoat::shard::start-json(["/native", "identity", ["cx.signal(\"x\").get()", "\u003cb\u003etag\u003c/b\u003e&amp;quot;"]])"#,
+    )
+    .unwrap();
+    assert_eq!(current.path, "/native");
+    assert_eq!(current.identity, "identity");
+    assert_eq!(
+        current.expressions,
+        [r#"cx.signal("x").get()"#, "<b>tag</b>&amp;quot;"]
+    );
+
+    let legacy = parse_shard_marker(
+        r#"::topcoat::shard::start("/native", "identity", ["cx.signal(&quot;x&quot;).get()", "<b>tag</b>&amp;amp;quot;"])"#,
+    )
+    .unwrap();
+    assert_eq!(legacy.path, current.path);
+    assert_eq!(legacy.identity, current.identity);
+    assert_eq!(legacy.expressions, current.expressions);
+}
+
+#[test]
+fn expression_marker_parser_preserves_json_source_and_legacy_html_entities() {
+    let current = parse_expression_marker(
+        r#"::topcoat::expr::start-json("cx.signal(\"x\").get() + '\u003cb\u003e'")"#,
+    )
+    .unwrap();
+    let legacy = parse_expression_marker(
+        r#"::topcoat::expr::start("cx.signal(&quot;x&quot;).get() + '<b>'")"#,
+    )
+    .unwrap();
+    assert_eq!(current, r#"cx.signal("x").get() + '<b>'"#);
+    assert_eq!(legacy, current);
 }
 
 pub(crate) fn fixture() -> Fixture {

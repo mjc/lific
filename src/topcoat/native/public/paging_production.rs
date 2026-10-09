@@ -470,30 +470,7 @@ async fn public_comment_shard_reads_older_rows_and_rechecks_publication() {
 }
 
 pub(super) fn comment_shard(html: &str) -> (String, Vec<String>) {
-    let document = scraper::Html::parse_document(html);
-    let marker = document
-        .tree
-        .nodes()
-        .find_map(|node| {
-            let scraper::Node::Comment(comment) = node.value() else {
-                return None;
-            };
-            comment
-                .strip_prefix("::topcoat::shard::start(\"/public/__native/comments\", ")
-                .and_then(|value| value.strip_suffix(')'))
-        })
+    let marker = home_fixture::shard_marker(html, "/public/__native/comments")
         .expect("the thread has a retained native comment shard");
-    let (identity, expressions) = marker.split_once(", [").unwrap();
-    let identity = serde_json::from_str(identity).unwrap();
-    let quoted = regex::Regex::new(r#""([^"]*)""#).unwrap();
-    let expressions = quoted
-        .captures_iter(expressions)
-        .map(|capture| {
-            scraper::Html::parse_fragment(&capture[1].replace('<', "&lt;"))
-                .root_element()
-                .text()
-                .collect::<String>()
-        })
-        .collect();
-    (identity, expressions)
+    (marker.identity, marker.expressions)
 }

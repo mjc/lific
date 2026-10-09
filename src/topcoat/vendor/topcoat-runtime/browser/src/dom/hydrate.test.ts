@@ -13,6 +13,13 @@ afterEach(() => {
 	document.body.innerHTML = "";
 });
 
+function legacyCommentEscape(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
+}
+
 it("parses signal values without resolving their references", () => {
 	const marker = document.createComment(
 		'::topcoat::signal({"t":"signal","id":"b","v":{"t":"Signal","id":"a"}})',
@@ -54,6 +61,120 @@ it("decodes entities once in legacy escaped signal JSON", () => {
 		kind: "signal",
 		id: "legacy",
 		value: "&quot; &amp; &#10; &#x3c;",
+	});
+});
+
+it("preserves tag-shaped values in legacy escaped signal JSON", () => {
+	const value = `before --><b>tag</b> &lt; </script>`;
+	const payload = JSON.stringify({ t: "signal", id: "legacy-tags", v: value });
+	const marker = document.createComment(
+		`::topcoat::signal(${legacyCommentEscape(payload)})`,
+	);
+
+	expect(parseComment(marker)).toEqual({
+		kind: "signal",
+		id: "legacy-tags",
+		value,
+	});
+});
+
+it("parses JSON encoded expression source without decoding literal HTML entities", () => {
+	const js = `cx.hydrate("--><b>tag</b> --!> &quot; &amp; &#10;")`;
+	const marker = document.createComment(
+		`::topcoat::expr::start-json(${JSON.stringify(js).replaceAll(">", "\\u003e").replaceAll("<", "\\u003c")})`,
+	);
+
+	expect(parseComment(marker)).toEqual({ kind: "expr-start", js });
+});
+
+it("rejects nonstring JSON expression payloads", () => {
+	for (const payload of [null, {}, [], 1]) {
+		const marker = document.createComment(
+			`::topcoat::expr::start-json(${JSON.stringify(payload)})`,
+		);
+
+		expect(() => parseComment(marker)).toThrow("Invalid expression marker");
+	}
+});
+
+it("continues to parse legacy HTML escaped expression markers", () => {
+	const marker = document.createComment(
+		'::topcoat::expr::start("cx.hydrate(&quot;&amp;quot;&quot;)")',
+	);
+
+	expect(parseComment(marker)).toEqual({
+		kind: "expr-start",
+		js: 'cx.hydrate("&quot;")',
+	});
+});
+
+it("preserves tag-shaped source in legacy escaped expression markers", () => {
+	const value = `before --><b>tag</b> &lt; </script>`;
+	const js = `cx.hydrate(${JSON.stringify(value)})`;
+	const marker = document.createComment(
+		`::topcoat::expr::start("${legacyCommentEscape(js)}")`,
+	);
+
+	expect(parseComment(marker)).toEqual({ kind: "expr-start", js });
+});
+
+it("parses JSON encoded shard sources without HTML decoding", () => {
+	const exprs = [`cx.hydrate("--><b>tag</b> --!> &quot;")`];
+	const marker = document.createComment(
+		`::topcoat::shard::start-json(${JSON.stringify(["/shards/1", "id", exprs]).replaceAll(">", "\\u003e").replaceAll("<", "\\u003c")})`,
+	);
+
+	expect(parseComment(marker)).toEqual({
+		kind: "shard-start",
+		path: "/shards/1",
+		identity: "id",
+		exprs,
+	});
+});
+
+it("rejects malformed JSON shard payloads", () => {
+	const payloads: unknown[] = [
+		[],
+		["/shards/1", "id"],
+		[1, "id", []],
+		["/shards/1", 1, []],
+		["/shards/1", "id", 1],
+		["/shards/1", "id", [1]],
+	];
+	for (const payload of payloads) {
+		const marker = document.createComment(
+			`::topcoat::shard::start-json(${JSON.stringify(payload)})`,
+		);
+
+		expect(() => parseComment(marker)).toThrow("Invalid shard marker");
+	}
+});
+
+it("continues to parse legacy HTML escaped shard sources", () => {
+	const marker = document.createComment(
+		'::topcoat::shard::start("/shards/1", "id", ["cx.hydrate(&quot;tag&amp;quot;&quot;)"])',
+	);
+
+	expect(parseComment(marker)).toEqual({
+		kind: "shard-start",
+		path: "/shards/1",
+		identity: "id",
+		exprs: ['cx.hydrate("tag&quot;")'],
+	});
+});
+
+it("preserves tag-shaped source in legacy escaped shard markers", () => {
+	const value = `before --><b>tag</b> &lt; </script>`;
+	const js = `cx.hydrate(${JSON.stringify(value)})`;
+	const marker = document.createComment(
+		`::topcoat::shard::start("/shards/1", "id", ["${legacyCommentEscape(js)}"])`,
+	);
+
+	expect(parseComment(marker)).toEqual({
+		kind: "shard-start",
+		path: "/shards/1",
+		identity: "id",
+		exprs: [js],
 	});
 });
 

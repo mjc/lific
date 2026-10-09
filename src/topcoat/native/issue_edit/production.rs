@@ -741,14 +741,12 @@ async fn assignee_search_shard_rechecks_current_role_before_returning_project_pe
     let shard_marker = document
         .tree
         .nodes()
-        .find_map(|node| match node.value() {
-            scraper::Node::Comment(comment)
-                if comment.starts_with("::topcoat::shard::start(")
-                    && comment.contains("/__native_issue_edit/assignee_options") =>
-            {
-                Some(comment.to_string())
-            }
-            _ => None,
+        .find_map(|node| {
+            let scraper::Node::Comment(comment) = node.value() else {
+                return None;
+            };
+            let marker = home_fixture::parse_shard_marker(comment)?;
+            (marker.path == "/__native_issue_edit/assignee_options").then(|| comment.to_string())
         })
         .expect("search options are rendered through a native Topcoat shard");
     let emitted = home_fixture::evaluate_handler(

@@ -3,10 +3,12 @@ mod rerun;
 #[path = "../../../runtime/socket.rs"]
 mod socket;
 
+use crate::connection::{ConnectedRender, ConnectionEpoch};
 pub use rerun::*;
 #[cfg(not(target_family = "wasm"))]
-pub use socket::{SocketLifetime, SocketPolicy, SocketRetirement, SocketRunPolicy};
-use crate::connection::{ConnectedRender, ConnectionEpoch};
+pub use socket::{
+    SocketLifetime, SocketPolicy, SocketRequestPolicy, SocketRetirement, SocketRunPolicy,
+};
 use topcoat_core::context::{Cx, try_app_context};
 use topcoat_router::{Body, Layer, LayerFuture, Next, Path};
 

@@ -47,10 +47,12 @@ export type CommentMarker =
 const SIGNAL_RE = /^\s*::topcoat::signal\(([\s\S]*)\)\s*$/;
 const DEP_RE = /^\s*::topcoat::dep\("([0-9a-f]+)"\)\s*$/;
 const CONNECT_RE = /^\s*::topcoat::connect\s*$/;
+const EXPR_START_JSON_RE = /^\s*::topcoat::expr::start-json\(([\s\S]*)\)\s*$/;
 const EXPR_START_RE = /^\s*::topcoat::expr::start\("([^"]*)"\)\s*$/;
 const EXPR_END_RE = /^\s*::topcoat::expr::end\s*$/;
 const REGION_START_RE = /^\s*::topcoat::region::start\(([0-9a-f]+)\)\s*$/;
 const REGION_END_RE = /^\s*::topcoat::region::end\(([0-9a-f]+)\)\s*$/;
+const SHARD_START_JSON_RE = /^\s*::topcoat::shard::start-json\(([\s\S]*)\)\s*$/;
 const SHARD_START_RE =
 	/^\s*::topcoat::shard::start\(("[^"]*"), ("[^"]*"), (\[[\s\S]*\])\)\s*$/;
 const SHARD_END_RE = /^\s*::topcoat::shard::end\(("[^"]+")\)\s*$/;
@@ -92,6 +94,18 @@ export function parseComment(node: Comment): CommentMarker | null {
 		return { kind: "connect" };
 	}
 
+	const jsonExprStart = EXPR_START_JSON_RE.exec(text);
+	if (jsonExprStart) {
+		const js: unknown = JSON.parse(jsonExprStart[1] ?? "");
+		if (typeof js !== "string") {
+			throw new Error("Invalid expression marker");
+		}
+		return {
+			kind: "expr-start",
+			js,
+		};
+	}
+
 	const exprStart = EXPR_START_RE.exec(text);
 	if (exprStart) {
 		const js = decodeHtml(exprStart[1] ?? "");
@@ -113,6 +127,27 @@ export function parseComment(node: Comment): CommentMarker | null {
 	const regionEnd = REGION_END_RE.exec(text);
 	if (regionEnd) {
 		return { kind: "region-end", id: regionEnd[1] ?? "" };
+	}
+
+	const jsonStart = SHARD_START_JSON_RE.exec(text);
+	if (jsonStart) {
+		const payload: unknown = JSON.parse(jsonStart[1] ?? "");
+		if (
+			!Array.isArray(payload) ||
+			payload.length !== 3 ||
+			typeof payload[0] !== "string" ||
+			typeof payload[1] !== "string" ||
+			!Array.isArray(payload[2]) ||
+			!payload[2].every((expr: unknown) => typeof expr === "string")
+		) {
+			throw new Error("Invalid shard marker");
+		}
+		return {
+			kind: "shard-start",
+			path: payload[0],
+			identity: payload[1],
+			exprs: payload[2],
+		};
 	}
 
 	const start = SHARD_START_RE.exec(text);
@@ -144,8 +179,10 @@ export function parseComment(node: Comment): CommentMarker | null {
 }
 
 function decodeHtml(value: string): string {
-	const decoded = new DOMParser().parseFromString(value, "text/html")
-		.documentElement.textContent;
+	const decoded = new DOMParser().parseFromString(
+		value.replaceAll("<", "&lt;"),
+		"text/html",
+	).documentElement.textContent;
 	if (decoded === null) throw new Error("Failed to decode comment marker");
 	return decoded;
 }

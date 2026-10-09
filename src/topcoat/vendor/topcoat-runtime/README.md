@@ -1,6 +1,8 @@
 This directory vendors the `topcoat-runtime` crate source from the Lific Topcoat
-fork at commit `8c3e6adee4694b504e6df13c90428666100ea167`, based on official
-Topcoat `main` commit `341f3ff2`.
+fork at commit `e2444306b237c9b771ec33f76f9ae891392a0554`, based on official
+Topcoat `main` commit `341f3ff2`. The packaged `assets/runtime.js` retains
+Lific's existing transport patches on its prior minified baseline while using
+the JSON hydration marker parser from this fork revision.
 
 The original fork manifest is preserved in `Cargo.toml.orig`. `Cargo.toml` is a
 normalized standalone manifest: it pins the facade and framework dependencies
