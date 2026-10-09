@@ -10,12 +10,11 @@ pub(super) fn owner_attributes(
     account: i64,
     project: String,
     plan_id: i64,
-    title: Signal<String>,
-    draft: Signal<String>,
-    editing: Signal<bool>,
-    revision: Signal<i64>,
-    message: Signal<String>,
+    title_state: (Signal<String>, Signal<String>, Signal<bool>),
+    completion_state: (Signal<i64>, Signal<String>),
 ) -> Attributes {
+    let (title, draft, editing) = title_state;
+    let (revision, message) = completion_state;
     let browser = browser::bindings();
     let start_title = title.clone();
     let start_draft = draft.clone();
@@ -24,12 +23,10 @@ pub(super) fn owner_attributes(
     let submit_title = title.clone();
     let submit_draft = draft.clone();
     let submit_editing = editing.clone();
-    let submit_revision = revision.clone();
     let submit_message = message.clone();
-    let failed_message = message.clone();
-    let failed_message_async = failed_message.clone();
-    let submit_revision_async = submit_revision.clone();
-    let cancel_title = title.clone();
+    let failed_message_async = message;
+    let submit_revision_async = revision;
+    let cancel_title = title;
     let cancel_draft = draft.clone();
     let cancel_editing = editing.clone();
     let handler = expr!(|event: Event| {

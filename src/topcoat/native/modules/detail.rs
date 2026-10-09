@@ -260,7 +260,7 @@ pub(super) fn content<'a>(
                 copy: None,
             },
             breadcrumbs::Segment {
-                content: breadcrumbs::current_signal(cx, title.clone(), false),
+                content: breadcrumbs::current_signal(cx, title, false),
                 hide_below_sm: false,
                 copy: None,
             },
