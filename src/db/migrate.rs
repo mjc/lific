@@ -296,6 +296,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "page label sync sequence",
         include_str!("../../migrations/060_page_label_sync_seq.sql"),
     ),
+    (
+        61,
+        "issue assignments",
+        include_str!("../../migrations/061_issue_assignees.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -613,6 +618,30 @@ pub(crate) fn suspend_triggers(conn: &Connection) -> Result<Vec<String>, crate::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assignment_migration_appends_to_existing_branch_history() {
+        let conn = migrated_up_to(61);
+        run(&conn).unwrap();
+        for &(version, _, sql) in MIGRATIONS.iter().filter(|(version, _, _)| *version <= 60) {
+            let recorded: String = conn
+                .query_row(
+                    "SELECT checksum FROM _migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(recorded, checksum(sql), "migration {version} is unchanged");
+        }
+        let assignments: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'issue_assignees')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(assignments, "assignment storage is installed on upgrade");
+    }
 
     /// A database in the exact state a real instance is in just before
     /// migration `stop`: every earlier migration applied and stamped. The

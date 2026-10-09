@@ -16,6 +16,8 @@ pub(crate) struct IssueCollection {
     pub modules: Vec<Module>,
     pub labels: Vec<Label>,
     pub issues: Vec<Issue>,
+    pub assignments: std::collections::HashMap<i64, crate::db::queries::assignees::Assignment>,
+    pub current_user_id: i64,
 }
 
 pub(crate) fn list_project_collection(
@@ -26,11 +28,12 @@ pub(crate) fn list_project_collection(
     let conn = db.read()?;
     let tx = conn.unchecked_transaction()?;
     let identity = crate::auth::refresh_identity(&tx, identity.as_ref())?;
-    crate::api::require_user(&identity)?;
+    let user = crate::api::require_user(&identity)?;
     let id = crate::db::queries::resolve_project_identifier(&tx, project)?;
     let (modules, labels) = issue_create_catalog_conn(&tx, &identity, id)?;
     let project = crate::db::queries::get_project(&tx, id)?;
     let mut issues = Vec::new();
+    let mut assignments = std::collections::HashMap::new();
     let mut offset = 0;
     loop {
         let page = crate::db::queries::list_issues_page(
@@ -43,6 +46,10 @@ pub(crate) fn list_project_collection(
                 ..Default::default()
             },
         )?;
+        assignments.extend(crate::db::queries::assignees::assignments_by_issue(
+            &tx,
+            &page.items.iter().map(|issue| issue.id).collect::<Vec<_>>(),
+        )?);
         issues.extend(page.items);
         if !page.has_more {
             break;
@@ -61,6 +68,8 @@ pub(crate) fn list_project_collection(
         modules,
         labels,
         issues,
+        assignments,
+        current_user_id: user.id,
     })
 }
 
@@ -253,6 +262,61 @@ pub(crate) fn commit_issue_label_change(
     })
 }
 
+/// Assignment and issue cursor projected from the same committed snapshot.
+#[derive(Debug)]
+pub(crate) struct IssueAssignment {
+    pub issue: Issue,
+    pub assignment: crate::db::queries::assignees::Assignment,
+}
+
+pub(crate) fn commit_issue_assignment(
+    db: &DbPool,
+    realtime: &RealtimeHub,
+    identity: &Option<ResolvedIdentity>,
+    id: i64,
+    expected_seq: i64,
+    mut names: Vec<String>,
+) -> Result<IssueAssignment, LificError> {
+    let (issue, assignment, changed) = db.transaction(|conn| {
+        let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
+        let user = crate::api::require_user(&identity)?;
+        let mut current = crate::db::queries::get_issue(conn, id)?;
+        authz::require_role_conn(conn, &identity, current.project_id, Role::Maintainer)?;
+        if current.seq != expected_seq {
+            retain_visible_relations_conn(conn, &identity, std::slice::from_mut(&mut current))?;
+            return Err(LificError::update_conflict(
+                &current.identifier,
+                expected_seq,
+                current.seq,
+                &current,
+            ));
+        }
+        crate::db::queries::assignees::resolve_me(&mut names, Some(&user.username))?;
+        crate::db::queries::assignees::set_assignment(
+            conn,
+            id,
+            current.project_id,
+            &names,
+            Some(user.id),
+        )?;
+        let mut saved = crate::db::queries::get_issue(conn, id)?;
+        retain_visible_relations_conn(conn, &identity, std::slice::from_mut(&mut saved))?;
+        let changed = saved.seq != current.seq;
+        let assignment = crate::db::queries::assignees::assignment(conn, id)?;
+        Ok((saved, assignment, changed))
+    })?;
+    if changed {
+        realtime.send_with_seq(
+            RealtimeEvent::IssueUpdated {
+                project_id: issue.project_id,
+                issue_id: issue.id,
+            },
+            issue.seq,
+        );
+    }
+    Ok(IssueAssignment { issue, assignment })
+}
+
 fn commit_issue_update_with(
     db: &DbPool,
     realtime: &RealtimeHub,
@@ -396,6 +460,220 @@ mod read_tests {
             queries::get_issue(&conn, issue.id).unwrap()
         };
         (db, admin, viewer, outsider, issue)
+    }
+
+    #[test]
+    fn native_assignment_writer_rechecks_role_and_sequence_and_preserves_issue_fields() {
+        let (db, admin, viewer, outsider, issue) = fixture();
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        for caller in [None, Some(identity(&viewer)), Some(identity(&outsider))] {
+            assert!(matches!(
+                commit_issue_assignment(
+                    &db,
+                    &realtime,
+                    &caller,
+                    issue.id,
+                    issue.seq,
+                    vec!["human".into()]
+                ),
+                Err(LificError::Forbidden(_))
+            ));
+        }
+        let saved = commit_issue_assignment(
+            &db,
+            &realtime,
+            &Some(identity(&admin)),
+            issue.id,
+            issue.seq,
+            vec!["me".into()],
+        )
+        .unwrap()
+        .issue;
+        assert!(saved.seq > issue.seq);
+        assert_eq!(saved.title, issue.title);
+        assert_eq!(saved.description, issue.description);
+        assert_eq!(saved.source, issue.source);
+        assert_eq!(saved.waits, issue.waits);
+        let assignment = queries::assignees::assignment(&db.read().unwrap(), issue.id).unwrap();
+        assert_eq!(assignment.assignees[0].user_id, admin.id);
+        assert!(events.try_recv().is_ok());
+        let unchanged = commit_issue_assignment(
+            &db,
+            &realtime,
+            &Some(identity(&admin)),
+            issue.id,
+            saved.seq,
+            vec!["me".into()],
+        )
+        .unwrap()
+        .issue;
+        assert_eq!(unchanged.seq, saved.seq);
+        assert!(events.try_recv().is_err());
+        assert!(matches!(
+            commit_issue_assignment(
+                &db,
+                &realtime,
+                &Some(identity(&admin)),
+                issue.id,
+                issue.seq,
+                vec![]
+            ),
+            Err(LificError::UpdateConflict { .. })
+        ));
+        assert_eq!(
+            queries::assignees::assignment(&db.read().unwrap(), issue.id).unwrap(),
+            assignment
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn native_assignment_reply_projects_people_with_the_committed_issue_cursor() {
+        let (db, admin, _, _, issue) = fixture();
+        let result = commit_issue_assignment(
+            &db,
+            &RealtimeHub::new(),
+            &Some(identity(&admin)),
+            issue.id,
+            issue.seq,
+            vec!["me".into()],
+        )
+        .unwrap();
+        assert_eq!(result.assignment.assignees[0].user_id, admin.id);
+        assert_eq!(
+            result.issue.seq,
+            queries::issue_seq(&db.read().unwrap(), issue.id).unwrap()
+        );
+    }
+
+    #[test]
+    fn native_collection_projects_assignments_across_pages_and_rechecks_membership() {
+        let (db, admin, viewer, _, issue) = fixture();
+        db.transaction(|conn| {
+            for index in 0..501 {
+                let row = queries::create_issue(
+                    conn,
+                    &CreateIssue {
+                        project_id: issue.project_id,
+                        title: format!("Assignment row {index}"),
+                        ..Default::default()
+                    },
+                )?;
+                queries::assignees::set_assignment(
+                    conn,
+                    row.id,
+                    row.project_id,
+                    std::slice::from_ref(&viewer.username),
+                    Some(admin.id),
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let collection = list_project_collection(&db, &Some(identity(&viewer)), "MEM").unwrap();
+        assert_eq!(collection.current_user_id, viewer.id);
+        assert_eq!(collection.issues.len(), 502);
+        assert_eq!(collection.assignments.len(), 501);
+        for assignment in collection.assignments.values() {
+            assert_eq!(assignment.assignees[0].user_id, viewer.id);
+        }
+        queries::members::remove_member(&db.write().unwrap(), issue.project_id, viewer.id).unwrap();
+        assert!(matches!(
+            list_project_collection(&db, &Some(identity(&viewer)), "MEM"),
+            Err(LificError::Forbidden(_))
+        ));
+        assert!(list_project_collection(&db, &Some(identity(&admin)), "MEM").is_ok());
+    }
+
+    #[tokio::test]
+    async fn native_assignment_preserves_audit_attribution_and_rejects_invalid_or_inactive_writes()
+    {
+        let (db, admin, viewer, outsider, issue) = fixture();
+        let realtime = RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let saved = crate::actor::scope(
+            crate::actor::ActorCtx {
+                user_id: Some(admin.id),
+                transport: Transport::Web,
+            },
+            async {
+                commit_issue_assignment(
+                    &db,
+                    &realtime,
+                    &Some(identity(&admin)),
+                    issue.id,
+                    issue.seq,
+                    vec![admin.username.clone(), viewer.username.clone()],
+                )
+            },
+        )
+        .await
+        .unwrap()
+        .issue;
+        assert!(events.try_recv().is_ok());
+        assert!(
+            events.try_recv().is_err(),
+            "one event covers both assignment rows"
+        );
+        let assignment = queries::assignees::assignment(&db.read().unwrap(), issue.id).unwrap();
+        {
+            let conn = db.read().unwrap();
+            let audit: i64 = conn.query_row(
+                "SELECT count(*) FROM audit_log WHERE issue_id=?1 AND field='assignee' AND actor_user_id=?2 AND transport='web'",
+                rusqlite::params![issue.id, admin.id],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(audit, 2);
+            let created: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM issue_assignees WHERE issue_id=?1 AND created_by=?2",
+                    rusqlite::params![issue.id, admin.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(created, 2);
+        }
+        assert!(matches!(
+            commit_issue_assignment(
+                &db,
+                &realtime,
+                &Some(identity(&admin)),
+                issue.id,
+                saved.seq,
+                vec![outsider.username.clone()]
+            ),
+            Err(LificError::BadRequest(_))
+        ));
+        assert_eq!(
+            queries::assignees::assignment(&db.read().unwrap(), issue.id).unwrap(),
+            assignment
+        );
+        assert_eq!(
+            queries::issue_seq(&db.read().unwrap(), issue.id).unwrap(),
+            saved.seq
+        );
+        assert!(events.try_recv().is_err());
+        db.write()
+            .unwrap()
+            .execute("UPDATE users SET is_active=0 WHERE id=?1", [admin.id])
+            .unwrap();
+        assert!(matches!(
+            commit_issue_assignment(
+                &db,
+                &realtime,
+                &Some(identity(&admin)),
+                issue.id,
+                saved.seq,
+                vec![]
+            ),
+            Err(LificError::Forbidden(_))
+        ));
+        assert_eq!(
+            queries::assignees::assignment(&db.read().unwrap(), issue.id).unwrap(),
+            assignment
+        );
+        assert!(events.try_recv().is_err());
     }
 
     #[test]
