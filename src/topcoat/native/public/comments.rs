@@ -1,7 +1,7 @@
 //! Bounded, retained comment pages for published issue and page threads.
 use super::super::super::runtime::signal_vec::{SignalVecExt, VecPositionExt};
 use super::super::icons::{self, UiIcon};
-use super::super::{browser, dates};
+use super::super::{avatar, browser, dates};
 use super::data;
 use crate::db::{
     models::Comment,
@@ -23,6 +23,7 @@ type ThreadState = (
     Signal<i64>,
     Signal<i64>,
     Signal<bool>,
+    Signal<f64>,
 );
 type PageControl = (Signal<usize>, Signal<bool>, Signal<bool>, Signal<String>);
 
@@ -49,6 +50,8 @@ pub(super) fn thread<'a>(
     };
     let project = project.to_owned();
     let owner = cx.keyed(("public-comments", parent_kind, parent_id));
+    let now = signal(&owner, || chrono::Utc::now().timestamp_millis() as f64);
+    let clock = dates::clock_mount(cx, now.clone());
     let initial_ids = initial
         .items
         .iter()
@@ -68,6 +71,7 @@ pub(super) fn thread<'a>(
         signal(&owner, || target_query),
         signal(&owner, || -1_i64),
         signal(&owner, || initial.has_more),
+        now,
     );
     let rows = if initial.items.is_empty() && !initial.has_more {
         view! {
@@ -102,6 +106,7 @@ pub(super) fn thread<'a>(
         <section
             class="flex flex-col gap-3"
             data-public-comments=""
+            (clock)
             :data-native-public-visible-count=$(visible_count.get())
         >
             <header class="flex items-center gap-2">
@@ -154,6 +159,8 @@ fn segment<'a>(
         created_at: oldest.created_at.clone(),
         id: oldest.id,
     });
+    let page_owner = cx.keyed(("public-comment-segment", parent_kind, parent_id, depth));
+    let now = state.9.clone();
     let mut comments = page.items;
     comments.sort_by(|left, right| {
         left.created_at
@@ -162,9 +169,8 @@ fn segment<'a>(
     });
     let rows = comments
         .into_iter()
-        .map(|comment| comment_row(cx, project, comment))
+        .map(|comment| comment_row(cx, project, comment, now.clone()))
         .collect::<Vec<_>>();
-    let page_owner = cx.keyed(("public-comment-segment", parent_kind, parent_id, depth));
     let older_control = if page.has_more {
         if let Some(cursor) = cursor {
             let request = signal(&page_owner, || 0_usize);
@@ -316,6 +322,7 @@ fn target_mount(
         previous_target,
         scrolled,
         thread_has_more,
+        _now,
     ) = state;
     let (_, control_busy, control_loaded, control_error) = completion.unwrap_or_else(|| {
         (
@@ -510,52 +517,80 @@ mod comment_page_shard {
     }
 }
 
-fn comment_row<'a>(cx: &'a Cx, project: &str, comment: Comment) -> BoxView<'a> {
+fn comment_row<'a>(cx: &'a Cx, project: &str, comment: Comment, now: Signal<f64>) -> BoxView<'a> {
     let comment_cx = cx.keyed(("public-comment", comment.id));
     let project = project.to_owned();
-    view! { comment_cx => public_comment(project: project, comment: comment) }.boxed()
+    view! { comment_cx => public_comment(project: project, comment: comment, now: now) }.boxed()
 }
 
 #[component]
-async fn public_comment(cx: &Cx, project: String, comment: Comment) -> topcoat::Result<impl View> {
-    let author = if comment.author_display_name.is_empty() {
-        "Someone".to_owned()
-    } else {
-        comment.author_display_name.clone()
-    };
-    let created = dates::absolute_time_view(cx, &comment.created_at);
+async fn public_comment(
+    cx: &Cx,
+    project: String,
+    comment: Comment,
+    now: Signal<f64>,
+) -> topcoat::Result<impl View> {
+    let author = avatar::display_name(
+        Some(&comment.author_display_name),
+        Some(&comment.author),
+        "Someone",
+    )
+    .to_owned();
+    let initials = avatar::initials(&author);
+    let created = dates::relative_time_view(cx, &comment.created_at, now);
     let edited = comment.updated_at > comment.created_at;
     let id = comment.id.to_string();
     let target = format!("comment-{id}");
     let anchor_text = format!("#{id}");
     let comment_href = format!("#comment-{id}");
-    let updated_at = comment.updated_at.clone();
+    let updated_title = format!("Edited {}", comment.updated_at);
     let content = super::markdown_view(cx, &project, &comment.content);
     let verification = comment.kind == crate::db::models::CommentKind::Verification;
     Ok(view! {
         cx =>
-        <li id=(target) class="border-b border-solid border-[var(--border)] py-4">
-            <header class="mb-2 flex flex-wrap items-center gap-2 text-caption">
-                <a href=(comment_href) class="font-mono text-[var(--text-faint)]">
-                    (anchor_text)
-                </a>
-                <strong>(author)</strong>
-                (created)
-                if edited {
-                    <span class="text-[var(--text-faint)]" title=(updated_at)>
-                        "edited"
-                    </span>
-                }
-                if verification {
-                    <span
-                        class="rounded bg-[var(--bg-subtle)] px-1.5 py-0.5 text-[var(--text-muted)]"
-                        title="Evidence recorded when this issue was closed"
+        <li
+            id=(target)
+            class="relative grid grid-cols-[2rem_minmax(0,1fr)] gap-x-3.5 pb-6 last:pb-0 before:absolute before:left-[15px] before:top-10 before:bottom-0 before:w-0.5 before:rounded-full before:bg-[var(--border)] last:before:hidden"
+        >
+            <div
+                aria-hidden="true"
+                class="z-10 flex size-8 select-none items-center justify-center rounded-full border border-solid border-[var(--border)] bg-[var(--accent-subtle)] text-micro font-bold tracking-[0.01em] text-[var(--accent)]"
+            >
+                (initials)
+            </div>
+            <div class="min-w-0 pt-0.5">
+                <header
+                    class="mb-0.5 flex flex-wrap items-baseline gap-x-2 text-caption"
+                >
+                    <a
+                        href=(comment_href)
+                        class="text-[var(--text-faint)] no-underline hover:underline"
                     >
-                        "Verification"
-                    </span>
-                }
-            </header>
-            <div class="tc-markdown">(content)</div>
+                        (anchor_text)
+                    </a>
+                    <strong class="text-sm font-semibold text-[var(--text)]">
+                        (author)
+                    </strong>
+                    if verification {
+                        <span
+                            class="self-center rounded-full bg-[var(--success-bg)] px-1.5 py-0.5 text-micro font-semibold uppercase tracking-[0.025em] text-[var(--success)]"
+                            title="Evidence recorded when this issue was closed"
+                        >
+                            "Verification"
+                        </span>
+                    }
+                    <span class="text-caption text-[var(--text-muted)]">(created)</span>
+                    if edited {
+                        <span
+                            class="text-micro italic text-[var(--text-faint)]"
+                            title=(updated_title)
+                        >
+                            "edited"
+                        </span>
+                    }
+                </header>
+                <div class="tc-markdown">(content)</div>
+            </div>
         </li>
     })
 }

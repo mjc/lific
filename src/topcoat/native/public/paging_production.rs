@@ -53,6 +53,13 @@ pub(in super::super) fn comment_arguments(
             carried_signal(11, serde_json::to_value(0_i64.into_surrogate()).unwrap()),
             carried_signal(12, serde_json::to_value(0_i64.into_surrogate()).unwrap()),
             carried_signal(13, serde_json::json!(true)),
+            carried_signal(
+                14,
+                serde_json::to_value(
+                    (chrono::Utc::now().timestamp_millis() as f64).into_surrogate(),
+                )
+                .unwrap(),
+            ),
         ]
     ])
 }
@@ -191,6 +198,158 @@ async fn public_detail_initial_html_contains_only_the_latest_comment_page() {
             Some("50 newest shown, older comments not loaded yet")
         );
     }
+}
+
+#[tokio::test]
+async fn public_comment_rows_match_main_readonly_metadata_and_relative_time() {
+    let (fixture, threads) = published_threads();
+    let thread = &threads[0];
+    let comment_id = *thread.ids.last().unwrap();
+    let (created_at, updated_at) = {
+        let conn = fixture.db.write().unwrap();
+        let comment = comments::get_comment(&conn, comment_id).unwrap();
+        conn.execute(
+            "UPDATE users SET display_name = 'Mira Patel' WHERE id = ?1",
+            [comment.user_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE comments
+             SET created_at = datetime('now', '-4 hours'),
+                 updated_at = datetime('now', '-4 hours')
+             WHERE issue_id = ?1",
+            [comment.issue_id.unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE comments
+             SET created_at = datetime('now', '-90 minutes'),
+                 updated_at = datetime('now', '-30 minutes'),
+                 kind = 'verification'
+             WHERE id = ?1",
+            [comment_id],
+        )
+        .unwrap();
+        let comment = comments::get_comment(&conn, comment_id).unwrap();
+        (comment.created_at, comment.updated_at)
+    };
+
+    let (status, html) = home_fixture::document(&fixture, "", &thread.path, false, None).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{html}");
+    let document = Html::parse_document(&html);
+    let selector = Selector::parse(&format!("#comment-{comment_id}")).unwrap();
+    let row = document
+        .select(&selector)
+        .next()
+        .expect("comment row renders");
+    let avatar = row
+        .select(&Selector::parse("div[aria-hidden='true']").unwrap())
+        .next()
+        .expect("reader comment has an initials avatar");
+    assert_eq!(avatar.text().collect::<String>().trim(), "MP");
+    assert_eq!(
+        row.select(&Selector::parse("a[href]").unwrap())
+            .next()
+            .and_then(|anchor| anchor.attr("href")),
+        Some(format!("#comment-{comment_id}").as_str()),
+        "comment anchor is permalink"
+    );
+    let time = row
+        .select(&Selector::parse("time").unwrap())
+        .next()
+        .expect("comment metadata uses a time element");
+    assert_eq!(time.attr("datetime"), Some(created_at.as_str()));
+    assert!(
+        time.attr("title").is_some(),
+        "time carries its absolute tooltip"
+    );
+    assert_eq!(time.text().collect::<String>().trim(), "1h ago");
+    let row_html = row.html();
+    let anchor = row_html.find(&format!("#{comment_id}")).unwrap();
+    let author = row_html.find("Mira Patel").unwrap();
+    let verification = row_html.find("Verification").unwrap();
+    let relative_time = row_html.find("1h ago").unwrap();
+    let edited = row_html.find("edited").unwrap();
+    assert!(anchor < author && author < verification);
+    assert!(verification < relative_time && relative_time < edited);
+    let edited_marker = row
+        .select(&Selector::parse("span").unwrap())
+        .find(|span| span.text().collect::<String>().trim() == "edited")
+        .expect("edited comments identify their status");
+    assert_eq!(
+        edited_marker.attr("title"),
+        Some(format!("Edited {updated_at}").as_str())
+    );
+    let verification_marker = row
+        .select(&Selector::parse("span[title]").unwrap())
+        .find(|span| span.text().collect::<String>().trim() == "Verification")
+        .expect("verification comment identifies its evidence");
+    assert_eq!(
+        verification_marker.attr("title"),
+        Some("Evidence recorded when this issue was closed")
+    );
+}
+
+#[tokio::test]
+async fn public_comment_older_pages_reuse_the_thread_clock_owner() {
+    let (fixture, threads) = published_threads();
+    let thread = &threads[0];
+    let (status, html) = home_fixture::document(&fixture, "", &thread.path, false, None).await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{html}");
+    assert_eq!(
+        html.matches("setInterval").count(),
+        1,
+        "the thread owns one shared live relative-time clock"
+    );
+    let document = Html::parse_document(&html);
+    let root = document
+        .select(&Selector::parse("[data-public-comments]").unwrap())
+        .next()
+        .unwrap();
+    let mount_handler = root
+        .value()
+        .attr("data-topcoat-on:mount")
+        .expect("the thread emits its clock lifecycle handler");
+    let signals = home_fixture::page_signals(&html);
+    let clock_signal_id = signals
+        .iter()
+        .find(|(_, value)| {
+            value
+                .as_f64()
+                .is_some_and(|value| value > 1_000_000_000_000.0)
+        })
+        .map(|(id, _)| id.clone())
+        .expect("the emitted thread clock has an epoch-millisecond signal");
+    let clock = home_fixture::evaluate_handler(
+        "src/topcoat/native/public/comment_clock_handler.test.cjs",
+        &serde_json::json!({
+            "signals": signals,
+            "mount_handler": mount_handler,
+            "clock_signal_id": clock_signal_id,
+            "first_tick": 1_700_000_000_000.0,
+        }),
+    );
+    assert_eq!(clock["active_after_mount"], 1);
+    assert_eq!(clock["active_while_hidden"], 0);
+    assert_eq!(clock["active_after_resume"], 1);
+    assert_eq!(clock["clock_after_resume"], 1_700_000_030_000.0);
+    assert_eq!(clock["active_after_dispose"], 0);
+
+    let cursor = {
+        let conn = fixture.db.read().unwrap();
+        comments::CommentCursor::before(&comments::get_comment(&conn, thread.ids[10]).unwrap())
+    };
+    let (status, older_page) = replay_comments(
+        &fixture,
+        comment_arguments("ACC", thread.parent, &cursor, thread.ids[10..].to_vec()),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{older_page}");
+    assert_eq!(
+        older_page.matches("setInterval").count(),
+        0,
+        "a retained continuation reuses the thread clock instead of mounting a second timer"
+    );
 }
 
 #[tokio::test]
