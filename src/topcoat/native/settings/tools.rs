@@ -11,7 +11,7 @@ use super::{
 use crate::db::models::Bot;
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, I64Surrogate, Signal, Surrogated, expr, shard, signal},
+    runtime::{Event, Signal, Surrogated, expr, shard, signal},
     view::{Attributes, BoxView, View, ViewExt, view},
 };
 
@@ -46,7 +46,7 @@ fn delegated_bot_actions(cx: &Cx, account: i64, state: &ToolsState) -> Attribute
     let failed_busy = busy.clone();
     let failed_error = error.clone();
     let handler = expr!(|_event: Event| {
-        let _dispatch = |id: I64Surrogate, remove: BoolSurrogate| {
+        let _dispatch = |id: i64, remove: bool| {
             if busy.get() == 0_i64 {
                 busy.set(id);
                 error.set("".to_owned());

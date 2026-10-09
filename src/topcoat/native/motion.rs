@@ -1,7 +1,7 @@
 //! One native shell owner resolves stored motion and current OS preference.
 use topcoat::{
     context::Cx,
-    runtime::{Event, Js, SignalSurrogate, StringSurrogate, Surrogated, expr, signal},
+    runtime::{Event, Js, Signal, Surrogated, expr, signal},
     view::Attributes,
 };
 
@@ -17,14 +17,14 @@ pub(super) fn mount(cx: &Cx) -> Attributes {
 }
 
 pub(crate) fn handler_factory() -> Js {
-    let handler = expr!(|_mount: Event, motion: &SignalSurrogate<String>| {
+    let handler = expr!(|_mount: Event, motion: &Signal<String>| {
         let _stored = || {
             raw!(
                 "cx.hydrate((() => {try {return localStorage.getItem('lific_motion') ?? '';} catch {return '';}})())",
                 String::new()
             )
         };
-        let _set = |_value: StringSurrogate| {
+        let _set = |_value: String| {
             motion.set(
                 if _value == "reduced" {
                     "reduced"

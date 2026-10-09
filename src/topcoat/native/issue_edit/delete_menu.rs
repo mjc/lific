@@ -2,7 +2,7 @@
 use super::super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{BoolSurrogate, Event, StringSurrogate, expr, signal},
+    runtime::{Event, expr, signal},
     view::{Attributes, BoxView, View, ViewExt, component, view},
 };
 
@@ -58,7 +58,7 @@ async fn delete_menu(cx: &Cx, request: Request, project: String) -> topcoat::Res
     let click_deleting = deleting.clone();
     let click_confirming = confirming.clone();
     let click_menu_open = menu_open.clone();
-    let click = expr!(|destination: StringSurrogate| {
+    let click = expr!(|destination: String| {
         if !click_deleting.get() {
             click_deleting.set(true);
             let _selected_payload = if destination == board_path {
@@ -96,7 +96,7 @@ async fn delete_menu(cx: &Cx, request: Request, project: String) -> topcoat::Res
                 menu_open.set(false);
                 confirming.set(false);
                 deleting.set(false);
-                let _dismiss = |outside: BoolSurrogate| {
+                let _dismiss = |outside: bool| {
                     if outside {
                         menu_open.set(false);
                         confirming.set(false);

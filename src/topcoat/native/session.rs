@@ -3,10 +3,7 @@
 use super::super::runtime::{SocketLifetime, SocketRetirement, connected_untracked};
 use topcoat::{
     context::{Cx, app_context},
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, SignalSurrogate, Surrogated, expr, procedure,
-        signal,
-    },
+    runtime::{Event, Js, Signal, Surrogated, expr, procedure, signal},
     view::Attributes,
 };
 
@@ -202,13 +199,9 @@ pub(crate) fn account_mount(cx: &Cx, account_id: i64, is_admin: bool) -> Attribu
 /// The mounted account owner retains focus coalescing and fresh-cookie checks.
 pub(crate) fn account_handler_factory() -> Js {
     let handler = expr!(|_mount: Event,
-                         handles: (
-        &SignalSurrogate<bool>,
-        &SignalSurrogate<bool>,
-        &SignalSurrogate<usize>,
-    ),
-                         account_id: I64Surrogate,
-                         is_admin: BoolSurrogate| {
+                         handles: (&Signal<bool>, &Signal<bool>, &Signal<usize>,),
+                         account_id: i64,
+                         is_admin: bool| {
         let busy = handles.0;
         let pending = handles.1;
         let revision = handles.2;

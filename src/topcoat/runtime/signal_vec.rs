@@ -33,7 +33,7 @@ impl<T: Surrogated> SignalVecExt<T> for SignalSurrogate<Vec<T>> {
 #[cfg(test)]
 mod tests {
     use super::SignalVecExt;
-    use topcoat::runtime::{I64Surrogate, SignalSurrogate, UsizeSurrogate, expr};
+    use topcoat::runtime::{Signal, expr};
 
     #[test]
     fn vector_position_matches_rust_and_returns_typed_optional_indices() {
@@ -63,9 +63,7 @@ mod tests {
 
     #[test]
     fn vector_signal_writes_typecheck_and_emit_typed_operations() {
-        let expression = expr!(|values: SignalSurrogate<Vec<i64>>,
-                                value: I64Surrogate,
-                                index: UsizeSurrogate| {
+        let expression = expr!(|values: Signal<Vec<i64>>, value: i64, index: usize| {
             values.push(value);
             values.remove(index);
         });

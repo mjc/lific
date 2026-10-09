@@ -69,7 +69,7 @@ pub(crate) fn toolbar_fragments<'a>(cx: &'a Cx, identifier: &str) -> (BoxView<'a
                         error.set("".to_owned());
                         // Fetch/Blob/anchor operations are browser primitives. Rust
                         // owns duplicate prevention, state transitions and policy.
-                        let _completed = |failure: topcoat::runtime::StringSurrogate| {
+                        let _completed = |failure: String| {
                             if !raw!("cx.hydrate(cx.abortSignal.aborted)", false) {
                                 error.set(failure);
                                 exporting.set(false);

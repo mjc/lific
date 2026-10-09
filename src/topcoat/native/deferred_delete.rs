@@ -5,21 +5,15 @@ use super::super::runtime::{
     signal_vec::{SignalVecExt, VecPositionExt},
 };
 use super::icons::UiIcon;
-use super::issue_edit::labels::{
-    LabelReply, LabelReplyValue, LabelRequestValue, create_label, update_labels,
-};
+use super::issue_edit::labels::{LabelReply, LabelRequest, create_label, update_labels};
 use super::issue_edit::module_assignment::{ModuleAssignmentReply, ModuleRequest, assign_module};
 use super::pages::labels_action::{
-    Reply as PageLabelReply, ReplyValue as PageLabelReplyValue,
-    RequestValue as PageLabelRequestValue, update_labels as update_page_labels,
+    Reply as PageLabelReply, Request as PageLabelRequest, update_labels as update_page_labels,
 };
 use super::{issue_edit::delete::commit_delete, transport};
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, Signal, StringSurrogate, Surrogated,
-        UsizeSurrogate, expr, record, shard, signal,
-    },
+    runtime::{Event, Js, Signal, Surrogated, expr, record, shard, signal},
     view::{BoxView, ViewExt, view},
 };
 
@@ -33,12 +27,6 @@ pub(crate) struct ToastRequest {
 }
 
 pub(crate) type ToastErrorRequest = ToastRequest;
-type ToastRequestSurrogate = <ToastRequest as Surrogated>::Surrogate;
-
-type OwnerHandlesSurrogate<'a> = <&'a OwnerHandles as Surrogated>::Surrogate;
-type ModuleRequestSurrogate = <ModuleRequest as Surrogated>::Surrogate;
-type ModuleAssignmentReplySurrogate = <ModuleAssignmentReply as Surrogated>::Surrogate;
-type ToastErrorRequestSurrogate = ToastRequestSurrogate;
 
 // Each owner supplies handles once; the shared factory contains the Rust-authored actions.
 #[record]
@@ -258,9 +246,7 @@ pub(crate) fn owner<'a>(
 pub(crate) fn handler_factory() -> Js {
     let usize_bits = usize::BITS;
     let maximum_id = usize::MAX;
-    let handler = expr!(|_mount: Event,
-                         handles: OwnerHandlesSurrogate<'_>,
-                         account_id: I64Surrogate| {
+    let handler = expr!(|_mount: Event, handles: &OwnerHandles, account_id: i64| {
         handles.activated.set(true);
         let id = handles.id;
         let issue = handles.issue;
@@ -363,19 +349,19 @@ pub(crate) fn handler_factory() -> Js {
         let _rearm_id = id;
         let _rearm_hovered = hovered;
         let _rearm_focused = focused;
-        let _clear = |_index: UsizeSurrogate| {
+        let _clear = |_index: usize| {
             raw!(
                 "clearTimeout(document.querySelector('[data-native-toast-slot=\"'+${_index}.toString()+'\"]')?.nativeTimer);",
                 ()
             );
         };
-        let _navigate = |_destination: StringSurrogate| {
+        let _navigate = |_destination: String| {
             raw!(
                 "void cx.navigate(${_mount_path}.toString()+${_destination}.toString());",
                 ()
             );
         };
-        let _remove = |target: I64Surrogate| {
+        let _remove = |target: i64| {
             _remove_remove_index.set(0);
             while _remove_remove_index.get() < pending_issues.get().len() {
                 if *pending_issues.get().index(_remove_remove_index.get()) == target {
@@ -387,7 +373,7 @@ pub(crate) fn handler_factory() -> Js {
             }
             _remove_remove_index.set(0);
         };
-        let _claim = |index: UsizeSurrogate, keepalive: BoolSurrogate| {
+        let _claim = |index: usize, keepalive: bool| {
             if index < 4 {
                 if !_claim_claimed.index(index).get() {
                     _claim_claimed.index(index).set(true);
@@ -418,12 +404,12 @@ pub(crate) fn handler_factory() -> Js {
                             commit_delete(account_id, target).await;
                             raw!("${_success}();", ());
                         };
-                        raw!("${_run}().catch(${_failure});", ());
+                        raw!("Promise.resolve(${_run}()).catch(${_failure});", ());
                     }
                 }
             }
         };
-        let _close = |index: UsizeSurrogate, expected: UsizeSurrogate| {
+        let _close = |index: usize, expected: usize| {
             if _close_id.index(index).get() == expected {
                 if expected != 0 {
                     raw!("${_clear}(${index});", ());
@@ -433,7 +419,7 @@ pub(crate) fn handler_factory() -> Js {
                 }
             }
         };
-        let _timer = |index: UsizeSurrogate| {
+        let _timer = |index: usize| {
             raw!("${_clear}(${index});", ());
             let _expected = _timer_id.index(index).get();
             let _delay = _timer_remaining.index(index).get();
@@ -481,15 +467,15 @@ pub(crate) fn handler_factory() -> Js {
             _allocate_module_request.index(index).set(None);
             index
         };
-        let _module_release = |target: I64Surrogate| {
+        let _module_release = |target: i64| {
             let position = module_pending.get().position(target);
             if position.is_some() {
                 module_pending.remove(position.unwrap());
             }
         };
-        let _module_finish = |request: ModuleRequestSurrogate,
-                              _reply: ModuleAssignmentReplySurrogate,
-                              restoring: BoolSurrogate| {
+        let _module_finish = |request: ModuleRequest,
+                              _reply: ModuleAssignmentReply,
+                              restoring: bool| {
             if !restoring {
                 raw!("${_module_release}(${request}.issue_id);", ());
             }
@@ -527,9 +513,7 @@ pub(crate) fn handler_factory() -> Js {
                 ()
             );
         };
-        let _module_failure = |request: ModuleRequestSurrogate,
-                               restoring: BoolSurrogate,
-                               message: StringSurrogate| {
+        let _module_failure = |request: ModuleRequest, restoring: bool, message: String| {
             if !restoring {
                 raw!("${_module_release}(${request}.issue_id);", ());
             }
@@ -548,8 +532,8 @@ pub(crate) fn handler_factory() -> Js {
             _module_failure_remaining.index(index).set(8_000.0_f64);
             raw!("${_timer}(${index});", ());
         };
-        let _module_run = |request: ModuleRequestSurrogate, _restoring: BoolSurrogate| {
-            let _success = |_reply: ModuleAssignmentReplySurrogate| {
+        let _module_run = |request: ModuleRequest, _restoring: bool| {
+            let _success = |_reply: ModuleAssignmentReply| {
                 if _reply.status.is_ok() {
                     raw!(
                         "if(nativeOwnerToken.active) nativeOwnerToken.host.nativeModuleFinish(${request},${_reply},${_restoring});",
@@ -570,7 +554,7 @@ pub(crate) fn handler_factory() -> Js {
                 ()
             );
         };
-        let _module_accept = |request: ModuleRequestSurrogate| {
+        let _module_accept = |request: ModuleRequest| {
             if request.account_id != account_id {
                 false
             } else if request.issue_id <= 0_i64 {
@@ -586,13 +570,13 @@ pub(crate) fn handler_factory() -> Js {
                 }
             }
         };
-        let _label_release = |target: I64Surrogate| {
+        let _label_release = |target: i64| {
             let position = label_pending.get().position(target);
             if position.is_some() {
                 label_pending.remove(position.unwrap());
             }
         };
-        let _label_finish = |request: LabelRequestValue, reply: LabelReplyValue| {
+        let _label_finish = |request: LabelRequest, reply: LabelReply| {
             raw!("${_label_release}(${request}.issue_id);", ());
             // Catalog creation can succeed before attachment fails. Forward both
             // outcomes so the live picker can refresh its catalog independently.
@@ -628,7 +612,7 @@ pub(crate) fn handler_factory() -> Js {
                 raw!("${_timer}(${index});", ());
             }
         };
-        let _label_network_failure = |request: LabelRequestValue| {
+        let _label_network_failure = |request: LabelRequest| {
             let _reply = LabelReply {
                 status: Err(
                     "Couldn't reach the server. Check your connection and try again.".to_owned(),
@@ -642,8 +626,8 @@ pub(crate) fn handler_factory() -> Js {
             };
             raw!("${_label_finish}(${request},${_reply});", ());
         };
-        let _label_run = |request: LabelRequestValue| {
-            let _success = |_reply: LabelReplyValue| {
+        let _label_run = |request: LabelRequest| {
+            let _success = |_reply: LabelReply| {
                 raw!(
                     "if(nativeOwnerToken.active)nativeOwnerToken.host.nativeLabelFinish(${request},${_reply});",
                     ()
@@ -665,7 +649,7 @@ pub(crate) fn handler_factory() -> Js {
                 raw!("${_future}.then(${_success},${_failure});", ());
             }
         };
-        let _label_accept = |request: LabelRequestValue| {
+        let _label_accept = |request: LabelRequest| {
             let mode_valid = if request.mode == "create".to_owned() {
                 true
             } else if request.mode == "attach".to_owned() {
@@ -691,13 +675,13 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
-        let _page_label_release = |target: I64Surrogate| {
+        let _page_label_release = |target: i64| {
             let position = page_label_pending.get().position(target);
             if position.is_some() {
                 page_label_pending.remove(position.unwrap());
             }
         };
-        let _page_label_finish = |request: PageLabelRequestValue, reply: PageLabelReplyValue| {
+        let _page_label_finish = |request: PageLabelRequest, reply: PageLabelReply| {
             raw!("${_page_label_release}(${request}.page_id);", ());
             raw!(
                 "window.dispatchEvent(new CustomEvent('lific:native-page-label-applied',{detail:${reply}}));",
@@ -722,7 +706,7 @@ pub(crate) fn handler_factory() -> Js {
                 raw!("${_timer}(${index});", ());
             }
         };
-        let _page_label_network_failure = |request: PageLabelRequestValue| {
+        let _page_label_network_failure = |request: PageLabelRequest| {
             let _reply = PageLabelReply {
                 status: Err(
                     "Couldn't reach the server. Check your connection and try again.".to_owned(),
@@ -733,8 +717,8 @@ pub(crate) fn handler_factory() -> Js {
             };
             raw!("${_page_label_finish}(${request},${_reply});", ());
         };
-        let _page_label_run = |request: PageLabelRequestValue| {
-            let _success = |_reply: PageLabelReplyValue| {
+        let _page_label_run = |request: PageLabelRequest| {
+            let _success = |_reply: PageLabelReply| {
                 raw!(
                     "if(nativeOwnerToken.active)nativeOwnerToken.host.nativePageLabelFinish(${request},${_reply});",
                     ()
@@ -750,7 +734,7 @@ pub(crate) fn handler_factory() -> Js {
             let _future = _keepalive(request.clone());
             raw!("${_future}.then(${_success},${_failure});", ());
         };
-        let _page_label_accept = |request: PageLabelRequestValue| {
+        let _page_label_accept = |request: PageLabelRequest| {
             if request.account_id != account_id {
                 false
             } else if request.page_id <= 0_i64 {
@@ -767,7 +751,7 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
-        let _error_accept = |request: ToastErrorRequestSurrogate| {
+        let _error_accept = |request: ToastErrorRequest| {
             if request.account_id != account_id {
                 false
             } else {
@@ -779,7 +763,7 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
-        let _success_accept = |request: ToastRequestSurrogate| {
+        let _success_accept = |request: ToastRequest| {
             if request.account_id != account_id {
                 false
             } else {
@@ -791,7 +775,7 @@ pub(crate) fn handler_factory() -> Js {
                 true
             }
         };
-        let _failure_toast = |label: StringSurrogate, _restore: StringSurrogate| {
+        let _failure_toast = |label: String, _restore: String| {
             let index = raw!("${_allocate}()", 0_usize);
             _failure_toast_message
                 .index(index)
@@ -803,35 +787,32 @@ pub(crate) fn handler_factory() -> Js {
             raw!("${_timer}(${index});", ());
             raw!("${_navigate}(${_restore});", ());
         };
-        let _schedule = |requested_account: I64Surrogate,
-                         target: I64Surrogate,
-                         label: StringSurrogate,
-                         _back: StringSurrogate,
-                         restore: StringSurrogate| {
-            if requested_account != account_id {
-                false
-            } else if target <= 0_i64 {
-                false
-            } else {
-                let _previous = pending_slot.get();
-                raw!("${_claim}(${_previous},cx.hydrate(false));", ());
-                let index = raw!("${_allocate}()", 0_usize);
-                _schedule_issue.index(index).set(target);
-                _schedule_identifier.index(index).set(label.clone());
-                _schedule_detail.index(index).set(restore);
-                _schedule_claimed.index(index).set(false);
-                _schedule_undo.index(index).set(true);
-                pending_slot.set(index);
-                pending_issues.push(target);
-                _schedule_message.index(index).set("Deleted ".to_owned());
-                _schedule_message.index(index).push_str(label.clone());
-                _schedule_kind.index(index).set("info".to_owned());
-                _schedule_remaining.index(index).set(5_000.0_f64);
-                raw!("${_navigate}(${_back}); ${_timer}(${index});", ());
-                true
-            }
-        };
-        let _undo = |index: UsizeSurrogate| {
+        let _schedule =
+            |requested_account: i64, target: i64, label: String, _back: String, restore: String| {
+                if requested_account != account_id {
+                    false
+                } else if target <= 0_i64 {
+                    false
+                } else {
+                    let _previous = pending_slot.get();
+                    raw!("${_claim}(${_previous},cx.hydrate(false));", ());
+                    let index = raw!("${_allocate}()", 0_usize);
+                    _schedule_issue.index(index).set(target);
+                    _schedule_identifier.index(index).set(label.clone());
+                    _schedule_detail.index(index).set(restore);
+                    _schedule_claimed.index(index).set(false);
+                    _schedule_undo.index(index).set(true);
+                    pending_slot.set(index);
+                    pending_issues.push(target);
+                    _schedule_message.index(index).set("Deleted ".to_owned());
+                    _schedule_message.index(index).push_str(label.clone());
+                    _schedule_kind.index(index).set("info".to_owned());
+                    _schedule_remaining.index(index).set(5_000.0_f64);
+                    raw!("${_navigate}(${_back}); ${_timer}(${index});", ());
+                    true
+                }
+            };
+        let _undo = |index: usize| {
             let _expected = _undo_id.index(index).get();
             if _expected != 0 {
                 let module_request = _undo_module_request.index(index).get();
@@ -872,7 +853,7 @@ pub(crate) fn handler_factory() -> Js {
                 }
             }
         };
-        let _pause = |index: UsizeSurrogate, mouse: BoolSurrogate| {
+        let _pause = |index: usize, mouse: bool| {
             if !_pause_hovered.index(index).get() {
                 if !_pause_focused.index(index).get() {
                     if _pause_id.index(index).get() != 0 {
@@ -894,7 +875,7 @@ pub(crate) fn handler_factory() -> Js {
                 _pause_focused.index(index).set(true);
             }
         };
-        let _resume = |index: UsizeSurrogate, mouse: BoolSurrogate| {
+        let _resume = |index: usize, mouse: bool| {
             if mouse {
                 _resume_hovered.index(index).set(false);
             } else {
@@ -914,7 +895,7 @@ pub(crate) fn handler_factory() -> Js {
         };
         // Native page commits transfer the signals, but each new scope owns
         // fresh timers. Account for running time before rearming on that scope.
-        let _elapsed = |index: UsizeSurrogate| {
+        let _elapsed = |index: usize| {
             if _elapsed_id.index(index).get() != 0 {
                 if !_elapsed_hovered.index(index).get() {
                     if !_elapsed_focused.index(index).get() {
@@ -931,7 +912,7 @@ pub(crate) fn handler_factory() -> Js {
                 }
             }
         };
-        let _rearm = |index: UsizeSurrogate, mouse: BoolSurrogate, focus: BoolSurrogate| {
+        let _rearm = |index: usize, mouse: bool, focus: bool| {
             raw!("${_elapsed}(${index});", ());
             _rearm_hovered.index(index).set(mouse.clone());
             _rearm_focused.index(index).set(focus.clone());

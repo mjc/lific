@@ -3,7 +3,7 @@
 use super::icons::UiIcon;
 use topcoat::{
     context::Cx,
-    runtime::{Event, Js, Signal, SignalSurrogate, StringSurrogate, Surrogated, expr},
+    runtime::{Event, Js, Signal, Surrogated, expr},
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -89,7 +89,7 @@ fn theme_choice<'a>(
 pub(crate) fn theme_toggle_factory() -> Js {
     let expression = expr!(|browser: super::browser::Browser,
                             _event: Event,
-                            open: SignalSurrogate<bool>| {
+                            open: Signal<bool>| {
         open.set(!open.get());
         browser.microtask(|| {
             browser.focus_selector(".native-home-theme-menu:not([hidden]) button".to_owned());
@@ -118,9 +118,9 @@ fn theme_button_click(cx: &Cx, open: &Signal<bool>) -> Attributes {
 pub(crate) fn theme_choice_factory() -> Js {
     let expression = expr!(|browser: super::browser::Browser,
                             _event: Event,
-                            theme: SignalSurrogate<String>,
-                            open: SignalSurrogate<bool>,
-                            preference: StringSurrogate| {
+                            theme: Signal<String>,
+                            open: Signal<bool>,
+                            preference: String| {
         theme.set(preference.clone());
         open.set(false);
         if preference == "system" {
@@ -167,7 +167,7 @@ fn theme_choice_click(
 pub(crate) fn collapse_factory() -> Js {
     let expression = expr!(|browser: super::browser::Browser,
                             _event: Event,
-                            collapsed: SignalSurrogate<bool>| {
+                            collapsed: Signal<bool>| {
         collapsed.set(!collapsed.get());
         let value = if collapsed.get() {
             "1".to_owned()

@@ -2,10 +2,7 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, SignalSurrogate, StringSurrogate, Surrogated,
-        UsizeSurrogate, expr, procedure, record,
-    },
+    runtime::{Event, Js, Surrogated, expr, procedure, record},
     view::{BoxView, ViewExt, view},
 };
 
@@ -41,13 +38,13 @@ async fn current_session(cx: &Cx, account: i64) -> topcoat::Result<SessionResult
 }
 
 type Handles<'a> = (
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<Option<usize>>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<Option<ImportResult>>,
+    &'a topcoat::runtime::Signal<String>,
+    &'a topcoat::runtime::Signal<String>,
+    &'a topcoat::runtime::Signal<bool>,
+    &'a topcoat::runtime::Signal<String>,
+    &'a topcoat::runtime::Signal<Option<usize>>,
+    &'a topcoat::runtime::Signal<String>,
+    &'a topcoat::runtime::Signal<Option<ImportResult>>,
 );
 
 pub(crate) fn owner(cx: &Cx, state: State) -> BoxView<'_> {
@@ -101,9 +98,9 @@ pub(crate) fn handler_factory() -> Js {
     let usize_width = usize::BITS;
     let handler = expr!(|_event: Event,
                          handles: Handles<'_>,
-                         account: I64Surrogate,
-                         fingerprint: StringSurrogate,
-                         _upload_url: StringSurrogate| {
+                         account: i64,
+                         fingerprint: String,
+                         _upload_url: String| {
         let file_name = handles.0;
         let file_error = handles.1;
         let confirmed = handles.2;
@@ -116,7 +113,7 @@ pub(crate) fn handler_factory() -> Js {
             "".to_owned()
         );
 
-        let _set_progress = |percent: UsizeSurrogate| {
+        let _set_progress = |percent: usize| {
             progress.set(Some(percent));
         };
         let _set_uploading = || {
@@ -137,9 +134,7 @@ pub(crate) fn handler_factory() -> Js {
             error.set("The import outcome could not be checked. Check the project list before importing again.".to_owned());
             progress.set(None);
         };
-        let _terminal = |status: UsizeSurrogate,
-                         body: StringSurrogate,
-                         network_error: BoolSurrogate| {
+        let _terminal = |status: usize, body: String, network_error: bool| {
             let _finish = async || {
                 let fresh = current_session(account.clone()).await;
                 let disposed = raw!("cx.hydrate(cx.abortSignal.aborted)", false);
@@ -186,7 +181,10 @@ pub(crate) fn handler_factory() -> Js {
                     }
                 }
             };
-            raw!("void ${_finish}().catch(()=>${_mark_unknown}());", ());
+            raw!(
+                "void Promise.resolve(${_finish}()).catch(()=>${_mark_unknown}());",
+                ()
+            );
         };
         let _begin = |_submit_event: Event| {
             if phase.get() != "idle" {

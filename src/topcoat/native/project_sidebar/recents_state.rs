@@ -6,10 +6,7 @@ use super::{
 };
 use topcoat::{
     context::Cx,
-    runtime::{
-        BoolSurrogate, Event, I64Surrogate, Js, Signal, SignalSurrogate, StringSurrogate,
-        Surrogated, expr, signal,
-    },
+    runtime::{Event, Js, Signal, Surrogated, expr, signal},
     view::Attributes,
 };
 
@@ -159,28 +156,28 @@ pub(super) fn refresh(
 }
 
 type RecentsHandlerSignals<'a> = (
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<i64>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<bool>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<String>,
-    &'a SignalSurrogate<i64>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<i64>,
+    &'a Signal<bool>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<bool>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<String>,
+    &'a Signal<i64>,
 );
 
 /// Shared Rust browser code receives the subordinate owner on every invocation.
 pub(crate) fn handler_factory() -> Js {
     let handler = expr!(|event: Event,
                          handles: RecentsHandlerSignals<'_>,
-                         catalog: &SignalSurrogate<String>,
-                         account: I64Surrogate,
-                         path: &StringSurrogate,
-                         force: BoolSurrogate| {
+                         catalog: &Signal<String>,
+                         account: i64,
+                         path: &String,
+                         force: bool| {
         let cache = handles.0;
         let rows = handles.1;
         let label = handles.2;
@@ -211,28 +208,32 @@ pub(crate) fn handler_factory() -> Js {
                     let ticket = request.get() + 1_i64;
                     request.set(ticket);
                     entered.set(path.clone());
-                    let _publish = |value: <Published as topcoat::runtime::Surrogated>::Surrogate, expected: <String as topcoat::runtime::Surrogated>::Surrogate| {
-                let current = raw!(
-                    "cx.hydrate(document.activeElement?.closest('[data-recents-list] a')?.getAttribute('data-recents-href')??'')",
-                    String::new()
-                );
-                let unchanged = if expected.is_empty() { false } else { current == expected };
-                cache.set(value.0);
-                if rows.get() != value.1 {
-                    rows.set(value.1);
-                }
-                label.set(value.2);
-                project.set(value.3);
-                visible.set(value.4);
-                loading.set(value.5);
-                error.set(value.6);
-                if unchanged {
-                    focus.set(value.8);
-                } else {
-                    focus.set("".to_owned());
-                }
-                status.set(value.9);
-            };
+                    let _publish = |value: Published, expected: String| {
+                        let current = raw!(
+                            "cx.hydrate(document.activeElement?.closest('[data-recents-list] a')?.getAttribute('data-recents-href')??'')",
+                            String::new()
+                        );
+                        let unchanged = if expected.is_empty() {
+                            false
+                        } else {
+                            current == expected
+                        };
+                        cache.set(value.0);
+                        if rows.get() != value.1 {
+                            rows.set(value.1);
+                        }
+                        label.set(value.2);
+                        project.set(value.3);
+                        visible.set(value.4);
+                        loading.set(value.5);
+                        error.set(value.6);
+                        if unchanged {
+                            focus.set(value.8);
+                        } else {
+                            focus.set("".to_owned());
+                        }
+                        status.set(value.9);
+                    };
                     let _transport = || {
                         let alive = raw!("cx.hydrate(!cx.abortSignal.aborted)", false);
                         if alive {

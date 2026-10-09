@@ -2,7 +2,7 @@
 
 use topcoat::{
     context::Cx,
-    runtime::{Event, Js, Signal, SignalSurrogate, StringSurrogate, Surrogated, expr},
+    runtime::{Event, Js, Signal, Surrogated, expr},
     view::Attributes,
 };
 
@@ -17,14 +17,14 @@ pub(crate) fn mount(cx: &Cx, theme: &Signal<String>) -> Attributes {
 }
 
 pub(crate) fn handler_factory() -> Js {
-    let handler = expr!(|_mount: Event, theme: &SignalSurrogate<String>| {
+    let handler = expr!(|_mount: Event, theme: &Signal<String>| {
         let _stored = |_key: String| {
             raw!(
                 "cx.hydrate((()=>{try{return localStorage.getItem(${_key}.toString())??''}catch{return ''}})())",
                 String::new()
             )
         };
-        let _apply = |_key: StringSurrogate, _value: StringSurrogate| {
+        let _apply = |_key: String, _value: String| {
             if _key == "lific_theme" {
                 let theme_value = if _value == "light" {
                     "light"
