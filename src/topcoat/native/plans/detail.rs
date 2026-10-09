@@ -122,11 +122,12 @@ async fn plan_detail_owner(
         account,
         project.clone(),
         plan.id,
-        canonical_title.clone(),
-        title_draft.clone(),
-        title_editing.clone(),
-        revision.clone(),
-        message.clone(),
+        (
+            canonical_title.clone(),
+            title_draft.clone(),
+            title_editing.clone(),
+        ),
+        (revision.clone(), message.clone()),
     );
     Ok(view! {
         cx =>
@@ -241,7 +242,6 @@ mod shards {
             plan,
             can_edit,
             activity,
-            revision_value,
             PlanEditor {
                 revision: revision_owner,
                 canonical_title,
@@ -265,10 +265,10 @@ fn render_detail<'a>(
     plan: Plan,
     can_edit: bool,
     activity: Vec<crate::db::models::Activity>,
-    revision_value: i64,
     editor: PlanEditor,
 ) -> BoxView<'a> {
     prepare_step_expansion_state(cx, &plan.steps);
+    let revision_value = editor.revision.get();
     let steps = plan
         .steps
         .iter()
