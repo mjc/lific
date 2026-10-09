@@ -5,6 +5,7 @@ use super::super::runtime::{
     signal_vec::{SignalVecExt, VecPositionExt},
 };
 use super::icons::UiIcon;
+use super::issue_edit::assignees::{AssignmentReply, AssignmentRequest, assign_issue};
 use super::issue_edit::labels::{LabelReply, LabelRequest, create_label, update_labels};
 use super::issue_edit::module_assignment::{ModuleAssignmentReply, ModuleRequest, assign_module};
 use super::pages::labels_action::{
@@ -54,6 +55,7 @@ struct OwnerHandles {
     remove_index: Signal<usize>,
     pending_issues: Signal<Vec<i64>>,
     module_pending: Signal<Vec<i64>>,
+    assignment_pending: Signal<Vec<i64>>,
     label_pending: Signal<Vec<i64>>,
     page_label_pending: Signal<Vec<i64>>,
     mount: String,
@@ -143,6 +145,7 @@ pub(crate) fn owner<'a>(
     let focused = slots.each_ref().map(|slot| slot.focused.clone());
     let module_request = slots.each_ref().map(|slot| slot.module_request.clone());
     let module_pending = signal(state_cx, Vec::<i64>::new);
+    let assignment_pending = signal(state_cx, Vec::<i64>::new);
     let label_pending = signal(state_cx, Vec::<i64>::new);
     let page_label_pending = signal(state_cx, Vec::<i64>::new);
     let handles = OwnerHandles {
@@ -168,6 +171,7 @@ pub(crate) fn owner<'a>(
         remove_index,
         pending_issues,
         module_pending,
+        assignment_pending,
         label_pending,
         page_label_pending,
         mount,
@@ -269,6 +273,7 @@ pub(crate) fn handler_factory() -> Js {
         let remove_index = handles.remove_index;
         let pending_issues = handles.pending_issues;
         let module_pending = handles.module_pending;
+        let assignment_pending = handles.assignment_pending;
         let label_pending = handles.label_pending;
         let page_label_pending = handles.page_label_pending;
         let _mount_path = handles.mount;
@@ -283,6 +288,12 @@ pub(crate) fn handler_factory() -> Js {
         let _label_failure_message = message.clone();
         let _label_failure_kind = kind.clone();
         let _label_failure_remaining = remaining.clone();
+        let _assignment_message = message.clone();
+        let _assignment_kind = kind.clone();
+        let _assignment_remaining = remaining.clone();
+        let _assignment_failure_message = message.clone();
+        let _assignment_failure_kind = kind.clone();
+        let _assignment_failure_remaining = remaining.clone();
         let _page_label_failure_message = message.clone();
         let _page_label_failure_kind = kind.clone();
         let _page_label_failure_remaining = remaining.clone();
@@ -566,6 +577,85 @@ pub(crate) fn handler_factory() -> Js {
                 } else {
                     module_pending.push(request.issue_id.clone());
                     raw!("${_module_run}(${request},cx.hydrate(false));", ());
+                    true
+                }
+            }
+        };
+        let _assignment_release = |target: i64| {
+            let position = assignment_pending.get().position(target);
+            if position.is_some() {
+                assignment_pending.remove(position.unwrap());
+            }
+        };
+        let _assignment_finish = |request: AssignmentRequest, _reply: AssignmentReply| {
+            raw!("${_assignment_release}(${request}.issue_id);", ());
+            let index = raw!("${_allocate}()", 0_usize);
+            _assignment_message
+                .index(index)
+                .set(request.identifier.clone());
+            _assignment_message
+                .index(index)
+                .push_str(" assignment updated");
+            _assignment_kind.index(index).set("success".to_owned());
+            _assignment_remaining.index(index).set(4_000.0_f64);
+            raw!(
+                "window.dispatchEvent(new CustomEvent('lific:native-issue-assignee-applied',{detail:${_reply}})); ${_timer}(${index});",
+                ()
+            );
+        };
+        let _assignment_failure = |request: AssignmentRequest, message: String| {
+            raw!("${_assignment_release}(${request}.issue_id);", ());
+            let index = raw!("${_allocate}()", 0_usize);
+            _assignment_failure_message
+                .index(index)
+                .set("Couldn't update ".to_owned());
+            _assignment_failure_message
+                .index(index)
+                .push_str(request.identifier.clone());
+            _assignment_failure_message.index(index).push_str(": ");
+            _assignment_failure_message.index(index).push_str(message);
+            _assignment_failure_kind
+                .index(index)
+                .set("error".to_owned());
+            _assignment_failure_remaining.index(index).set(8_000.0_f64);
+            raw!("${_timer}(${index});", ());
+        };
+        let _assignment_run = |request: AssignmentRequest| {
+            let _success = |_reply: AssignmentReply| {
+                if _reply.status.is_ok() {
+                    raw!("${_assignment_finish}(${request},${_reply});", ());
+                } else {
+                    let _error = _reply.status.clone().unwrap_err();
+                    raw!("${_assignment_failure}(${request},${_error});", ());
+                }
+            };
+            let _failure = || {
+                raw!(
+                    "${_assignment_failure}(${request},cx.hydrate(\"Couldn't reach the server. Check your connection and try again.\"));",
+                    ()
+                );
+            };
+            let _keepalive = assign_issue.with_keepalive();
+            let _future = _keepalive(request.clone());
+            raw!("${_future}.then(${_success},${_failure});", ());
+        };
+        let _assignment_accept = |request: AssignmentRequest| {
+            if request.account_id != account_id {
+                false
+            } else if request.issue_id <= 0_i64 {
+                false
+            } else {
+                if request.expected_seq < 0_i64 {
+                    false
+                } else if assignment_pending
+                    .get()
+                    .position(request.issue_id.clone())
+                    .is_some()
+                {
+                    false
+                } else {
+                    assignment_pending.push(request.issue_id.clone());
+                    raw!("${_assignment_run}(${request});", ());
                     true
                 }
             }
@@ -955,6 +1045,9 @@ pub(crate) fn handler_factory() -> Js {
             },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-module-request',event=>{
                 if (${_module_accept}(event.detail).toString()==='true') event.preventDefault();
+            },{signal:cx.abortSignal});
+            window.addEventListener('lific:native-issue-assignee-request',event=>{
+                if (${_assignment_accept}(event.detail).toString()==='true') event.preventDefault();
             },{signal:cx.abortSignal});
             window.addEventListener('lific:native-issue-delete-request', event => {
                 const v=event.detail;
