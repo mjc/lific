@@ -1590,6 +1590,65 @@ mod tests {
     use super::*;
     use topcoat::runtime::Surrogated;
 
+    #[tokio::test]
+    async fn native_plan_title_starts_as_text_and_emits_inline_edit_handlers() {
+        use crate::db::{models::CreatePlan, queries};
+        use scraper::{Html, Selector};
+
+        let fixture = super::super::super::home_fixture::fixture();
+        let plan = {
+            let conn = fixture.db.write().unwrap();
+            let account = queries::users::validate_session(&conn, &fixture.token)
+                .unwrap()
+                .id;
+            let project_id = queries::resolve_project_identifier(&conn, "ACC").unwrap();
+            queries::members::upsert_member(&conn, project_id, account, Role::Maintainer)
+                .unwrap();
+            queries::plans::create_plan(
+                &conn,
+                &CreatePlan {
+                    project_id,
+                    title: "Inline title parity".into(),
+                    issue_id: None,
+                    steps: Vec::new(),
+                },
+            )
+            .unwrap()
+        };
+
+        let (status, html) = super::super::super::home_fixture::document(
+            &fixture,
+            "/app",
+            &format!("/ACC/plans/{}", plan.id),
+            true,
+            None,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let document = Html::parse_document(&html);
+        let trigger = document
+            .select(&Selector::parse("button[data-native-plan-title-trigger]").unwrap())
+            .next()
+            .expect("editable plan title is initially rendered as a button");
+        assert_eq!(trigger.text().collect::<String>(), "Inline title parity");
+        assert!(document
+            .select(&Selector::parse("input[data-native-plan-title-input]").unwrap())
+            .next()
+            .is_none(), "title input is only rendered while editing");
+
+        let result = super::super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/plans/title_handler.test.cjs",
+            &serde_json::json!({
+                "signals": super::super::super::home_fixture::page_signals(&html),
+                "click_handler": trigger.value().attr("data-topcoat-on:click").unwrap(),
+                "keydown_handler": trigger.value().attr("data-topcoat-on:keydown").unwrap(),
+                "title": "Inline title parity",
+            }),
+        );
+        assert_eq!(result["click_editing"], true);
+        assert_eq!(result["keyboard_editing"], true);
+    }
+
     #[component]
     async fn step_render_fixture(cx: &Cx, step: PlanStepNode) -> topcoat::Result<impl View> {
         let rendered = step_node(
