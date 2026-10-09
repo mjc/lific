@@ -11,49 +11,70 @@ const unbox = value => {
   while (value !== null && typeof value === 'object' && Object.hasOwn(value, 'v')) value = value.v;
   return value;
 };
-const readVisible = () => unbox(runtime.cx.signal(input.visible_signal).dehydrate());
 const listeners = new Map();
+const ownerListeners = new Map();
 const scrolled = [];
 const microtasks = [];
-let domVisible = input.initial_visible;
-runtime.context.window.location = {href: input.href};
-runtime.context.queueMicrotask = callback => microtasks.push(callback);
-runtime.context.window.addEventListener = (name, listener) => {
+const rows = new Set(input.rows || []);
+const add = (listeners, name, callback) => {
   const current = listeners.get(name) || [];
-  current.push(listener);
+  current.push(callback);
   listeners.set(name, current);
 };
-runtime.context.document.querySelector = selector => {
-  return {
-    scrollIntoView() {
-      assert.ok(domVisible >= input.required_visible[selector],
-        `${selector} must be visible before scrolling (visible ${domVisible})`);
-      scrolled.push(selector);
-    },
-  };
-};
-const flushMicrotasks = () => {
-  while (microtasks.length > 0) {
-    domVisible = Number(readVisible());
-    microtasks.shift()();
-  }
+const owner = {addEventListener: (name, callback) => add(ownerListeners, name, callback)};
+runtime.context.window.location = {href: input.href};
+runtime.context.queueMicrotask = callback => microtasks.push(callback);
+runtime.context.window.addEventListener = (name, listener) => add(listeners, name, listener);
+runtime.context.document.querySelector = selector => rows.has(selector) ? {
+  scrollIntoView() { scrolled.push(selector); },
+} : null;
+const event = type => runtime.cx.event({type, target: owner, currentTarget: owner});
+const argumentsNow = () => input.shard_expressions.map(source => runtime.handler(source).dehydrate());
+const read = id => unbox(runtime.cx.signal(id).get().dehydrate());
+const flush = () => { while (microtasks.length > 0) microtasks.shift()(); };
+const fireHash = href => {
+  runtime.context.window.location.href = href;
+  for (const listener of listeners.get('hashchange') || []) listener({type: 'hashchange'});
 };
 
-const mount = runtime.handler(input.mount_handler);
-mount(runtime.cx.event({type: 'mount', target: {}, currentTarget: {}}));
-const afterMount = readVisible();
-flushMicrotasks();
-runtime.context.window.location.href = input.hashchange_href;
-for (const listener of listeners.get('hashchange') || []) listener(runtime.cx.event({type: 'hashchange'}));
-const afterHashChange = readVisible();
-flushMicrotasks();
+runtime.handler(input.mount_handler)(event('mount'));
+if (input.repeat_mount) runtime.handler(input.mount_handler)(event('mount'));
+if (input.manual) runtime.handler(input.click_handler)(event('click'));
+let args = input.shard_expressions ? argumentsNow() : [];
+if (input.expected_revision !== undefined) {
+  assert.equal(Number(unbox(args[6])), input.expected_revision);
+  assert.equal(Number(unbox(args[8][4])), input.expected_attempts);
+  assert.equal(unbox(args[7][1]), true, 'activation marks loading busy');
+}
+if (input.click_handler && input.shard_expressions) {
+  runtime.handler(input.click_handler)(event('click'));
+  assert.deepEqual(argumentsNow(), args, 'a busy boundary ignores repeated clicks');
+}
+if (input.fail) {
+  for (const listener of ownerListeners.get('topcoat:render-error') || [])
+    listener({detail: {path: input.render_path}});
+  args = argumentsNow();
+  assert.equal(unbox(args[7][1]), false, 'failure clears busy');
+  assert.ok(unbox(args[7][3]).length > 0, 'failure supplies retry text');
+  fireHash(input.href);
+  assert.equal(Number(unbox(argumentsNow()[6])), Number(unbox(args[6])),
+    'the unchanged row count suppresses automatic retries after failure');
+  runtime.handler(input.click_handler)(event('click'));
+  args = argumentsNow();
+  assert.equal(Number(unbox(args[6])), input.expected_revision + 1, 'manual retry activates same cursor');
+  assert.equal(Number(unbox(args[8][4])), input.expected_attempts, 'manual retry does not reset automatic budget');
+}
+if (!input.cancel_scroll) flush();
+if (input.hashchange_href) fireHash(input.hashchange_href);
+if (input.expected_count !== undefined) assert.equal(Number(read(input.count_signal)), input.expected_count);
+flush();
+if (input.expected_scroll) assert.ok(scrolled.includes(input.expected_scroll), JSON.stringify(scrolled));
+if (input.forbidden_scroll) assert.ok(!scrolled.includes(input.forbidden_scroll), JSON.stringify(scrolled));
+const beforeDispose = input.shard_expressions ? argumentsNow() : [];
 runtime.controller.abort();
-runtime.context.window.location.href = input.disposed_href;
-for (const listener of listeners.get('hashchange') || []) listener(runtime.cx.event({type: 'hashchange'}));
-
-assert.ok(afterMount > input.initial_visible, 'mount reveals the linked comment');
-assert.ok(afterHashChange >= afterMount, 'hashchange can reveal an older comment');
-assert.ok(scrolled.includes(`#comment-${input.mount_comment}`));
-assert.ok(scrolled.includes(`#comment-${input.hashchange_comment}`));
-assert.equal(readVisible(), afterHashChange, 'disposing the owner prevents later state changes');
-process.stdout.write(JSON.stringify({after_mount: afterMount, after_hashchange: afterHashChange, scrolled}));
+if (input.disposed_href) fireHash(input.disposed_href);
+if (input.click_handler) runtime.handler(input.click_handler)(event('click'));
+if (input.shard_expressions) assert.deepEqual(argumentsNow(), beforeDispose, 'disposed owners cannot activate requests');
+const signals = {};
+for (const id of runtime.registry.signals.keys()) signals[id] = runtime.registry.read(id).dehydrate();
+process.stdout.write(JSON.stringify({args: input.shard_expressions ? argumentsNow() : [], signals, scrolled}));

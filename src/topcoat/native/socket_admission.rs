@@ -52,7 +52,9 @@ impl Layer for SocketAdmission {
                         || (*method == topcoat::router::Method::POST
                             && matches!(
                                 uri.path(),
-                                "/public/__native/issues" | "/public/__native/pages"
+                                "/public/__native/issues"
+                                    | "/public/__native/pages"
+                                    | "/public/__native/comments"
                             ))
                 });
                 let socket_context = cx.with(Arc::new(permit)).with(scope);

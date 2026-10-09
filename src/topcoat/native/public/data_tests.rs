@@ -9,7 +9,10 @@ use crate::{
             AttachmentActor, AttachmentEntity, CommentActor, CreateFolder, CreateIssue, CreatePage,
             CreateProject, CreateWait,
         },
-        queries::{self, comments::CommentParent},
+        queries::{
+            self,
+            comments::{CommentCursor, CommentParent},
+        },
     },
     error::LificError,
 };
@@ -76,6 +79,27 @@ fn route_issues(project: &str) -> Route {
     Route::Issues {
         project: project.into(),
     }
+}
+
+fn add_comment(
+    conn: &rusqlite::Connection,
+    project: &crate::db::models::Project,
+    parent: CommentParent,
+    content: &str,
+) -> crate::db::models::Comment {
+    queries::comments::create_comment_with_mentions(
+        conn,
+        parent,
+        Some(project.id),
+        CommentActor {
+            user_id: project.lead_user_id.unwrap(),
+            is_admin: false,
+        },
+        AttachmentActor::Unattributed,
+        content,
+        false,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -268,11 +292,12 @@ fn unpublished_projects_and_foreign_or_deleted_details_are_not_found() {
 }
 
 #[test]
-fn page_collection_and_page_comments_read_past_the_page_cap() {
+fn page_collection_is_complete_but_page_comments_start_with_latest_bounded_page() {
     let (db, cx, public, _) = fixture();
-    let parent = {
+    let (parent, comment_ids) = {
         let conn = db.write().unwrap();
         let mut parent = None;
+        let mut comment_ids = Vec::new();
         let author = public.lead_user_id.unwrap();
         for index in 0..501 {
             let page = queries::create_page(
@@ -291,7 +316,7 @@ fn page_collection_and_page_comments_read_past_the_page_cap() {
         }
         let parent = parent.unwrap();
         for _ in 0..501 {
-            queries::comments::create_comment_with_mentions(
+            let comment = queries::comments::create_comment_with_mentions(
                 &conn,
                 CommentParent::Page(parent.id),
                 Some(public.id),
@@ -304,8 +329,14 @@ fn page_collection_and_page_comments_read_past_the_page_cap() {
                 false,
             )
             .unwrap();
+            comment_ids.push(comment.id);
         }
-        parent
+        conn.execute(
+            "UPDATE comments SET created_at = '2026-01-01 00:00:00' WHERE page_id = ?1",
+            [parent.id],
+        )
+        .unwrap();
+        (parent, comment_ids)
     };
 
     let snapshot = load(
@@ -330,9 +361,296 @@ fn page_collection_and_page_comments_read_past_the_page_cap() {
     )
     .unwrap();
     let Body::Page { comments, .. } = snapshot.body else {
-        panic!("page detail route must return the complete page body");
+        panic!("page detail route must return the page body");
     };
-    assert_eq!(comments.len(), 501);
+    assert_eq!(comments.items.len(), 50);
+    assert!(comments.has_more);
+    assert_eq!(comments.next_offset, 50);
+    assert!(
+        comments
+            .items
+            .windows(2)
+            .all(|pair| pair[0].id > pair[1].id)
+    );
+    assert_eq!(
+        comments
+            .items
+            .iter()
+            .map(|comment| comment.id)
+            .collect::<Vec<_>>(),
+        comment_ids
+            .iter()
+            .rev()
+            .take(50)
+            .copied()
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn issue_detail_starts_with_the_latest_fifty_comments() {
+    let (db, cx, public, _) = fixture();
+    let (issue, ids) = {
+        let conn = db.write().unwrap();
+        let issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: public.id,
+                title: "Published issue".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ids = (0..55)
+            .map(|index| {
+                add_comment(
+                    &conn,
+                    &public,
+                    CommentParent::Issue(issue.id),
+                    &format!("comment {index}"),
+                )
+                .id
+            })
+            .collect::<Vec<_>>();
+        conn.execute(
+            "UPDATE comments SET created_at = '2026-01-01 00:00:00' WHERE issue_id = ?1",
+            [issue.id],
+        )
+        .unwrap();
+        (issue, ids)
+    };
+
+    let snapshot = load(
+        &cx,
+        &Route::IssueDetail {
+            project: "PUB".into(),
+            identifier: issue.identifier,
+        },
+    )
+    .unwrap();
+    let Body::Issue { comments, .. } = snapshot.body else {
+        panic!("issue detail route must return the issue body");
+    };
+    assert_eq!(comments.items.len(), 50);
+    assert!(comments.has_more);
+    assert_eq!(
+        comments
+            .items
+            .iter()
+            .map(|comment| comment.id)
+            .collect::<Vec<_>>(),
+        ids.iter().rev().take(50).copied().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn comment_keyset_page_survives_equal_time_inserts_and_deletes() {
+    let (db, cx, public, _) = fixture();
+    let (issue, ids) = {
+        let conn = db.write().unwrap();
+        let issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: public.id,
+                title: "Published issue".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let ids = (0..53)
+            .map(|index| {
+                add_comment(
+                    &conn,
+                    &public,
+                    CommentParent::Issue(issue.id),
+                    &format!("comment {index}"),
+                )
+                .id
+            })
+            .collect::<Vec<_>>();
+        conn.execute(
+            "UPDATE comments SET created_at = '2026-01-01 00:00:00' WHERE issue_id = ?1",
+            [issue.id],
+        )
+        .unwrap();
+        (issue, ids)
+    };
+
+    let first = read_comments(&cx, "PUB", CommentParent::Issue(issue.id), None).unwrap();
+    assert_eq!(first.items.len(), 50);
+    assert!(first.has_more);
+    let cursor = CommentCursor::before(first.items.last().unwrap());
+
+    {
+        let conn = db.write().unwrap();
+        add_comment(
+            &conn,
+            &public,
+            CommentParent::Issue(issue.id),
+            "newer than the captured cursor",
+        );
+        conn.execute(
+            "UPDATE comments SET deleted_at = datetime('now') WHERE id = ?1",
+            [ids[52]],
+        )
+        .unwrap();
+    }
+
+    let next = read_comments(&cx, "PUB", CommentParent::Issue(issue.id), Some(&cursor)).unwrap();
+    assert_eq!(
+        next.items
+            .iter()
+            .map(|comment| comment.id)
+            .collect::<Vec<_>>(),
+        ids[..3].iter().rev().copied().collect::<Vec<_>>()
+    );
+    assert!(!next.has_more);
+}
+
+#[test]
+fn comment_byte_limited_page_keeps_a_usable_cursor() {
+    let (db, cx, public, _) = fixture();
+    let (issue, expected_count) = {
+        let conn = db.write().unwrap();
+        let issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: public.id,
+                title: "Published issue".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for _ in 0..40 {
+            add_comment(
+                &conn,
+                &public,
+                CommentParent::Issue(issue.id),
+                &"x".repeat(60 * 1024),
+            );
+        }
+        (issue, 40)
+    };
+
+    let mut page = read_comments(&cx, "PUB", CommentParent::Issue(issue.id), None).unwrap();
+    assert!(page.items.len() < expected_count);
+    assert!(page.has_more);
+    assert!(page.budget_limited);
+    let mut ids = Vec::new();
+    loop {
+        assert!(!page.items.is_empty());
+        assert!(page.items.len() <= 50);
+        ids.extend(page.items.iter().map(|comment| comment.id));
+        if !page.has_more {
+            break;
+        }
+        let cursor = CommentCursor::before(page.items.last().unwrap());
+        page = read_comments(&cx, "PUB", CommentParent::Issue(issue.id), Some(&cursor)).unwrap();
+    }
+    assert_eq!(ids.len(), expected_count);
+    assert_eq!(
+        ids.iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        expected_count
+    );
+}
+
+#[test]
+fn comment_loader_rejects_foreign_deleted_and_unpublished_parents() {
+    let (db, cx, public, private) = fixture();
+    let (issue, foreign_issue, page, foreign_page) = {
+        let conn = db.write().unwrap();
+        let issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: public.id,
+                title: "Published issue".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let foreign_issue = queries::create_issue(
+            &conn,
+            &CreateIssue {
+                project_id: private.id,
+                title: "Private issue".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let page = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(public.id),
+                title: "Published page".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let foreign_page = queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(private.id),
+                title: "Private page".into(),
+                status: "active".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (issue, foreign_issue, page, foreign_page)
+    };
+
+    assert!(read_comments(&cx, "PUB", CommentParent::Issue(issue.id), None).is_ok());
+    for parent in [
+        CommentParent::Issue(foreign_issue.id),
+        CommentParent::Page(foreign_page.id),
+    ] {
+        assert!(matches!(
+            read_comments(&cx, "PUB", parent, None),
+            Err(LificError::NotFound(_))
+        ));
+    }
+    assert!(matches!(
+        read_comments(&cx, "PRIV", CommentParent::Page(foreign_page.id), None),
+        Err(LificError::NotFound(_))
+    ));
+
+    db.write()
+        .unwrap()
+        .execute(
+            "UPDATE pages SET deleted_at = datetime('now') WHERE id = ?1",
+            [page.id],
+        )
+        .unwrap();
+    assert!(matches!(
+        read_comments(&cx, "PUB", CommentParent::Page(page.id), None),
+        Err(LificError::NotFound(_))
+    ));
+    db.write()
+        .unwrap()
+        .execute(
+            "UPDATE issues SET deleted_at = datetime('now') WHERE id = ?1",
+            [issue.id],
+        )
+        .unwrap();
+    assert!(matches!(
+        read_comments(&cx, "PUB", CommentParent::Issue(issue.id), None),
+        Err(LificError::NotFound(_))
+    ));
+    db.write()
+        .unwrap()
+        .execute(
+            "UPDATE projects SET is_public = 0 WHERE id = ?1",
+            [public.id],
+        )
+        .unwrap();
+    assert!(matches!(
+        read_comments(&cx, "PUB", CommentParent::Issue(issue.id), None),
+        Err(LificError::NotFound(_))
+    ));
 }
 
 #[test]
@@ -537,6 +855,7 @@ fn issue_detail_keeps_comment_attribution_but_scrubs_accounts_and_attachment_upl
     };
     assert_eq!(public_issue.source, None);
     let comment = comments
+        .items
         .iter()
         .find(|comment| comment.id == comment_id)
         .unwrap();
