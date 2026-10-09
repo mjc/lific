@@ -55,6 +55,81 @@ pub(crate) enum Scope {
     Published,
 }
 
+pub(crate) fn render_published(cx: &Cx, project: &str, source: &str) -> String {
+    let html = render(cx, source, Scope::Published, &[]);
+    rewrite_elements(&html, |element| match element.value().name() {
+        "img" => {
+            let id = element.value().attr("data-public-image")?;
+            let original = published_attachment_url(cx, project, id);
+            let thumbnail = format!("{original}/thumbnail");
+            Some(attachment_image(element, &original, &thumbnail))
+        }
+        "a" => {
+            let href = element.value().attr("href")?;
+            let mount = super::transport::trusted_mount(cx);
+            let logical = mount
+                .and_then(|prefix| href.strip_prefix(prefix))
+                .filter(|path| path.starts_with('/'))
+                .unwrap_or(href);
+            if let Some(attachment) = ATTACHMENT.captures(logical) {
+                let id = attachment
+                    .get(1)
+                    .expect("attachment URL grammar has an ID")
+                    .as_str();
+                let href = published_attachment_url(cx, project, id);
+                return Some(element_with_attributes(
+                    element,
+                    &[("href", &href)],
+                    &["href", "data-public-download"],
+                ));
+            }
+            if href.starts_with('#')
+                || href.starts_with("https://")
+                || href.starts_with("http://")
+                || href.starts_with("mailto:")
+            {
+                return element
+                    .value()
+                    .attr("data-public-download")
+                    .map(|_| element_with_attributes(element, &[], &["data-public-download"]));
+            }
+            let path = if logical.starts_with("/public/") {
+                logical.to_owned()
+            } else {
+                format!("/public{logical}")
+            };
+            use super::public_route::Route;
+            let destination = match super::public_route::resolve(&path) {
+                Some(
+                    Route::Issues { project }
+                    | Route::Board { project }
+                    | Route::IssueDetail { project, .. }
+                    | Route::Pages { project }
+                    | Route::PageDetail { project, .. },
+                ) => project,
+                _ => return Some(element.inner_html()),
+            };
+            if !destination.eq_ignore_ascii_case(project) {
+                return Some(element.inner_html());
+            }
+            let href = mounted_url(cx, &path);
+            Some(element_with_attributes(
+                element,
+                &[("href", &href)],
+                &["href", "data-public-download"],
+            ))
+        }
+        _ => None,
+    })
+}
+
+fn published_attachment_url(cx: &Cx, project: &str, id: &str) -> String {
+    mounted_url(
+        cx,
+        &format!("/public/api/projects/{project}/attachments/{id}"),
+    )
+}
+
 pub(crate) fn render(cx: &Cx, source: &str, scope: Scope, mentions: &[(&str, &str)]) -> String {
     let mut options = comrak::Options::default();
     options.extension.strikethrough = true;
@@ -80,7 +155,7 @@ pub(crate) fn render(cx: &Cx, source: &str, scope: Scope, mentions: &[(&str, &st
     let mut document = Html::parse_fragment(&html);
     let nodes: Vec<_> = document.tree.nodes().map(|node| node.id()).collect();
 
-    for id in nodes {
+    for id in nodes.into_iter().rev() {
         let node = document.tree.get(id).expect("original Markdown node");
         let replacement = match node.value() {
             Node::Text(text)
@@ -133,79 +208,86 @@ pub(crate) fn render(cx: &Cx, source: &str, scope: Scope, mentions: &[(&str, &st
 
 /// Add trusted interactive metadata only after Markdown HTML has been sanitized.
 pub(crate) fn decorate_private_images(cx: &Cx, html: &str) -> String {
-    let mut document = Html::parse_fragment(html);
-    let images: Vec<_> = document
-        .select(&scraper::Selector::parse("img").expect("static image selector"))
-        .map(|image| image.id())
-        .collect();
-
-    for node_id in images {
-        let element = document
-            .tree
-            .get(node_id)
-            .and_then(ElementRef::wrap)
-            .expect("collected image node");
-        let Some(src) = element.value().attr("src") else {
-            continue;
-        };
-        let Some((_, suffix)) = src.rsplit_once("/api/attachments/") else {
-            continue;
-        };
-        let attachment_id = suffix.strip_suffix('/').unwrap_or(suffix);
-        if attachment_id.is_empty() || !attachment_id.bytes().all(|byte| byte.is_ascii_digit()) {
-            continue;
+    rewrite_elements(html, |element| {
+        if element.value().name() != "img" {
+            return None;
         }
-        let original = mounted_url(cx, &format!("/api/attachments/{attachment_id}"));
+        let src = element.value().attr("src")?;
+        let (_, suffix) = src.rsplit_once("/api/attachments/")?;
+        let id = suffix.strip_suffix('/').unwrap_or(suffix);
+        if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let original = mounted_url(cx, &format!("/api/attachments/{id}"));
         if src != original {
-            continue;
+            return None;
         }
-        let thumbnail = mounted_url(cx, &format!("/api/attachments/{attachment_id}/thumbnail"));
-        let replacement = element_with_attributes(
-            element,
-            &[
-                ("src", thumbnail.as_str()),
-                ("loading", "lazy"),
-                ("data-native-attachment-image", ""),
-                ("data-native-original-src", original.as_str()),
-                (
-                    "class",
-                    "max-w-full max-h-[32rem] h-auto border border-solid border-[var(--border)] rounded-lg cursor-zoom-in transition-[filter] duration-150 motion-reduce:transition-none hover:brightness-95",
-                ),
-            ],
-            &[
-                "src",
-                "loading",
-                "data-native-attachment-image",
-                "data-native-original-src",
+        let thumbnail = format!("{original}/thumbnail");
+        Some(attachment_image(element, &original, &thumbnail))
+    })
+}
+
+fn attachment_image(element: ElementRef<'_>, original: &str, thumbnail: &str) -> String {
+    element_with_attributes(
+        element,
+        &[
+            ("src", thumbnail),
+            ("loading", "lazy"),
+            ("data-native-attachment-image", ""),
+            ("data-native-original-src", original),
+            (
                 "class",
-            ],
-        );
+                "max-w-full max-h-[32rem] h-auto border border-solid border-[var(--border)] rounded-lg cursor-zoom-in transition-[filter] duration-150 motion-reduce:transition-none hover:brightness-95",
+            ),
+        ],
+        &[
+            "src",
+            "loading",
+            "data-public-image",
+            "data-native-attachment-image",
+            "data-native-original-src",
+            "class",
+        ],
+    )
+}
+
+fn rewrite_elements(html: &str, transform: impl Fn(ElementRef<'_>) -> Option<String>) -> String {
+    let mut document = Html::parse_fragment(html);
+    let nodes: Vec<_> = document.tree.nodes().map(|node| node.id()).collect();
+    for id in nodes.into_iter().rev() {
+        let Some(replacement) = document
+            .tree
+            .get(id)
+            .and_then(ElementRef::wrap)
+            .and_then(&transform)
+        else {
+            continue;
+        };
         let fragment = Html::parse_fragment(&replacement);
         let root = document.tree.extend_tree(fragment.tree).id();
-        let replacements: Vec<_> = document
+        let children: Vec<_> = document
             .tree
             .get(root)
-            .expect("inserted image fragment")
+            .expect("inserted fragment")
             .children()
             .find(|child| child.value().is_element())
-            .expect("inserted image fragment root")
+            .expect("fragment HTML root")
             .children()
             .map(|child| child.id())
             .collect();
-        for replacement in replacements {
+        for child in children {
             document
                 .tree
-                .get_mut(node_id)
-                .expect("original image node")
-                .insert_id_before(replacement);
+                .get_mut(id)
+                .expect("original element")
+                .insert_id_before(child);
         }
         document
             .tree
-            .get_mut(node_id)
-            .expect("original image node")
+            .get_mut(id)
+            .expect("original element")
             .detach();
     }
-
     document.root_element().inner_html()
 }
 

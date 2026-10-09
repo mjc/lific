@@ -51,6 +51,25 @@ async fn next_runtime_frame(socket: &mut Socket) -> serde_json::Value {
     .expect("bounded runtime frame")
 }
 
+async fn runtime_snapshot(socket: &mut Socket, run: u64) -> String {
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            let envelope = next_runtime_frame(socket).await;
+            if envelope["run"] != run {
+                continue;
+            }
+            let frame = &envelope["frame"];
+            match frame["t"].as_str() {
+                Some("snapshot") => return frame["html"].as_str().unwrap().to_owned(),
+                Some("error" | "redirect") => panic!("native render failed: {frame}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("native render must produce a snapshot")
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Transport {
     Native,
@@ -497,13 +516,9 @@ async fn native_published_shared_socket_cannot_render_private_paths() {
                     ))
                     .await
                     .unwrap();
-                let recovery = next_runtime_frame(&mut socket).await;
-                assert_eq!(recovery["run"], 2);
-                assert_eq!(
-                    recovery["frame"],
-                    serde_json::json!({"t": "error", "status": 404}),
-                    "the published route keeps its current HTTP outcome after a refused private run"
-                );
+                let recovery = runtime_snapshot(&mut socket, 2).await;
+                assert!(recovery.contains("data-native-public-shell"));
+                assert!(!recovery.contains("data-native-home-sidebar"));
                 assert_eq!(fixture.hub.revocation_receiver_count(), 0);
                 assert_eq!(fixture.hub.socket_count(fixture.operator_id), 0);
                 assert_eq!(fixture.hub.socket_count(fixture.viewer_id), 0);
@@ -569,19 +584,25 @@ async fn native_private_shared_socket_keeps_authority_while_rendering_public_pat
             ))
             .await
             .unwrap();
-        let outcome = next_runtime_frame(&mut socket).await;
-        assert_eq!(outcome["run"], 1);
-        assert_eq!(
-            outcome["frame"],
-            serde_json::json!({"t": "error", "status": 404}),
-            "private admission preserves the public route's current HTTP outcome"
-        );
+        let outcome = runtime_snapshot(&mut socket, 1).await;
+        assert!(outcome.contains("data-native-public-shell"));
+        assert!(!outcome.contains("data-native-home-sidebar"));
         assert_eq!(fixture.hub.socket_count(fixture.viewer_id), 1);
         assert_eq!(fixture.hub.revocation_receiver_count(), 1);
         queries::users::delete_session(&fixture.db.write().unwrap(), &fixture.token).unwrap();
         fixture.hub.revoke_user(fixture.viewer_id);
+        let retirement = tokio::time::timeout(DEADLINE, async {
+            loop {
+                let envelope = next_runtime_frame(&mut socket).await;
+                if envelope["run"].is_null() {
+                    return envelope;
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(
-            next_runtime_frame(&mut socket).await,
+            retirement,
             serde_json::json!({"frame": {"t": "redirect", "location": format!("{prefix}/")}}),
             "a public render cannot detach the original private authority lifetime"
         );
@@ -804,6 +825,89 @@ async fn native_published_admission_valid_private_shard_identity_cannot_select_a
         assert_eq!(current.title, private.title);
         assert_eq!(current.description, private.description);
     }
+}
+
+#[tokio::test]
+async fn native_published_shards_cannot_replay_private_project_arguments() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = Fixture::new().await;
+    fixture.publish();
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(fixture.public_request("", "/public/PUB/issues", None))
+            .await
+            .unwrap();
+    let issue_arguments = serde_json::to_value(
+        (
+            "MEM".to_owned(),
+            String::new(),
+            "list".to_owned(),
+            (
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                "priority".to_owned(),
+                "asc".to_owned(),
+                "status".to_owned(),
+                "all".to_owned(),
+            ),
+        )
+            .into_surrogate(),
+    )
+    .unwrap();
+    let carried_signal = |id: u64, value: serde_json::Value| serde_json::json!({"t": "Signal", "id": format!("{id:032x}"), "v": value});
+    let page_arguments = serde_json::json!([
+        "MEM",
+        "browse",
+        carried_signal(1, serde_json::json!("")),
+        carried_signal(2, serde_json::json!("")),
+        carried_signal(3, serde_json::json!("__active")),
+        carried_signal(4, serde_json::to_value(0_i64.into_surrogate()).unwrap()),
+        carried_signal(
+            5,
+            serde_json::to_value(Vec::<i64>::new().into_surrogate()).unwrap()
+        ),
+    ]);
+    for (run, path, arguments) in [
+        (1, "/public/__native/issues", issue_arguments),
+        (2, "/public/__native/pages", page_arguments),
+    ] {
+        socket
+            .send(Message::Text(
+                serde_json::json!({
+                    "run": run, "method": "POST", "path": path,
+                    "headers": {"x-topcoat-identity": topcoat::core::identity::Identity::ROOT.to_string(), "content-type": "application/json"},
+                    "body": serde_json::json!({"args": arguments, "signals": {}}).to_string(),
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            next_runtime_frame(&mut socket).await,
+            serde_json::json!({"run": run, "frame": {"t": "error", "status": 404}})
+        );
+    }
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "run": 3, "method": "GET", "path": "/public/PUB/issues",
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    assert!(
+        runtime_snapshot(&mut socket, 3)
+            .await
+            .contains("data-native-public-shell")
+    );
+    assert_eq!(fixture.hub.revocation_receiver_count(), 0);
+    close(socket).await;
+    fixture.wait_for_total(0).await;
 }
 
 #[tokio::test]

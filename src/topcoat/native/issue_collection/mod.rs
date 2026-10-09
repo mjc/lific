@@ -116,6 +116,12 @@ mod rows_shard {
         let state = persistence::state(&wire, tab, lane, &[slices.0, slices.1, slices.2, slices.3]);
         let selection = model::select(&collection, &state, &layout);
         let clear = controls::clear_for(cx, wire_owner, storage_key);
-        Ok(view::region(cx, &collection, &selection, clear))
+        Ok(view::region(
+            cx,
+            &collection,
+            &selection,
+            clear,
+            view::Audience::Private,
+        ))
     }
 }

@@ -29,6 +29,108 @@ fn private(source: &str) -> String {
 }
 
 #[test]
+fn native_markdown_linked_attachments_keep_their_image_metadata() {
+    for prefix in ["", "/nested/lific"] {
+        for destination in [
+            "/ACC/issues/ACC-1",
+            "#/ACC/issues/ACC-1",
+            "/api/attachments/7",
+        ] {
+            let source = format!("[![Linked image](/api/attachments/7)]({destination})");
+            for published in [false, true] {
+                let html = if published {
+                    super::render_published(&context(prefix), "ACC", &source)
+                } else {
+                    let cx = context(prefix);
+                    let rendered = render(&cx, &source, Scope::Private, &[]);
+                    super::decorate_private_images(&cx, &rendered)
+                };
+                let document = scraper::Html::parse_fragment(&html);
+                let image = document
+                    .select(&scraper::Selector::parse("a img").unwrap())
+                    .next()
+                    .expect("linked attachment retains its image");
+                let original = if published {
+                    format!("{prefix}/public/api/projects/ACC/attachments/7")
+                } else {
+                    format!("{prefix}/api/attachments/7")
+                };
+                assert_eq!(
+                    image.attr("data-native-original-src"),
+                    Some(original.as_str()),
+                    "{html}"
+                );
+                assert!(image.attr("src").is_some(), "{html}");
+                assert_eq!(
+                    image.attr("data-native-attachment-image"),
+                    Some(""),
+                    "{html}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn native_public_markdown_rejects_forged_download_markers() {
+    for prefix in ["", "/nested/lific"] {
+        for marker in [
+            "../../../../../api/attachments/99",
+            "%2e%2e/api/attachments/99",
+            "7/../../api/attachments/99",
+            "7",
+        ] {
+            let source =
+                format!("<a href=\"/anything\" data-public-download=\"{marker}\">download</a>");
+            let html = super::render_published(&context(prefix), "ACC", &source);
+            assert!(
+                !html.contains("<a "),
+                "authored marker was treated as authority: {html}"
+            );
+            assert!(html.contains("download"));
+        }
+        let html = super::render_published(
+            &context(prefix),
+            "ACC",
+            "<a href=\"https://example.test\" data-public-download=\"7\">external</a>",
+        );
+        assert!(html.contains("href=\"https://example.test\""), "{html}");
+        assert!(!html.contains("data-public-download"), "{html}");
+    }
+}
+
+#[test]
+fn native_public_markdown_scopes_attachments_and_local_links_at_every_mount() {
+    let source = "![Authored alt](/api/attachments/7) [Download](/api/attachments/7) [Issue](/ACC/issues/ACC-1) [Legacy](#/ACC/issues/ACC-1) [Private](/HIDE/issues/HIDE-1) [Unsupported](/ACC/settings) ![External alt](https://tracker.test/image.png)";
+    for prefix in ["", "/nested/lific"] {
+        let html = super::render_published(&context(prefix), "ACC", source);
+        assert!(
+            html.contains(&format!(
+                "src=\"{prefix}/public/api/projects/ACC/attachments/7/thumbnail\""
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!(
+                "href=\"{prefix}/public/api/projects/ACC/attachments/7\""
+            )),
+            "{html}"
+        );
+        assert_eq!(
+            html.matches(&format!("href=\"{prefix}/public/ACC/issues/ACC-1\""))
+                .count(),
+            2,
+            "{html}"
+        );
+        assert!(!html.contains("href=\"/api/"), "{html}");
+        assert!(!html.contains("HIDE/issues"), "{html}");
+        assert!(!html.contains("ACC/settings"), "{html}");
+        assert!(!html.contains("tracker.test"), "{html}");
+        assert!(html.contains("External alt"), "{html}");
+    }
+}
+
+#[test]
 fn native_markdown_master_renders_headings_prose_emphasis_and_hard_line_breaks() {
     // Characterizes marked.parse(..., {breaks:true,gfm:true}).
     let html = private("# Heading\n\nFirst **bold** and *italic*.\nNext line.\n\n~~removed~~");
