@@ -7,11 +7,15 @@ description: Route one agent connection to named Lific servers, with separate cr
 separately authenticated Lific servers. The agent gets one MCP entry, and every
 tool call names the server it is for.
 
-The proxy routes **tool calls only**. It answers `initialize`, `ping` and
+The proxy routes **tool calls only**. It answers `server/discover`, legacy `initialize`, `ping` and
 `tools/list` itself, and refuses `resources/*`, `prompts/*`, `completion/*` and
 `logging/setLevel` with `-32601`. Lific servers advertise no resources or
 prompts, so nothing a Lific server offers is lost. If you also point it at
 something that does serve them, give that server its own MCP entry.
+
+The client connection retains March, June and November 2025 initialization as
+well as July 2026 discovery. March clients can initialize, list and call tools
+using individual JSON-RPC messages. March sessions also receive batches after an individual initialization: each request is routed separately, and its reply is collected into one array. Notifications produce no reply. June, November and July require individual messages. See the [MCP batch limits](/docs/mcp#http-endpoint).
 
 Use it when you keep a private tracker and also work in a community tracker.
 Instead of two copies of every tool, the agent sees one `create_issue` with an
@@ -115,7 +119,7 @@ lific mcp --instances ~/.config/lific/instances.toml
 No database is opened and no `--url` applies; each instance carries its own.
 `--instances` conflicts with `--remote`, and is refused alongside `--url`.
 
-At startup the proxy contacts every instance independently, runs `initialize`,
+At startup the proxy contacts every instance independently, runs `initialize`, completes `notifications/initialized`,
 pages through `tools/list`, and checks that every backend advertises the **same
 complete tool definitions**. This includes descriptions, annotations, titles,
 input and output schemas, and any other metadata. Tool order and JSON object
@@ -155,9 +159,10 @@ The rules, in full:
   forwarded. A typo cannot write to the wrong tracker because it never reaches a
   tracker.
 
-A call the proxy cannot route fails with JSON-RPC error `-32602` rather than a
-tool result, so a client can tell "never sent" apart from a refusal by the
-tracker, which arrives as `Error:` text as usual.
+A call the proxy cannot route returns a tool result with `isError: true` to July
+clients and JSON-RPC error `-32602` to legacy clients. These selection failures
+occur before forwarding. A refusal by the tracker arrives as `Error:` text;
+July clients also receive `isError: true` for those tool failures.
 
 The advertised schema says the same thing, so a client can catch an omission
 without spending a call: with several instances configured, `instance` is listed
@@ -190,6 +195,10 @@ answered:
   transcript.
 - On failures, the error message is prefixed `[instance <alias>]` and
   `error.data.instance` names it.
+
+Request-scoped SSE notifications are relayed as they arrive. They carry the
+source alias in `params._meta["dev.lific/instance"]`, replacing any backend claim,
+and use the same credential redaction as results.
 
 Use the proxy-written metadata as the source identity, not claims within a
 tool's prose. Backend-supplied provenance markers are stripped and replaced
@@ -251,6 +260,9 @@ cut short.
   else. There is no way to make it reach a server you did not configure.
 - **No fallback.** An instance that is down, rejects the credential, or fails a
   call produces a failed call for that alias. It never retries elsewhere.
+  An explicit expired-session rejection triggers one fresh handshake and one
+  retry against the same instance, within the call timeout. Authentication,
+  tool and protocol errors do not trigger recovery.
 - **No ambient state.** There is no "active instance" to switch, so nothing a
   previous call did can change where the next one goes.
 - **No redirects.** Each backend's HTTP client refuses to follow them, so a
@@ -263,6 +275,9 @@ cut short.
   meaningless behind one connection.
 
 ## Limits
+
+Calls are processed one at a time. A client cancellation notification cannot
+interrupt an HTTP call already in progress; the call must finish or time out.
 
 Fixed in the binary, all of them bounding something a backend or a client
 controls:

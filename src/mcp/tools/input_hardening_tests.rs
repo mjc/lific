@@ -662,6 +662,7 @@ mod wire {
                 )
                 .await;
             assert_eq!(init["result"]["serverInfo"]["name"], "lific");
+            assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
             session
                 .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
                 .await;
@@ -676,7 +677,7 @@ mod wire {
                 .expect("write succeeds");
         }
 
-        async fn request(&mut self, method: &str, params: Value) -> Value {
+        pub(super) async fn request(&mut self, method: &str, params: Value) -> Value {
             self.next_id += 1;
             let id = self.next_id;
             self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
@@ -688,6 +689,7 @@ mod wire {
                 .expect("server keeps stdout open");
             let response: Value = serde_json::from_str(&line).expect("JSON-RPC response");
             assert_eq!(response["id"], id);
+            assert!(response["result"].get("resultType").is_none());
             response
         }
 
@@ -702,6 +704,11 @@ mod wire {
                 .await;
             match response.get("error") {
                 Some(error) => Err(error["message"].as_str().unwrap_or_default().to_owned()),
+                None if response["result"]["isError"] == true => Err(response["result"]["content"]
+                    [0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned()),
                 None => Ok(response["result"]["content"][0]["text"]
                     .as_str()
                     .unwrap_or_default()
@@ -709,6 +716,27 @@ mod wire {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn march_only_local_stdio_client_lists_and_calls_tools() {
+    let (m, _guard) = mcp();
+    seed_project(&m, "March", "MAR");
+    seed_issue(&m, "MAR", "March tool call");
+    let mut session = wire::Session::start(m).await;
+    let listed = session.request("tools/list", json!({})).await;
+    assert!(
+        listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "get_issue")
+    );
+    let read = session
+        .call("get_issue", json!({"identifier": "MAR-1"}))
+        .await
+        .unwrap();
+    assert!(read.contains("March tool call"), "{read}");
 }
 
 #[tokio::test]

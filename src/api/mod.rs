@@ -1411,6 +1411,7 @@ mod tests {
             }))
             .layer(axum::middleware::from_fn_with_state(
                 crate::auth::AuthState {
+                    public_url_is_explicit: false,
                     db: db.clone(),
                     public_url: "https://example.com".into(),
                     required: true,
@@ -2318,6 +2319,7 @@ mod authz_gating_tests {
         let outsider_token = insert_oauth_token(&db, "outsider", non_member.id);
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: db.clone(),
             public_url: "https://example.com".into(),
             required: true,

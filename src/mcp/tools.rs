@@ -73,7 +73,8 @@ fn finish_response(output: String, result: fmt::Result) -> String {
 }
 
 fn encoded_tool_result_bytes(output: &str) -> Result<usize, String> {
-    let result = rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(output)]);
+    let result =
+        rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(output)]);
     let mut writer = CountingWriter(0);
     serde_json::to_writer(&mut writer, &result)
         .map(|()| writer.0)
@@ -5221,15 +5222,15 @@ No issues found."
         // parse one shape everywhere.
         let contents = self
             .get_attachment_inner(input)
-            .unwrap_or_else(|error| vec![rmcp::model::Content::text(error_response(error))]);
+            .unwrap_or_else(|error| vec![rmcp::model::ContentBlock::text(error_response(error))]);
         rmcp::model::CallToolResult::success(contents)
     }
 
     fn get_attachment_inner(
         &self,
         input: GetAttachmentInput,
-    ) -> Result<Vec<rmcp::model::Content>, String> {
-        use rmcp::model::Content;
+    ) -> Result<Vec<rmcp::model::ContentBlock>, String> {
+        use rmcp::model::ContentBlock;
 
         let attachment =
             self.read(|conn| queries::attachments::get_attachment(conn, input.attachment_id))?;
@@ -5246,7 +5247,7 @@ No issues found."
                 .store
                 .read(&attachment.sha256)
                 .map_err(sanitize_error)?;
-            return Ok(vec![Content::text(render_attachment_text(
+            return Ok(vec![ContentBlock::text(render_attachment_text(
                 &attachment,
                 &bytes,
                 input.offset,
@@ -5261,14 +5262,14 @@ No issues found."
             // The raster formats a multimodal agent can actually look at.
             // SVG is deliberately excluded, matching `is_inline_safe_mime`.
             return Ok(vec![
-                Content::text(format!(
+                ContentBlock::text(format!(
                     "attachment {}: {} ({}, {})",
                     attachment.id,
                     attachment.filename,
                     attachment.mime,
                     HumanSize(attachment.size_bytes)
                 )),
-                Content::image(
+                ContentBlock::image(
                     base64::engine::general_purpose::STANDARD.encode(&bytes),
                     attachment.mime,
                 ),
@@ -5281,7 +5282,7 @@ No issues found."
                 || format!("/api/attachments/{}", attachment.id),
                 |url| url.to_string(),
             );
-        Ok(vec![Content::text(format!(
+        Ok(vec![ContentBlock::text(format!(
             "attachment {}: {} ({}, {}, sha {}). Binary, download at {download_url}",
             attachment.id,
             attachment.filename,
@@ -5703,7 +5704,7 @@ mod tests {
         let large = "界".repeat(64 * 1024);
         for output in ["small", "caf\u{e9} \0 😀", large.as_str()] {
             let result =
-                rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(output)]);
+                rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(output)]);
             let wire = serde_json::to_vec(&result).unwrap();
             assert_eq!(
                 super::encoded_tool_result_bytes(output).unwrap(),
@@ -14980,6 +14981,7 @@ mod authz_gating_tests {
         }
 
         let auth_state = crate::auth::AuthState {
+            public_url_is_explicit: false,
             db: (*m.db).clone(),
             public_url: "https://example.com".into(),
             required: true,

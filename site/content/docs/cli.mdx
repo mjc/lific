@@ -278,7 +278,7 @@ lific instance set [--name <NAME>] [--signups <BOOLEAN>] [--signup-domains <DOMA
 Signs the CLI in to a server, for use with `--backend http` and `lific mcp --remote`. `login` uses the OAuth device flow: it prints a web address and a short code, you approve the code in any browser, and the command stores the resulting token in the OS keyring, or in `credentials.json` in the Lific configuration directory (owner-readable only) when there is no keyring.
 
 ```shell
-lific login [--url <URL>] [--non-interactive] [--complete <DEVICE_CODE>] [--label <LABEL>] [--no-store]
+lific login [--url <URL>] [--non-interactive] [--complete <DEVICE_CODE> --client-id <CLIENT_ID>] [--label <LABEL>] [--no-store]
 lific logout [--url <URL>]
 ```
 
@@ -287,6 +287,7 @@ lific logout [--url <URL>]
 | `--url <URL>` | The server. Defaults to `server.public_url`, then `http://127.0.0.1:<port>`. |
 | `--non-interactive` | Prints the code and device code as JSON and exits without waiting. Implied when there is no terminal. Finish later with `--complete`. |
 | `--complete <DEVICE_CODE>` | Waits for an earlier login to be approved, denied or expired, then stores the token. |
+| `--client-id <CLIENT_ID>` | The client ID for an earlier login. Use the `next_step` command printed by `--non-interactive` to retain the correct ID when completing it. |
 | `--label <LABEL>` | A name shown on the approval page, so you can tell logins apart. |
 | `--no-store` | Prints the token instead of storing it. |
 
@@ -553,6 +554,8 @@ The CLI allows larger archives than a browser upload does. [Limits](/docs/limits
 ### doctor
 
 Checks that the instance works: the configuration, the database, backups, the local server, OAuth discovery and a real MCP round trip. When `server.public_url` is set, it checks OAuth discovery there too. Each check reports pass, warn or fail, and the command exits nonzero when anything fails, so scripts and CI can rely on it. Checks that need a running server are skipped, not failed, when nothing is listening.
+
+The MCP check tries July discovery first. If the server explicitly rejects that version or discovery method, it checks a legacy initialization instead, accepting March, June or November 2025. Authentication errors, malformed replies and missing required July metadata remain failures.
 
 ```shell
 lific doctor [--key <API_KEY>] [--repair]

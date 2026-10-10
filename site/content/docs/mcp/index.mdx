@@ -10,9 +10,9 @@ The short version:
 - The HTTP endpoint, `https://your-server.example/mcp`, authenticates every request with a bearer API key or an OAuth 2.1 access token.
 - Local stdio, `lific mcp`, has no transport authentication. The agent's identity is the API key in `LIFIC_TOKEN`, checked again before every tool call.
 - Remote stdio, `lific mcp --remote --url <BASE_URL>`, is a local command that forwards to a server's HTTP endpoint with a bearer credential.
-- A tool that cannot do what you asked returns text starting with `Error:`, not a protocol error. A parameter the tool does not declare is refused before it runs, with a suggestion for the name you probably meant.
+- A tool that cannot do what you asked returns `isError: true` with text starting with `Error:`. A parameter the tool does not declare is refused before it runs, with a suggestion for the name you probably meant.
 - Lists are paged. When more rows exist, the output ends with the `offset` to pass on the next call.
-- Local stdio answers a pre-initialize `server/discover` probe with "method not found" and keeps the session open.
+- July 2026 clients use `server/discover` and per-request metadata, with no initialization handshake. Legacy clients use `initialize` and `notifications/initialized`.
 
 Most people never configure this by hand. [`lific connect`](/docs/connect) detects your AI tools and writes one of these setups for each. This page describes what it writes, and what to write yourself when it does not cover your client.
 
@@ -35,7 +35,21 @@ The server advertises the tools capability only. It serves no MCP resources or p
 https://your-server.example/mcp
 ```
 
-The endpoint speaks Streamable HTTP in stateless mode and answers each POST with a JSON response. It is not a standalone SSE endpoint. The server reports MCP protocol version `2025-03-26`.
+The endpoint supports MCP `2026-07-28` plus legacy `2025-03-26`, `2025-06-18` and `2025-11-25`. July requests are stateless: every request carries `_meta` with `io.modelcontextprotocol/protocolVersion` and `io.modelcontextprotocol/clientCapabilities`, plus `MCP-Protocol-Version` and `Mcp-Method` HTTP headers. Calls to named tools also carry `Mcp-Name`. `server/discover` returns the supported versions, capabilities and instructions without initialization. Results carry `resultType: "complete"`.
+
+Legacy clients perform `initialize`, retain the returned `Mcp-Session-Id`, and send `notifications/initialized`. Subsequent requests include the session ID; June and November clients also include the negotiated `MCP-Protocol-Version`. March clients can omit that version header. HTTP responses can be JSON or SSE; clients must accept both. Unsupported legacy initialization versions negotiate November 2025.
+
+March sessions receive JSON-RPC batches over HTTP and stdio, including the remote and multi-instance proxies. Initialize with an individual request first. Batch replies preserve request IDs and omit notifications; an empty batch or a batched initialization is invalid. June, November and July requests use individual messages.
+
+A batch may contain at most 1,024 members. HTTP batch input and all stdio input frames, including individual requests, are capped at 1 MiB; combined batch replies are capped at 4 MiB. Remote batch exchanges share a 120-second network budget. HTTP batch replies have a separate 30-second delivery grace after processing finishes; completed results remain available during that grace, then unread output is discarded.
+
+Legacy HTTP allows up to 1,024 non-cancelled outstanding requests across sessions, with a shared 4 MiB cap on their session-ID plus serialized request-ID bytes. A legacy session retains cancelled request IDs until it closes, preventing late replies from being attributed to a reused ID. Each HTTP session allows 1,024 outstanding or cancelled IDs and 4 MiB of session-ID plus serialized request-ID bytes; each local stdio session allows 1,024 outstanding or cancelled IDs and 4 MiB of serialized request-ID bytes. Reconnect if a session reaches either per-session limit. A session with 1,024 non-cancelled requests uses all shared HTTP request slots; cancelled IDs do not count against the shared request or identifier-byte limits.
+
+Concurrent explicit cancellation over HTTP or local stdio omits the cancelled member while remaining replies complete. Remote and multi-instance proxies retain their serial request processing: a cancellation cannot interrupt a call already being forwarded.
+
+If a remote or multi-instance batch exhausts its output budget, earlier completed replies are retained. The call whose reply exceeds the budget was already forwarded and may have executed; its reply is replaced with a `-32603` error. Treat its outcome as unknown before retrying a mutation. Later calls receive errors without being forwarded; notifications receive no replies. The proxy continues accepting subsequent requests.
+
+Requests with an `Origin` header must match `server.cors_origins`, the public server origin, or a local loopback origin. Other origins receive HTTP 403. Configured browser origins remain specific to their scheme, host and port.
 
 A request must carry a `Host` the server recognizes, as a guard against DNS rebinding: `localhost`, `127.0.0.1`, `::1`, or the hostname of `server.public_url` when that is set. Behind a reverse proxy, set [`server.public_url`](/docs/configuration) to the address agents use, or requests are refused with `403 Forbidden: Host header is not allowed`.
 
@@ -63,7 +77,11 @@ Field names differ between clients. `lific connect` knows each one's shape; see 
 
 An OAuth-capable client can connect to the endpoint URL with no credential and run the flow itself. A request with no credential gets `401` with a `WWW-Authenticate` header pointing at the protected-resource metadata, `/.well-known/oauth-protected-resource/mcp`. Authorization-server metadata is at `/.well-known/oauth-authorization-server`.
 
-Lific supports the authorization-code grant with S256 PKCE and the device authorization grant, and implements dynamic client registration at `/oauth/register`. A registered redirect URI must be an absolute `http` or `https` URL. Lific issues no client secrets, so the only token endpoint authentication method it advertises is `none`.
+Lific supports the authorization-code grant with S256 PKCE and the device authorization grant, and implements dynamic client registration at `/oauth/register`. A registered redirect URI must be an absolute `http` or `https` URL. Lific issues no client secrets, so the only token endpoint authentication method it advertises is `none`. Client ID Metadata Documents are not yet supported; clients can use dynamic registration or a pre-registered client.
+
+New authorization and device grants retain their canonical resource through token exchange. A token request for another resource is rejected, and issued tokens are checked against their resource on HTTP requests. Existing grants and tokens without resource metadata remain compatible until they expire. Native clients registered with `application_type: "native"` may change the port of a loopback IP callback; all other redirect components must match exactly.
+
+New device token requests must include the client ID used to request that device code. An omitted or different client ID is rejected without consuming the approved grant. Pending grants created before the upgrade still accept an omitted client ID until they expire; a supplied different ID is rejected.
 
 Both grants are approved from a signed-in browser, and only from a browser: an OAuth access token cannot approve an authorization request or a device code. The browser session must also have signed in within the last 15 minutes, because approving a connection mints a 30-day credential for the tool.
 
@@ -97,15 +115,17 @@ A session launched with no `LIFIC_TOKEN` has no credential to check and keeps it
 
 `LIFIC_TOKEN` is not `LIFIC_API_KEY`. `LIFIC_API_KEY` is the bearer credential for HTTP access, read by remote stdio, Codex and `lific doctor`. See [Connect agents](/docs/connect#lific_api_key-and-lific_token).
 
-### Discovery probes before `initialize`
+### Discovery and legacy initialization
 
-Some clients send a `server/discover` request before `initialize`. Local stdio answers any pre-initialize request other than `ping` with JSON-RPC error `-32601` (method not found) and keeps the session open, so the client falls back to a normal handshake instead of reading end-of-file. Notifications sent before `initialize` are dropped.
+July requests carry the same per-request metadata over stdio as HTTP. Discovery and tool calls need no initialization. Legacy clients retain the initialization handshake; the server negotiates March, June or November 2025 and omits `resultType: "complete"` from their responses.
 
 ## Remote stdio
 
 `lific mcp --remote --url https://your-server.example` gives a client that only launches commands a way to reach a server. It opens no database. Each request is POSTed to the server's `/mcp` endpoint with the credential, so authentication and revocation work exactly as they do over HTTP. `LIFIC_URL` can stand in for `--url`.
 
-When the server is unreachable, answers with an HTTP error, or rejects the credential, the proxy answers that request with a JSON-RPC error (`-32603`) carrying a readable message, and keeps running. It ends only when the client closes its input. The [remote stdio walkthrough](/docs/repository-bindings#use-a-remote-server) covers binding a checkout through it.
+The proxy preserves JSON-RPC errors returned by the server. When the server is unreachable, answers with a transport error, or rejects the credential, the proxy answers that request with a JSON-RPC error (`-32603`) carrying a readable message, and keeps running. It ends only when the client closes its input. The [remote stdio walkthrough](/docs/repository-bindings#use-a-remote-server) covers binding a checkout through it.
+
+If the server explicitly rejects an expired legacy session, the proxy completes a fresh handshake and retries the rejected request once. Recovery uses the same server and credential, retains the negotiated protocol version, and shares the original request's 120-second HTTP timeout. Authentication failures, tool errors and protocol errors are returned without retrying the call.
 
 ## Response conventions
 
@@ -113,15 +133,15 @@ These hold on every transport.
 
 ### Failures are text
 
-A tool that cannot do what you asked returns an ordinary result whose text starts with `Error:`, followed by what went wrong: an unknown identifier, a missing role, an ambiguous edit, a stale `expected_seq`. It is not a JSON-RPC error, so read the text and correct the call. Database and internal faults are reported only as `Error: internal server error`; the detail goes to the server log.
+A tool that cannot do what you asked returns an ordinary result whose text starts with `Error:`, followed by what went wrong: an unknown identifier, a missing role, an ambiguous edit, a stale `expected_seq`. It has `isError: true`, so read the text and correct the call. Database and internal faults are reported only as `Error: internal server error`; the detail goes to the server log.
 
-Some failures happen before a tool runs, and those are JSON-RPC errors:
+Argument validation failures also return `isError: true`, so an agent can correct and retry its call:
 
-- Arguments that do not fit the tool's schema return `-32602` (invalid params): a missing required parameter, a wrong type, or a parameter the tool does not declare. Unknown parameters are refused on every tool, nested objects included, so a misspelling cannot quietly change the answer. The message names the unknown key, suggests the closest valid name, and lists the valid ones, for example ``Unknown parameter `comments` in get_issue. Did you mean `include_comments`?``
-- The remote stdio proxy returns `-32603` when it cannot reach the server.
-- The multi-instance proxy returns `-32602` for a call it cannot route.
+- Arguments that do not fit the tool's schema return a tool error: a missing required parameter, a wrong type, or a parameter the tool does not declare. Unknown parameters are refused on every tool, nested objects included, so a misspelling cannot quietly change the answer. The message names the unknown key, suggests the closest valid name, and lists the valid ones, for example ``Unknown parameter `comments` in get_issue. Did you mean `include_comments`?``
 
-A revoked stdio credential is the one tool result flagged `isError: true`. An unrecognized `resource_type` or `action` in `list_resources`, `manage_resource` or `delete` returns a line naming the accepted values.
+JSON-RPC errors describe malformed protocol requests and unknown tools. The remote stdio proxy returns `-32603` when it cannot reach the server. Multi-instance selection errors are tool errors for July clients and `-32602` errors for legacy clients.
+
+A revoked stdio credential is also flagged `isError: true`. An unrecognized `resource_type` or `action` in `list_resources`, `manage_resource` or `delete` returns a line naming the accepted values.
 
 ### Lists are paged
 

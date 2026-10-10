@@ -21,12 +21,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::Path;
 
+#[cfg(test)]
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, BufReader};
 
+use super::mcp_http::validate_envelope;
 use super::mcp_proxy::{
     ForwardError, encode, inject_bound_project, internal_error_response, parse_error_response,
     tidy, write_line,
@@ -34,10 +35,8 @@ use super::mcp_proxy::{
 
 // Limits. Each bounds something attacker- or accident-controlled.
 
-/// Largest response body accepted from a backend, per request.
-const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-/// Largest single JSON-RPC line accepted from the client on stdin.
-const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+// Keep proxy line and response limits aligned with the local wire boundary.
+use crate::mcp::batching::{MAX_REQUEST_BYTES as MAX_REQUEST_LINE_BYTES, MAX_RESPONSE_BYTES};
 /// Largest instances config file.
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 /// How many `tools/list` pages a backend may serve before discovery gives up.
@@ -52,7 +51,7 @@ const MAX_ALIAS_LEN: usize = 32;
 const MIN_REDACTABLE_SECRET_LEN: usize = 8;
 
 /// Per-request wall clock for a routed call.
-const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const CALL_TIMEOUT: std::time::Duration = crate::mcp::batching::BATCH_TIMEOUT;
 /// Shorter than a routed call: a slow backend fails the launch, not the
 /// client waiting on `initialize`.
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -60,9 +59,15 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Fallback when the client asks for a version we do not recognize.
-const PROTOCOL_VERSION: &str = "2025-06-18";
-/// Versions this proxy will echo back to a client that requested one.
-const KNOWN_PROTOCOL_VERSIONS: [&str; 3] = ["2024-11-05", "2025-03-26", "2025-06-18"];
+const PROTOCOL_VERSION: &str = "2025-11-25";
+const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
+/// Versions accepted in per-request metadata and advertised by discovery.
+const KNOWN_PROTOCOL_VERSIONS: [&str; 4] = [
+    "2025-03-26",
+    "2025-06-18",
+    PROTOCOL_VERSION,
+    STATELESS_PROTOCOL_VERSION,
+];
 
 /// Authoritative source alias, written last by this process.
 const PROVENANCE_META_KEY: &str = "dev.lific/instance";
@@ -494,12 +499,35 @@ pub(crate) trait InstanceTransport: Sync {
         alias: &str,
         body: String,
     ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send;
+
+    fn call_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        _notifications: &mut S,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send {
+        async move { self.call(alias, body).await }
+    }
+    fn call_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        notifications: &mut S,
+        _deadline: Option<tokio::time::Instant>,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send {
+        async move {
+            self.call_with_notifications(alias, body, notifications)
+                .await
+        }
+    }
 }
 
 struct HttpBackend {
     client: reqwest::Client,
+    request_timeout: std::time::Duration,
     endpoint: String,
     credential: Option<String>,
+    session: std::sync::Arc<std::sync::Mutex<super::mcp_http::Session>>,
 }
 
 /// The real transport: one `reqwest::Client` per alias, each built with its
@@ -510,60 +538,51 @@ pub(crate) struct HttpBackends {
 
 impl HttpBackends {
     async fn post(backend: &HttpBackend, body: String) -> Result<String, ForwardError> {
-        let mut request = backend
-            .client
-            .post(&backend.endpoint)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "application/json, text/event-stream")
-            .body(body);
-        if let Some(credential) = &backend.credential {
-            request = request.bearer_auth(credential);
-        }
+        Self::post_with_notifications(
+            backend,
+            body,
+            &mut super::mcp_http::IgnoreNotifications,
+            None,
+        )
+        .await
+    }
 
-        let response = request.send().await.map_err(ForwardError::unreachable)?;
-        let status = response.status();
-
-        // The client uses `redirect::Policy::none()`, so a 3xx arrives here
-        // instead of being followed. Following it would re-send the bearer
-        // token to a Location the backend chose.
-        if status.is_redirection() {
-            return Err(ForwardError::unreachable(format!(
-                "refused to follow a redirect from {} (HTTP {status}); credentials are never \
-                 re-sent to a redirect target",
-                backend.endpoint
-            )));
+    async fn post_with_notifications<S: super::mcp_http::NotificationSink>(
+        backend: &HttpBackend,
+        body: String,
+        notifications: &mut S,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<String, ForwardError> {
+        // Backend discovery established a legacy session. Strip only July's
+        // protocol metadata when translating a front-end July call; retain
+        // custom tool metadata and use the backend's negotiated session.
+        let mut value: Value = serde_json::from_str(&body).map_err(ForwardError::unreachable)?;
+        if let Some(meta) = value
+            .pointer_mut("/params/_meta")
+            .and_then(Value::as_object_mut)
+        {
+            for key in [
+                "io.modelcontextprotocol/protocolVersion",
+                "io.modelcontextprotocol/clientInfo",
+                "io.modelcontextprotocol/clientCapabilities",
+            ] {
+                meta.remove(key);
+            }
         }
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(ForwardError::rejected(status));
-        }
-        if !status.is_success() {
-            let detail = read_capped(response).await.unwrap_or_default();
-            return Err(ForwardError::unreachable(format!(
-                "HTTP {status} from {}: {}",
-                backend.endpoint,
-                tidy(&detail)
-            )));
-        }
-
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_owned();
-        if !content_type.contains("application/json") {
-            return Err(ForwardError::unreachable(format!(
-                "expected a JSON response from {}, got content-type {}",
-                backend.endpoint,
-                if content_type.is_empty() {
-                    "(none)"
-                } else {
-                    &content_type
-                }
-            )));
-        }
-
-        read_capped(response).await
+        let body = encode(&value);
+        let limits =
+            super::mcp_http::Limits::with_timeout(MAX_RESPONSE_BYTES, backend.request_timeout)
+                .with_deadline(deadline);
+        super::mcp_http::post_with_notifications(
+            &backend.client,
+            &backend.endpoint,
+            backend.credential.as_deref(),
+            &backend.session,
+            body,
+            limits,
+            notifications,
+        )
+        .await
     }
 }
 
@@ -571,20 +590,25 @@ impl HttpBackends {
 /// [`MAX_RESPONSE_BYTES`]. `response.text()` would happily allocate whatever a
 /// hostile or broken backend sent, in a process the agent cannot restart.
 async fn read_capped(response: reqwest::Response) -> Result<String, ForwardError> {
-    let mut response = response;
-    let mut buffer: Vec<u8> = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(ForwardError::unreachable)? {
-        if buffer.len() + chunk.len() > MAX_RESPONSE_BYTES {
-            return Err(ForwardError::unreachable(format!(
-                "response exceeded the {MAX_RESPONSE_BYTES} byte limit"
-            )));
-        }
-        buffer.extend_from_slice(&chunk);
-    }
-    String::from_utf8(buffer).map_err(|_| ForwardError::unreachable("response was not UTF-8"))
+    super::mcp_http::read_capped(response, MAX_RESPONSE_BYTES).await
 }
 
 impl InstanceTransport for HttpBackends {
+    async fn call_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        notifications: &mut S,
+    ) -> Result<String, ForwardError> {
+        let backend = self.backends.get(alias).ok_or_else(|| {
+            ForwardError::unreachable(format!(
+                "no backend is configured for instance '{}'",
+                tidy(alias)
+            ))
+        })?;
+        Self::post_with_notifications(backend, body, notifications, None).await
+    }
+
     async fn call(&self, alias: &str, body: String) -> Result<String, ForwardError> {
         // Unreachable through the pump, which validates the alias first. Kept
         // as an error rather than a panic because "no backend" must never
@@ -597,59 +621,18 @@ impl InstanceTransport for HttpBackends {
         };
         Self::post(backend, body).await
     }
-}
-
-// backend envelope validation
-
-/// Check that a backend's answer is the response to the request we sent.
-///
-/// Without this a backend can answer one call with another call's body and the
-/// client attributes it to the wrong call. Checked before anything is relayed,
-/// and during startup discovery too.
-pub(crate) fn validate_envelope(response: &Value, expected_id: &Value) -> Result<(), String> {
-    let Some(envelope) = response.as_object() else {
-        return Err("response was not a JSON-RPC object".to_owned());
-    };
-    match envelope.get("jsonrpc") {
-        Some(Value::String(version)) if version == "2.0" => {}
-        Some(other) => {
-            return Err(format!(
-                "response declared jsonrpc {}, expected \"2.0\"",
-                tidy(&other.to_string())
-            ));
-        }
-        None => return Err("response is missing the jsonrpc member".to_owned()),
-    }
-
-    let Some(id) = envelope.get("id") else {
-        return Err("response is missing the id member".to_owned());
-    };
-    if id != expected_id {
-        return Err(format!(
-            "response id {} does not match the request id {}; refusing to attribute one call's \
-             answer to another",
-            tidy(&id.to_string()),
-            tidy(&expected_id.to_string())
-        ));
-    }
-
-    match (envelope.get("result"), envelope.get("error")) {
-        (Some(_), Some(_)) => Err(
-            "response carried both result and error, which JSON-RPC forbids and which makes the \
-             outcome of the call ambiguous"
-                .to_owned(),
-        ),
-        (None, None) => Err("response carried neither result nor error".to_owned()),
-        (None, Some(error)) => {
-            if error.get("code").and_then(Value::as_i64).is_none()
-                || error.get("message").and_then(Value::as_str).is_none()
-            {
-                return Err("response error requires an integer code and string message".to_owned());
-            }
-            Ok(())
-        }
-        (Some(result), None) if result.is_object() => Ok(()),
-        (Some(_), None) => Err("MCP response result must be an object".to_owned()),
+    async fn call_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        alias: &str,
+        body: String,
+        notifications: &mut S,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<String, ForwardError> {
+        let backend = self
+            .backends
+            .get(alias)
+            .ok_or_else(|| ForwardError::unreachable("unknown instance"))?;
+        Self::post_with_notifications(backend, body, notifications, deadline).await
     }
 }
 
@@ -1057,7 +1040,9 @@ impl Router {
             .get("params")
             .and_then(|params| params.get("protocolVersion"))
             .and_then(Value::as_str)
-            .filter(|version| KNOWN_PROTOCOL_VERSIONS.contains(version))
+            .filter(|version| {
+                *version != STATELESS_PROTOCOL_VERSION && KNOWN_PROTOCOL_VERSIONS.contains(version)
+            })
             .unwrap_or(PROTOCOL_VERSION);
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -1317,6 +1302,38 @@ fn finish(mut buffer: Vec<u8>) -> Frame {
     }
 }
 
+fn complete_july_result(response: &mut Value) {
+    if let Some(result) = response.get_mut("result").and_then(Value::as_object_mut) {
+        result.insert("resultType".into(), Value::String("complete".into()));
+        // Older Lific servers encode business failures only in their text.
+        // Translate that convention when exposing their results to July clients.
+        if result
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|content| {
+                content.iter().any(|item| {
+                    item["type"] == "text"
+                        && item["text"]
+                            .as_str()
+                            .is_some_and(|text| text.starts_with("Error: "))
+                })
+            })
+        {
+            result.insert("isError".into(), Value::Bool(true));
+        }
+        if result.contains_key("supportedVersions") || result.contains_key("tools") {
+            result.insert("ttlMs".into(), Value::from(0));
+            result.insert("cacheScope".into(), Value::String("private".into()));
+        }
+        let meta = result
+            .entry("_meta")
+            .or_insert_with(|| serde_json::json!({}));
+        meta["io.modelcontextprotocol/serverInfo"] = serde_json::json!({
+            "name": "lific-multi-instance-proxy", "version": env!("CARGO_PKG_VERSION"),
+        });
+    }
+}
+
 fn error_response(id: &Value, code: i64, message: &str) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -1338,126 +1355,339 @@ where
     W: AsyncWrite + Unpin + Send,
     T: InstanceTransport,
 {
-    let mut input = input;
     let mut output = output;
+    pump_inner(input, &mut output, router, transport, None).await
+}
+fn pump_inner<'a, R, T>(
+    input: R,
+    output: &'a mut (dyn AsyncWrite + Unpin + Send),
+    router: &'a Router,
+    transport: &'a T,
+    deadline: Option<tokio::time::Instant>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>>
+where
+    R: AsyncBufRead + Unpin + Send + 'a,
+    T: InstanceTransport + 'a,
+{
+    Box::pin(async move {
+        let mut march = false;
+        let mut input = input;
+        let mut output = output;
 
-    loop {
-        let line = match read_frame(&mut input, MAX_REQUEST_LINE_BYTES).await? {
-            Frame::Eof => break,
-            Frame::Line(line) => line,
-            Frame::TooLong(seen) => {
-                write_frame(
-                    &mut output,
-                    router,
-                    &parse_error_response(&format!(
-                        "request line of at least {seen} bytes exceeds the \
+        loop {
+            let line = match read_frame(&mut input, MAX_REQUEST_LINE_BYTES).await? {
+                Frame::Eof => break,
+                Frame::Line(line) => line,
+                Frame::TooLong(seen) => {
+                    write_frame(
+                        &mut output,
+                        router,
+                        &parse_error_response(&format!(
+                            "request line of at least {seen} bytes exceeds the \
                          {MAX_REQUEST_LINE_BYTES} byte limit; it was discarded unread"
-                    )),
-                )
-                .await?;
-                continue;
-            }
-            Frame::NotText => {
-                write_frame(
-                    &mut output,
-                    router,
-                    &parse_error_response("request line was not valid UTF-8"),
-                )
-                .await?;
-                continue;
-            }
-        };
-
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(message) => message,
-            Err(error) => {
-                write_frame(
-                    &mut output,
-                    router,
-                    &parse_error_response(&error.to_string()),
-                )
-                .await?;
-                continue;
-            }
-        };
-
-        // No id means a notification. Nothing here is stateful across
-        // backends, so notifications are dropped rather than fanned out (which
-        // would multiply one client event into N server events).
-        let Some(id) = message.get("id").cloned() else {
-            continue;
-        };
-
-        let method = message
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-
-        let outcome = match method.as_str() {
-            "initialize" => router.initialize_result(&id, &message),
-            "ping" => serde_json::json!({
-                "jsonrpc": "2.0", "id": id, "result": {},
-            }),
-            "tools/list" => {
-                // The whole surface fits in one page, and it is this
-                // process's surface, not any backend's. A cursor could only
-                // have come from somewhere else.
-                if message
-                    .get("params")
-                    .and_then(|params| params.get("cursor"))
-                    .is_some_and(|cursor| !cursor.is_null())
-                {
-                    error_response(
-                        &id,
-                        -32602,
-                        "this proxy returns its whole tool surface in one page; no cursor is \
-                         valid here",
+                        )),
                     )
-                } else {
-                    serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": { "tools": router.tools },
-                    })
-                }
-            }
-            "tools/call" => match router.plan(&message) {
-                Ok(Route::Local) => router.list_instances_result(&id),
-                Ok(Route::Remote { alias, body }) => {
-                    forward(&mut output, router, transport, &id, &alias, body).await?;
+                    .await?;
                     continue;
                 }
-                // -32602, not a tool error: the call was never made, and the
-                // client must be able to tell routing failure from a refusal
-                // by the tracker.
-                Err(reason) => error_response(&id, -32602, &reason),
-            },
-            other => {
-                let message = unsupported_method(other).map_or_else(
-                    || format!("unsupported method '{}'", tidy(other)),
-                    str::to_owned,
-                );
-                error_response(&id, -32601, &message)
-            }
-        };
-        write_frame(&mut output, router, &outcome).await?;
-    }
+                Frame::NotText => {
+                    write_frame(
+                        &mut output,
+                        router,
+                        &parse_error_response("request line was not valid UTF-8"),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
 
-    Ok(())
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let message: Value = match serde_json::from_str(&line) {
+                Ok(message) => message,
+                Err(error) => {
+                    write_frame(
+                        &mut output,
+                        router,
+                        &parse_error_response(&error.to_string()),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+
+            if let Some(items) = message.as_array() {
+                if let Some(error) = crate::mcp::batching::batch_error(items, march) {
+                    write_frame(&mut output, router, &error).await?;
+                    continue;
+                }
+                let deadline =
+                    Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
+                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items)
+                    .map_fallbacks(|fallback| safe_frame(router, fallback))?;
+                for (index, item) in items.iter().enumerate() {
+                    if !writer.begin_member(index) {
+                        continue;
+                    }
+                    match writer.member(index).clone() {
+                        crate::mcp::batching::BatchMember::Ignore => continue,
+                        crate::mcp::batching::BatchMember::Error(error) => {
+                            write_frame(&mut writer, router, &error).await?;
+                            continue;
+                        }
+                        crate::mcp::batching::BatchMember::Dispatch => {}
+                    }
+                    let frame = format!("{item}\n");
+                    pump_inner(frame.as_bytes(), &mut writer, router, transport, deadline).await?;
+                }
+                let replies = writer.take_replies();
+                drop(writer);
+                if !replies.is_empty() {
+                    // Member frames and reserved errors are already scrubbed.
+                    // Another redaction pass can expand markers beyond the cap.
+                    write_line(&mut output, &encode(&Value::Array(replies))).await?;
+                }
+                continue;
+            }
+
+            if !super::mcp_http::valid_request(&message) {
+                write_frame(
+                    &mut output,
+                    router,
+                    &error_response(&Value::Null, -32600, "Invalid JSON-RPC request"),
+                )
+                .await?;
+                continue;
+            }
+
+            // No id means a notification. Nothing here is stateful across
+            // backends, so notifications are dropped rather than fanned out (which
+            // would multiply one client event into N server events).
+            let Some(id) = message.get("id").cloned() else {
+                continue;
+            };
+
+            let method = message
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+
+            let version_meta =
+                message.pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion");
+            if version_meta.is_some_and(|version| !version.is_string()) {
+                write_frame(
+                    &mut output,
+                    router,
+                    &error_response(&id, -32602, "protocolVersion metadata must be a string"),
+                )
+                .await?;
+                continue;
+            }
+            let requested_version = version_meta.and_then(Value::as_str);
+            if let Some(version) = requested_version
+                && !KNOWN_PROTOCOL_VERSIONS.contains(&version)
+            {
+                let mut response = error_response(&id, -32022, "Unsupported protocol version");
+                response["error"]["data"] =
+                    serde_json::json!({"supported": KNOWN_PROTOCOL_VERSIONS, "requested": version});
+                write_frame(&mut output, router, &response).await?;
+                continue;
+            }
+            let modern = message
+                .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+                .and_then(Value::as_str)
+                == Some(STATELESS_PROTOCOL_VERSION);
+            if method == "server/discover" || modern {
+                let meta = &message["params"]["_meta"];
+                if !modern
+                    || meta
+                        .get("io.modelcontextprotocol/clientInfo")
+                        .is_some_and(|info| {
+                            serde_json::from_value::<rmcp::model::Implementation>(info.clone())
+                                .is_err()
+                        })
+                    || serde_json::from_value::<rmcp::model::ClientCapabilities>(
+                        meta["io.modelcontextprotocol/clientCapabilities"].clone(),
+                    )
+                    .is_err()
+                {
+                    write_frame(
+                    &mut output,
+                    router,
+                    &error_response(
+                        &id,
+                        -32602,
+                        "July requests require valid protocolVersion, clientCapabilities and optional clientInfo metadata",
+                    ),
+                )
+                .await?;
+                    continue;
+                }
+            }
+            let mut outcome = match method.as_str() {
+                "initialize" => router.initialize_result(&id, &message),
+                "server/discover" => {
+                    let mut result = router.initialize_result(&id, &message);
+                    result["result"]
+                        .as_object_mut()
+                        .expect("initialize result")
+                        .remove("protocolVersion");
+                    result["result"]["supportedVersions"] =
+                        serde_json::json!(KNOWN_PROTOCOL_VERSIONS);
+                    result
+                }
+                "ping" => serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "result": {},
+                }),
+                "tools/list" => {
+                    // The whole surface fits in one page, and it is this
+                    // process's surface, not any backend's. A cursor could only
+                    // have come from somewhere else.
+                    if message
+                        .get("params")
+                        .and_then(|params| params.get("cursor"))
+                        .is_some_and(|cursor| !cursor.is_null())
+                    {
+                        error_response(
+                            &id,
+                            -32602,
+                            "this proxy returns its whole tool surface in one page; no cursor is \
+                         valid here",
+                        )
+                    } else {
+                        serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "tools": router.tools },
+                        })
+                    }
+                }
+                "tools/call"
+                    if modern
+                        && serde_json::from_value::<rmcp::model::CallToolRequestParams>(
+                            message["params"].clone(),
+                        )
+                        .is_err() =>
+                {
+                    error_response(&id, -32602, "Invalid tools/call parameters")
+                }
+                "tools/call" => match router.plan(&message) {
+                    Ok(Route::Local) => router.list_instances_result(&id),
+                    Ok(Route::Remote { alias, body }) => {
+                        forward(&mut output, router, transport, &id, &alias, body, deadline)
+                            .await?;
+                        continue;
+                    }
+                    // July classifies selector validation as a tool error;
+                    // legacy clients retain their original protocol error shape.
+                    Err(reason) => {
+                        let name = message["params"]["name"].as_str();
+                        let known_tool = router
+                            .tools
+                            .iter()
+                            .any(|tool| tool["name"].as_str() == name);
+                        let valid_call = name.is_some()
+                            && message["params"].get("arguments").is_none_or(|arguments| {
+                                arguments.is_null() || arguments.is_object()
+                            });
+                        if modern && known_tool && valid_call {
+                            serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                                "content": [{"type": "text", "text": format!("Error: {reason}")}],
+                                "isError": true,
+                            }})
+                        } else {
+                            error_response(&id, -32602, &reason)
+                        }
+                    }
+                },
+                other => {
+                    let message = unsupported_method(other).map_or_else(
+                        || format!("unsupported method '{}'", tidy(other)),
+                        str::to_owned,
+                    );
+                    error_response(&id, -32601, &message)
+                }
+            };
+            if modern {
+                complete_july_result(&mut outcome);
+            }
+            if method == "initialize" {
+                march = outcome
+                    .pointer("/result/protocolVersion")
+                    .and_then(Value::as_str)
+                    == Some(crate::mcp::batching::MARCH);
+            }
+            write_frame(&mut output, router, &outcome).await?;
+        }
+
+        Ok(())
+    })
 }
 
-/// The single exit for everything written to stdout. Scrubbing here makes the
-/// no-token-on-stdout guarantee a property of one function.
+/// Prepare every payload before stdout serialization. Scrub both decoded
+/// strings and encoded bytes, while preserving trusted caller correlation IDs.
+fn safe_frame(router: &Router, payload: &Value) -> std::io::Result<Value> {
+    let mut safe: Value = serde_json::from_str(&router.redactor.encode_scrubbed(payload))
+        .map_err(std::io::Error::other)?;
+    preserve_response_ids(&mut safe, payload);
+    Ok(safe)
+}
+
 async fn write_frame<W>(output: &mut W, router: &Router, payload: &Value) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin + Send,
 {
-    write_line(output, &router.redactor.encode_scrubbed(payload)).await
+    write_line(output, &encode(&safe_frame(router, payload)?)).await
+}
+
+fn preserve_response_ids(scrubbed: &mut Value, original: &Value) {
+    match (scrubbed, original) {
+        (Value::Array(scrubbed), Value::Array(original)) => {
+            for (scrubbed, original) in scrubbed.iter_mut().zip(original) {
+                preserve_response_ids(scrubbed, original);
+            }
+        }
+        (scrubbed, original)
+            if original.get("method").is_none() && original.get("id").is_some() =>
+        {
+            scrubbed["id"] = original["id"].clone();
+        }
+        _ => {}
+    }
+}
+
+struct InstanceNotifications<'a, W> {
+    output: &'a mut W,
+    router: &'a Router,
+    alias: &'a str,
+}
+
+impl<W: AsyncWrite + Unpin + Send> super::mcp_http::NotificationSink
+    for InstanceNotifications<'_, W>
+{
+    async fn send(&mut self, mut notification: Value) -> Result<(), ForwardError> {
+        self.router.redactor.scrub_value(&mut notification);
+        let params = notification
+            .as_object_mut()
+            .expect("validated notification")
+            .entry("params")
+            .or_insert_with(|| serde_json::json!({}));
+        let meta = params
+            .as_object_mut()
+            .expect("validated notification params")
+            .entry("_meta")
+            .or_insert_with(|| serde_json::json!({}));
+        if !meta.is_object() {
+            *meta = serde_json::json!({});
+        }
+        meta[PROVENANCE_META_KEY] = Value::String(self.alias.to_owned());
+        write_frame(self.output, self.router, &notification)
+            .await
+            .map_err(ForwardError::unreachable)
+    }
 }
 
 /// Forward one planned call and write its stamped answer.
@@ -1468,50 +1698,81 @@ async fn forward<W, T>(
     id: &Value,
     alias: &str,
     body: Value,
+    deadline: Option<tokio::time::Instant>,
 ) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin + Send,
     T: InstanceTransport,
 {
-    let mut outcome = match transport.call(alias, encode(&body)).await {
-        Ok(raw) => {
-            // Scrub the wire bytes first: this is the only pass that can see a
-            // secret sitting in a body that never parses as JSON at all.
-            let raw = router.redactor.scrub(&raw);
-            match serde_json::from_str::<Value>(&raw) {
-                Ok(mut value) => {
-                    // Scrub again on the decoded document, which is where an
-                    // escaped `\u0073ecret` finally becomes a matchable
-                    // substring, and do it before anything reads the response.
-                    router.redactor.scrub_value(&mut value);
-                    let validation = validate_envelope(&value, id).and_then(|()| {
-                        if let Some(result) = value.get("result") {
-                            serde_json::from_value::<rmcp::model::CallToolResult>(result.clone())
-                                .map(|_| ())
-                                .map_err(|_| "invalid tools/call result".to_owned())
-                        } else {
-                            Ok(())
-                        }
-                    });
-                    match validation {
-                        Ok(()) => value,
-                        Err(reason) => {
-                            internal_error_response(id, &ForwardError::unreachable(reason).message)
-                        }
+    let mut outcome = match transport
+        .call_with_deadline(
+            alias,
+            encode(&body),
+            &mut InstanceNotifications {
+                output,
+                router,
+                alias,
+            },
+            deadline,
+        )
+        .await
+    {
+        Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+            Ok(mut value) => {
+                let validation = validate_envelope(&value, id).and_then(|()| {
+                    if let Some(result) = value.get("result") {
+                        serde_json::from_value::<rmcp::model::CallToolResult>(result.clone())
+                            .map(|_| ())
+                            .map_err(|_| "invalid tools/call result".to_owned())
+                    } else {
+                        Ok(())
+                    }
+                });
+                match validation {
+                    Ok(()) => {
+                        router.redactor.scrub_value(&mut value);
+                        value["id"] = id.clone();
+                        value
+                    }
+                    Err(reason) => {
+                        internal_error_response(id, &ForwardError::unreachable(reason).message)
                     }
                 }
-                Err(error) => internal_error_response(
-                    id,
-                    &ForwardError::unreachable(format!("response was not JSON ({error})")).message,
-                ),
             }
-        }
+            Err(error) => internal_error_response(
+                id,
+                &ForwardError::unreachable(format!("response was not JSON ({error})")).message,
+            ),
+        },
         Err(error) => {
             // A failing backend produces a failing call, never a call
             // somewhere else. There is no retry and no second alias.
             internal_error_response(id, &error.message)
         }
     };
+    if body
+        .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+        .and_then(Value::as_str)
+        == Some(STATELESS_PROTOCOL_VERSION)
+    {
+        // Older Lific backends report argument validation as a protocol error.
+        // The routed call already has a known tool and a valid request envelope;
+        // expose its argument failure as a July tool result.
+        let known_tool = router
+            .tools
+            .iter()
+            .any(|tool| tool["name"] == body["params"]["name"]);
+        let valid_call =
+            serde_json::from_value::<rmcp::model::CallToolRequestParams>(body["params"].clone())
+                .is_ok();
+        if known_tool && valid_call && outcome["error"]["code"] == -32602 {
+            outcome = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {
+                "content": [{"type": "text", "text": outcome["error"]["message"]}],
+                "isError": true,
+            }});
+        }
+        complete_july_result(&mut outcome);
+    }
     stamp_provenance(&mut outcome, alias);
     write_frame(output, router, &outcome).await
 }
@@ -1538,7 +1799,12 @@ async fn discover<T: InstanceTransport>(
         let raw = transport
             .call(alias, encode(request))
             .await
-            .map_err(|error| format!("instance '{alias}': {}", redactor.scrub(&error.message)))?;
+            .map_err(|error| {
+                format!(
+                    "instance '{alias}': {what}: {}",
+                    redactor.scrub(&error.message)
+                )
+            })?;
         let raw = redactor.scrub(&raw);
         let mut parsed: Value = serde_json::from_str(&raw)
             .map_err(|error| format!("instance '{alias}': {what} was not JSON ({error})"))?;
@@ -1566,6 +1832,15 @@ async fn discover<T: InstanceTransport>(
         },
     });
     ask(transport, alias, redactor, &init, "initialize").await?;
+    transport
+        .call(
+            alias,
+            encode(&serde_json::json!({
+                "jsonrpc": "2.0", "method": "notifications/initialized",
+            })),
+        )
+        .await
+        .map_err(|error| format!("instance '{alias}': {}", redactor.scrub(&error.message)))?;
 
     let mut tools: Vec<Value> = Vec::new();
     let mut surface_bytes = 0usize;
@@ -1794,8 +2069,10 @@ pub async fn run(path: &Path) -> Result<(), Box<dyn Error>> {
             spec.alias.clone(),
             HttpBackend {
                 client,
+                request_timeout: CALL_TIMEOUT,
                 endpoint: format!("{}/mcp", spec.url),
                 credential: credential.clone(),
+                session: std::sync::Arc::default(),
             },
         );
     }
@@ -1812,8 +2089,10 @@ pub async fn run(path: &Path) -> Result<(), Box<dyn Error>> {
                     spec.alias.clone(),
                     HttpBackend {
                         client: clients.remove(&spec.alias).expect("client per alias"),
+                        request_timeout: DISCOVERY_TIMEOUT,
                         endpoint: format!("{}/mcp", spec.url),
                         credential: credential.clone(),
+                        session: backends[&spec.alias].session.clone(),
                     },
                 )
             })

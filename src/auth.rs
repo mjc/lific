@@ -16,6 +16,7 @@ use crate::db::models::AuthUser;
 
 #[derive(Clone)]
 pub struct AuthState {
+    pub public_url_is_explicit: bool,
     pub db: DbPool,
     pub public_url: String,
     /// LIF-294: mirror of `[auth] required`. When false, a request with no
@@ -23,22 +24,9 @@ pub struct AuthState {
     pub required: bool,
 }
 
-/// Encode bytes as a lowercase hex string.
-///
-/// LIF-383: the one hex encoder in the tree. Four copies of this loop used to
-/// live in oauth.rs, mcp/mod.rs, auth.rs and db/queries/users.rs.
+/// Shared lowercase encoding for persisted credential digests.
 pub(crate) fn hex_encode(bytes: &[u8]) -> String {
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    append_hex(&mut encoded, bytes);
-    encoded
-}
-
-fn append_hex(encoded: &mut String, bytes: &[u8]) {
-    use std::fmt::Write as _;
-
-    for byte in bytes {
-        write!(encoded, "{byte:02x}").expect("writing to a String cannot fail");
-    }
+    hex::encode(bytes)
 }
 
 /// SHA-256 a byte slice and return the lowercase hex digest. This is how every
@@ -771,9 +759,28 @@ pub async fn require_api_key(
     // canonical protected-resource metadata lives at the path-aware well-known
     // location. Point Claude there so the `resource` it reads matches the URL
     // the user entered.
+    let issuer = if !auth.public_url_is_explicit {
+        request
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .and_then(crate::links::parse_http_authority)
+            .filter(|authority| {
+                crate::links::authority_is_allowlisted(
+                    authority,
+                    &["localhost".into(), "127.0.0.1".into(), "::1".into()],
+                )
+            })
+            .map_or_else(
+                || auth.public_url.clone(),
+                |authority| format!("http://{authority}"),
+            )
+    } else {
+        auth.public_url.clone()
+    };
     let www_auth = format!(
         "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        auth.public_url
+        issuer.trim_end_matches('/')
     );
 
     let Some(token) = token else {
@@ -936,7 +943,8 @@ pub async fn require_api_key(
         // first two answered "valid" and then "unbound", and an unbound OAuth
         // token takes the operator fallback, so revoking a tool's credential
         // could promote it. The typed outcome makes that state unrepresentable.
-        match crate::oauth::resolve_oauth_credential(&auth.db, &token) {
+        let resource = format!("{}/mcp", issuer.trim_end_matches('/'));
+        match crate::oauth::resolve_oauth_credential_for_resource(&auth.db, &token, &resource) {
             Ok(credential) => {
                 if is_mcp_request {
                     info!("/mcp authorized: OAuth token accepted");
@@ -1153,33 +1161,16 @@ impl Sha256ApiKeyVerifier {
         }
 
         let mut bytes = [0u8; SHA256_DIGEST_BYTES];
-        for (index, [high, low]) in encoded.as_bytes().as_chunks::<2>().0.iter().enumerate() {
-            let high = hex_nibble(*high)?;
-            let low = hex_nibble(*low)?;
-            bytes[index] = (high << 4) | low;
-        }
+        hex::decode_to_slice(encoded, &mut bytes).ok()?;
         Some(Self(bytes))
     }
 
     fn encode(self) -> String {
-        let mut encoded =
-            String::with_capacity(SHA256_VERIFIER_PREFIX.len() + SHA256_DIGEST_BYTES * 2);
-        encoded.push_str(SHA256_VERIFIER_PREFIX);
-        append_hex(&mut encoded, &self.0);
-        encoded
+        format!("{SHA256_VERIFIER_PREFIX}{}", hex::encode(self.0))
     }
 
     fn matches(self, presented: Self) -> bool {
         bool::from(self.0.ct_eq(&presented.0))
-    }
-}
-
-fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
     }
 }
 
@@ -2184,6 +2175,56 @@ mod tests {
     }
 
     #[test]
+    fn credential_hex_encoding_preserves_persisted_digest_format() {
+        assert_eq!(hex_encode(&[]), "");
+        assert_eq!(hex_encode(&[0, 15, 16, 127, 128, 255]), "000f107f80ff");
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn tagged_sha256_verifiers_decode_uppercase_and_reject_malformed_bytes() {
+        let verifier = Sha256ApiKeyVerifier::for_token("credential");
+        let encoded = verifier.encode();
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&encoded)
+                .unwrap()
+                .matches(verifier)
+        );
+        let uppercase = format!(
+            "{SHA256_VERIFIER_PREFIX}{}",
+            hex_encode(&verifier.0).to_uppercase()
+        );
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&uppercase)
+                .unwrap()
+                .matches(verifier)
+        );
+        for bad in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "g".repeat(64),
+            "é".repeat(32),
+            "\0".repeat(64),
+        ] {
+            assert!(
+                Sha256ApiKeyVerifier::parse_tagged(&format!("{SHA256_VERIFIER_PREFIX}{bad}"))
+                    .is_none()
+            );
+        }
+        assert!(
+            Sha256ApiKeyVerifier::parse_tagged(&format!("sha256:v2:{}", "a".repeat(64))).is_none()
+        );
+        assert!(
+            !Sha256ApiKeyVerifier::parse_tagged(&encoded)
+                .unwrap()
+                .matches(Sha256ApiKeyVerifier::for_token("different"))
+        );
+    }
+
+    #[test]
     fn malformed_sha256_verifier_is_unsupported_and_never_tries_argon2() {
         let pool = test_db();
         let key = create_api_key(&pool, "malformed-verifier", None).unwrap();
@@ -2764,6 +2805,7 @@ mod tests {
 
     fn test_auth_state(pool: &db::DbPool) -> AuthState {
         AuthState {
+            public_url_is_explicit: false,
             db: pool.clone(),
             public_url: "https://example.com".into(),
             required: true,
@@ -2807,6 +2849,51 @@ mod tests {
         )
         .unwrap();
         token
+    }
+
+    #[tokio::test]
+    async fn implicit_issuer_challenge_and_token_audience_follow_the_same_loopback_host() {
+        let pool = test_db();
+        let mut state = test_auth_state(&pool);
+        state.public_url = "http://127.0.0.1:3456".into();
+        state.public_url_is_explicit = false;
+        let app = echo_app(state);
+        let token = insert_oauth_token(&pool, "loopback-resource", None);
+        pool.write().unwrap().execute("UPDATE oauth_tokens SET resource = 'http://localhost:3456/mcp' WHERE access_token = ?1", [sha256_hex(token.as_bytes())]).unwrap();
+        let challenge = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/echo")
+                    .header("host", "localhost:3456")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(challenge.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            challenge.headers()["www-authenticate"],
+            "Bearer resource_metadata=\"http://localhost:3456/.well-known/oauth-protected-resource/mcp\""
+        );
+        for (host, expected) in [
+            ("localhost:3456", StatusCode::OK),
+            ("127.0.0.1:3456", StatusCode::UNAUTHORIZED),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/echo")
+                        .header("host", host)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "{host}");
+        }
     }
 
     #[tokio::test]

@@ -10,10 +10,9 @@
 //!
 //! - MCP stdio is newline-delimited JSON-RPC, one message per line. Logs go to
 //!   stderr only, because a stray stdout line corrupts the session.
-//! - The remote endpoint is StreamableHTTP in stateless JSON mode, so a POSTed
-//!   request answers with its own JSON-RPC response as `application/json`.
-//!   There is no session to establish and nothing to notify, which is why
-//!   notifications are dropped rather than forwarded.
+//! - HTTP replies may be JSON or SSE. Legacy peers retain their session and
+//!   negotiated version; July peers carry protocol metadata on each request.
+//!   Initialization notifications are forwarded without producing stdout.
 //!
 //! The loop never dies from a bad response. A remote that is down, throwing
 //! 500s, or rejecting the credential turns into a JSON-RPC error carrying the
@@ -32,17 +31,19 @@
 //! far worse than one that forwards verbatim.
 
 use std::error::Error;
+#[cfg(test)]
+use tokio::io::AsyncBufReadExt;
 
 use reqwest::StatusCode;
-use reqwest::header::{ACCEPT, CONTENT_TYPE};
 use serde_json::Value;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 /// A forward to the remote instance that produced no JSON-RPC response.
 ///
 /// The message is already phrased for a human, because an agent will paste it
 /// in front of one verbatim.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
 pub(crate) struct ForwardError {
     pub(crate) message: String,
 }
@@ -97,60 +98,74 @@ trait Forwarder {
         &self,
         body: String,
     ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send;
+
+    fn forward_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        _notifications: &mut S,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.forward(body).await }
+    }
+    fn forward_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+        _deadline: Option<tokio::time::Instant>,
+    ) -> impl std::future::Future<Output = Result<String, ForwardError>> + Send
+    where
+        Self: Sync,
+    {
+        async move { self.forward_with_notifications(body, notifications).await }
+    }
 }
 
 /// The real forwarder: one POST per request against `{url}/mcp`.
 struct HttpForwarder {
     client: reqwest::Client,
+    request_timeout: std::time::Duration,
     endpoint: String,
     credential: Option<String>,
+    session: std::sync::Mutex<super::mcp_http::Session>,
 }
 
 impl Forwarder for HttpForwarder {
+    async fn forward_with_notifications<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+    ) -> Result<String, ForwardError> {
+        self.forward_with_deadline(body, notifications, None).await
+    }
+
+    async fn forward_with_deadline<S: super::mcp_http::NotificationSink>(
+        &self,
+        body: String,
+        notifications: &mut S,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<String, ForwardError> {
+        let limits = super::mcp_http::Limits::with_timeout(
+            crate::mcp::batching::MAX_RESPONSE_BYTES,
+            self.request_timeout,
+        )
+        .with_deadline(deadline);
+        super::mcp_http::post_with_notifications(
+            &self.client,
+            &self.endpoint,
+            self.credential.as_deref(),
+            &self.session,
+            body,
+            limits,
+            notifications,
+        )
+        .await
+    }
+
     async fn forward(&self, body: String) -> Result<String, ForwardError> {
-        let mut request = self
-            .client
-            .post(&self.endpoint)
-            .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "application/json, text/event-stream")
-            .body(body);
-        if let Some(credential) = &self.credential {
-            request = request.bearer_auth(credential);
-        }
-
-        let response = request.send().await.map_err(ForwardError::unreachable)?;
-        let status = response.status();
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(ForwardError::rejected(status));
-        }
-        if !status.is_success() {
-            let detail = response.text().await.unwrap_or_default();
-            return Err(ForwardError::unreachable(format!(
-                "HTTP {status} from {}: {}",
-                self.endpoint,
-                tidy(&detail)
-            )));
-        }
-
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .to_owned();
-        if !content_type.contains("application/json") {
-            return Err(ForwardError::unreachable(format!(
-                "expected a JSON response from {}, got content-type {}",
-                self.endpoint,
-                if content_type.is_empty() {
-                    "(none)"
-                } else {
-                    &content_type
-                }
-            )));
-        }
-
-        response.text().await.map_err(ForwardError::unreachable)
+        self.forward_with_notifications(body, &mut super::mcp_http::IgnoreNotifications)
+            .await
     }
 }
 
@@ -398,53 +413,158 @@ where
     W: AsyncWrite + Unpin + Send,
     F: Forwarder + Sync,
 {
-    let mut lines = input.lines();
     let mut output = output;
+    pump_inner(input, &mut output, forwarder, bound, None).await
+}
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
+fn pump_inner<'a, R, F>(
+    input: R,
+    output: &'a mut (dyn AsyncWrite + Unpin + Send),
+    forwarder: &'a F,
+    bound: Option<&'a str>,
+    deadline: Option<tokio::time::Instant>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>>
+where
+    R: AsyncBufRead + Unpin + Send + 'a,
+    F: Forwarder + Sync + 'a,
+{
+    Box::pin(async move {
+        let mut input = input;
+        let mut march = false;
+        let mut output = output;
 
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(message) => message,
-            Err(error) => {
+        loop {
+            let line = match super::mcp_instances::read_frame(
+                &mut input,
+                crate::mcp::batching::MAX_REQUEST_BYTES,
+            )
+            .await?
+            {
+                super::mcp_instances::Frame::Eof => break,
+                super::mcp_instances::Frame::Line(line) => line,
+                _ => {
+                    write_line(
+                        &mut output,
+                        &encode(&parse_error_response("Invalid or oversized MCP frame")),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let message: Value = match serde_json::from_str(&line) {
+                Ok(message) => message,
+                Err(error) => {
+                    write_line(
+                        &mut output,
+                        &encode(&parse_error_response(&error.to_string())),
+                    )
+                    .await?;
+                    continue;
+                }
+            };
+
+            if let Some(items) = message.as_array() {
+                if let Some(error) = crate::mcp::batching::batch_error(items, march) {
+                    write_line(&mut output, &encode(&error)).await?;
+                    continue;
+                }
+                let deadline =
+                    Some(tokio::time::Instant::now() + crate::mcp::batching::BATCH_TIMEOUT);
+                let mut writer = crate::mcp::batching::BatchWriter::new(&mut output, items);
+                for (index, item) in items.iter().enumerate() {
+                    if !writer.begin_member(index) {
+                        continue;
+                    }
+                    match writer.member(index).clone() {
+                        crate::mcp::batching::BatchMember::Ignore => continue,
+                        crate::mcp::batching::BatchMember::Error(error) => {
+                            write_line(&mut writer, &encode(&error)).await?;
+                            continue;
+                        }
+                        crate::mcp::batching::BatchMember::Dispatch => {}
+                    }
+                    let frame = format!("{item}\n");
+                    pump_inner(frame.as_bytes(), &mut writer, forwarder, bound, deadline).await?;
+                }
+                let replies = writer.take_replies();
+                drop(writer);
+                if !replies.is_empty() {
+                    write_line(&mut output, &encode(&Value::Array(replies))).await?;
+                }
+                continue;
+            }
+
+            if !super::mcp_http::valid_request(&message) {
                 write_line(
                     &mut output,
-                    &encode(&parse_error_response(&error.to_string())),
+                    &encode(&serde_json::json!({
+                        "jsonrpc": "2.0", "id": null,
+                        "error": {"code": -32600, "message": "Invalid JSON-RPC request"},
+                    })),
                 )
                 .await?;
                 continue;
             }
-        };
 
-        // No `id` member means a notification. The remote is stateless and
-        // has nothing to do with it, so it is dropped rather than forwarded.
-        let Some(id) = message.get("id").cloned() else {
-            continue;
-        };
+            // Legacy initialization notifications complete the backend handshake.
+            // Notifications never produce a stdio response.
+            let Some(id) = message.get("id").cloned() else {
+                if let Err(error) = forwarder
+                    .forward_with_deadline(
+                        line,
+                        &mut super::mcp_http::IgnoreNotifications,
+                        deadline,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "remote MCP notification failed");
+                }
+                continue;
+            };
 
-        let is_initialize = message.get("method").and_then(Value::as_str) == Some("initialize");
-        let request = inject_bound_project(&message, bound).unwrap_or(line);
+            let is_initialize = message
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| matches!(method, "initialize" | "server/discover"));
+            let request = inject_bound_project(&message, bound).unwrap_or(line);
 
-        let outcome = match forwarder.forward(request).await {
-            // Validate before relaying: a body that is not JSON is a broken
-            // remote, and the client deserves an error carrying its own id
-            // rather than a garbage frame.
-            Ok(body) => match serde_json::from_str::<Value>(&body) {
-                Ok(value) if is_initialize => augment_initialize(&value, bound).unwrap_or(body),
-                Ok(_) => body,
-                Err(error) => encode(&internal_error_response(
-                    &id,
-                    &ForwardError::unreachable(format!("response was not JSON ({error})")).message,
-                )),
-            },
-            Err(error) => encode(&internal_error_response(&id, &error.message)),
-        };
-        write_line(&mut output, &outcome).await?;
-    }
+            let outcome = match forwarder
+                .forward_with_deadline(
+                    request,
+                    &mut super::mcp_http::NotificationWriter(&mut output),
+                    deadline,
+                )
+                .await
+            {
+                // Validate before relaying: a body that is not JSON is a broken
+                // remote, and the client deserves an error carrying its own id
+                // rather than a garbage frame.
+                Ok(body) => match serde_json::from_str::<Value>(&body) {
+                    Ok(value) if is_initialize => augment_initialize(&value, bound).unwrap_or(body),
+                    Ok(_) => body,
+                    Err(error) => encode(&internal_error_response(
+                        &id,
+                        &ForwardError::unreachable(format!("response was not JSON ({error})"))
+                            .message,
+                    )),
+                },
+                Err(error) => encode(&internal_error_response(&id, &error.message)),
+            };
+            if is_initialize && let Ok(value) = serde_json::from_str::<Value>(&outcome) {
+                march = value
+                    .pointer("/result/protocolVersion")
+                    .and_then(Value::as_str)
+                    == Some(crate::mcp::batching::MARCH);
+            }
+            write_line(&mut output, &outcome).await?;
+        }
 
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Run the proxy against `url`, pumping this process's stdin and stdout.
@@ -485,8 +605,9 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
     // Bounded, because a proxy that hangs forever on a dead remote looks to
     // the agent like a tracker that stopped answering, with no error to show.
     let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(crate::mcp::batching::BATCH_TIMEOUT)
         .build()?;
     // Resolved before the pump, so the very first `initialize` already knows
     // the answer and no request is ever forwarded against a stale binding.
@@ -495,8 +616,10 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
     let endpoint = format!("{}/mcp", url.trim_end_matches('/'));
     let forwarder = HttpForwarder {
         client,
+        request_timeout: crate::mcp::batching::BATCH_TIMEOUT,
         endpoint,
         credential,
+        session: std::sync::Mutex::new(super::mcp_http::Session::default()),
     };
 
     tracing::info!(
@@ -520,6 +643,278 @@ pub async fn run(url: String, credential: Option<String>) -> Result<(), Box<dyn 
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[tokio::test]
+    async fn march_remote_batches_split_requests_preserve_binding_and_skip_notification_replies() {
+        let forwarder = MockForwarder::new(|body| {
+            let value: Value = serde_json::from_str(body).unwrap();
+            if value["method"] == "initialize" {
+                Ok(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"protocolVersion":"2025-03-26"}}).to_string())
+            } else {
+                Ok(
+                    serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"content":[]}})
+                        .to_string(),
+                )
+            }
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let batch = serde_json::json!([
+            {"jsonrpc":"2.0","method":"notifications/initialized"},
+            {"jsonrpc":"2.0","id":"tool","method":"tools/call","params":{"name":"get_board","arguments":{}}},
+            {"jsonrpc":"2.0","id":-2,"method":"ping"},false
+        ]);
+        let out = run_pump_bound(&format!("{init}\n{batch}\n[]\n"), &forwarder, Some("LIF")).await;
+        assert_eq!(out.len(), 3);
+        let replies = out[1].as_array().unwrap();
+        assert_eq!(replies.len(), 3);
+        assert_eq!(replies[0]["id"], "tool");
+        assert_eq!(replies[1]["id"], -2);
+        assert_eq!(replies[2]["error"]["code"], -32600);
+        assert_eq!(out[2]["error"]["code"], -32600);
+        let seen = forwarder.received();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter()
+                .all(|body| serde_json::from_str::<Value>(body).unwrap().is_object())
+        );
+        let call: Value = serde_json::from_str(&seen[2]).unwrap();
+        assert_eq!(call["params"]["arguments"]["project"], "LIF");
+        let over = Value::Array(vec![
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"ping"});
+            crate::mcp::batching::MAX_BATCH_MESSAGES + 1
+        ]);
+        let before = forwarder.received().len();
+        let out = run_pump(&format!("{init}\n{over}\n"), &forwarder).await;
+        assert_eq!(out[1]["error"]["code"], -32600);
+        assert_eq!(forwarder.received().len(), before + 1);
+        for version in ["2025-06-18", "2025-11-25", "2026-07-28"] {
+            let forwarder = MockForwarder::replying(
+                &serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":version}})
+                    .to_string(),
+            );
+            let out = run_pump(&format!("{init}\n{batch}\n"), &forwarder).await;
+            assert_eq!(out[1]["error"]["code"], -32600);
+            assert_eq!(forwarder.received().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn march_remote_batches_preserve_unsigned_ids_and_reject_duplicates() {
+        let forwarder = MockForwarder::new(|body| {
+            let request: Value = serde_json::from_str(body).unwrap();
+            let result = if request["method"] == "initialize" {
+                serde_json::json!({"protocolVersion":"2025-03-26"})
+            } else {
+                serde_json::json!({})
+            };
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":request["id"],"result":result}).to_string())
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let ids = [
+            serde_json::json!(u64::MAX),
+            serde_json::json!(i64::MAX as u64 + 1),
+            serde_json::json!(u64::MAX.to_string()),
+        ];
+        let mut requests: Vec<_> = ids
+            .iter()
+            .map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"ping"}))
+            .collect();
+        requests.push(requests[0].clone());
+        let batch = Value::Array(requests);
+        let out = run_pump(&format!("{init}\n{batch}\n"), &forwarder).await;
+        assert_eq!(out.len(), 2);
+        let replies = out[1].as_array().unwrap();
+        assert_eq!(replies.len(), 4);
+        for (reply, id) in replies.iter().zip(&ids) {
+            assert_eq!(&reply["id"], id);
+            assert!(reply.get("result").is_some());
+        }
+        assert!(replies[3]["id"].is_null());
+        assert_eq!(replies[3]["error"]["code"], -32600);
+        let seen = forwarder.received();
+        assert_eq!(seen.len(), 4);
+        for (body, id) in seen[1..].iter().zip(&ids) {
+            assert_eq!(serde_json::from_str::<Value>(body).unwrap()["id"], *id);
+        }
+    }
+
+    #[tokio::test]
+    async fn march_remote_batch_overflow_preserves_success_and_skips_remaining_mutations() {
+        let forwarder = MockForwarder::new(|body| {
+            let value: Value = serde_json::from_str(body).unwrap();
+            let result = if value["method"] == "initialize" {
+                serde_json::json!({"protocolVersion":"2025-03-26"})
+            } else {
+                let size = match value["id"].as_i64().unwrap() {
+                    2 => 3 * 1024 * 1024,
+                    3 => 2 * 1024 * 1024,
+                    _ => 0,
+                };
+                serde_json::json!({"content":[{"type":"text","text":"x".repeat(size)}]})
+            };
+            Ok(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":result}).to_string())
+        });
+        let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
+        let batch: Vec<_> = (2..=4).map(|id| serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"create_issue","arguments":{}}})).collect();
+        let next = serde_json::json!({"jsonrpc":"2.0","id":5,"method":"ping"});
+        let batch = Value::Array(batch);
+        let out = run_pump(&format!("{init}\n{batch}\n{next}\n"), &forwarder).await;
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1][0]["id"], 2);
+        assert_eq!(
+            out[1][0]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .len(),
+            3 * 1024 * 1024
+        );
+        for (index, id) in [(1, 3), (2, 4)] {
+            assert_eq!(out[1][index]["id"], id);
+            assert_eq!(out[1][index]["error"]["code"], -32603);
+        }
+        assert!(out[1].to_string().len() < crate::mcp::batching::MAX_RESPONSE_BYTES);
+        assert_eq!(out[2]["id"], 5);
+        assert!(out[2].get("result").is_some());
+        let ids: Vec<_> = forwarder
+            .received()
+            .iter()
+            .map(|body| serde_json::from_str::<Value>(body).unwrap()["id"].clone())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                serde_json::json!(1),
+                serde_json::json!(2),
+                serde_json::json!(3),
+                serde_json::json!(5)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn march_batch_notifications_flush_before_aggregate_response() {
+        struct BatchForwarder(HttpForwarder);
+        impl Forwarder for BatchForwarder {
+            async fn forward(&self, body: String) -> Result<String, ForwardError> {
+                self.forward_with_notifications(
+                    body,
+                    &mut super::super::mcp_http::IgnoreNotifications,
+                )
+                .await
+            }
+            async fn forward_with_notifications<S: super::super::mcp_http::NotificationSink>(
+                &self,
+                body: String,
+                notifications: &mut S,
+            ) -> Result<String, ForwardError> {
+                let message: Value = serde_json::from_str(&body).unwrap();
+                if message["method"] == "initialize" {
+                    Ok(serde_json::json!({"jsonrpc":"2.0","id":message["id"],"result":{"protocolVersion":"2025-03-26"}}).to_string())
+                } else {
+                    self.0.forward_with_notifications(body, notifications).await
+                }
+            }
+        }
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notification = serde_json::json!({"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":"batch","progress":1}});
+        let (endpoint, server) =
+            super::super::mcp_http::sse_test_backend(notification.clone(), release.clone()).await;
+        let forwarder = BatchForwarder(HttpForwarder {
+            client: reqwest::Client::new(),
+            request_timeout: std::time::Duration::from_secs(3),
+            endpoint,
+            credential: None,
+            session: Mutex::default(),
+        });
+        let input=b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}\n[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}]\n";
+        let (output, reader) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            pump(&input[..], output, &forwarder, None).await.unwrap();
+        });
+        let mut lines = BufReader::new(reader).lines();
+        let _ = lines.next_line().await.unwrap();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&first).unwrap(), notification);
+        release.notify_one();
+        let last = lines.next_line().await.unwrap().unwrap();
+        let batch: Value = serde_json::from_str(&last).unwrap();
+        assert_eq!(batch[0]["id"], 1);
+        assert!(batch[0].get("result").is_some());
+        task.await.unwrap();
+        server.abort();
+    }
+    #[tokio::test]
+    async fn sse_notifications_reach_stdio_before_the_final_reply() {
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let notification = serde_json::json!({"jsonrpc": "2.0",
+            "method": "notifications/progress", "params": {"progressToken": "p", "progress": 1}});
+        let (endpoint, server) =
+            super::super::mcp_http::sse_test_backend(notification.clone(), release.clone()).await;
+        let forwarder = HttpForwarder {
+            client: reqwest::Client::new(),
+            request_timeout: std::time::Duration::from_secs(3),
+            endpoint,
+            credential: None,
+            session: Mutex::default(),
+        };
+        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}\n";
+        let (output, reader) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            pump(&input[..], output, &forwarder, None).await.unwrap();
+        });
+        let mut lines = BufReader::new(reader).lines();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&first).unwrap(), notification);
+        release.notify_one();
+        let final_reply: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(final_reply["id"], 1);
+        assert!(lines.next_line().await.unwrap().is_none());
+        task.await.unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_sse_frames_are_not_relayed() {
+        for frame in [
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": []}),
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/progress", "result": {}}),
+            serde_json::json!({"jsonrpc": "1.0", "method": "notifications/progress"}),
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "server/request", "result": {}}),
+        ] {
+            let release = std::sync::Arc::new(tokio::sync::Notify::new());
+            release.notify_one();
+            let (endpoint, server) = super::super::mcp_http::sse_test_backend(frame, release).await;
+            let forwarder = HttpForwarder {
+                client: reqwest::Client::new(),
+                request_timeout: std::time::Duration::from_secs(3),
+                endpoint,
+                credential: None,
+                session: Mutex::default(),
+            };
+            let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"get_issue\"}}\n";
+            let mut output = Vec::new();
+            pump(&input[..], &mut output, &forwarder, None)
+                .await
+                .unwrap();
+            let lines: Vec<Value> = std::str::from_utf8(&output)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["error"]["code"], -32603);
+            server.abort();
+        }
+    }
 
     type Reply = Box<dyn Fn(&str) -> Result<String, ForwardError> + Send + Sync>;
 
@@ -590,6 +985,88 @@ mod tests {
     const REQUEST: &str = r#"{"jsonrpc":"2.0","id":7,"method":"tools/list","params":{}}"#;
 
     #[tokio::test]
+    async fn http_errors_always_complete_the_original_stdio_request() {
+        use axum::response::IntoResponse;
+        async fn backend(axum::Json(request): axum::Json<Value>) -> axum::response::Response {
+            let case = request["params"]["case"].as_str().unwrap();
+            let mut response = serde_json::json!({"jsonrpc": "2.0", "id": null,
+                "error": {"code": -32022, "message": "Unsupported protocol version",
+                    "data": {"supported": ["2025-06-18"]}}
+            });
+            match case {
+                "missing" => {
+                    response.as_object_mut().unwrap().remove("id");
+                }
+                "wrong" => response["id"] = Value::from(999),
+                "matched" => response["id"] = request["id"].clone(),
+                "malformed" => response["error"]["code"] = Value::from("invalid"),
+                _ => {}
+            }
+            let status = if case == "success_null" {
+                StatusCode::OK
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, axum::Json(response)).into_response()
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let forwarder = HttpForwarder {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap(),
+            request_timeout: std::time::Duration::from_secs(3),
+            endpoint: format!("http://{}/mcp", listener.local_addr().unwrap()),
+            credential: None,
+            session: Mutex::default(),
+        };
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                axum::Router::new().route("/mcp", axum::routing::post(backend)),
+            )
+            .await
+            .unwrap();
+        });
+        for case in [
+            "null",
+            "missing",
+            "matched",
+            "wrong",
+            "malformed",
+            "success_null",
+        ] {
+            let input = format!(
+                "{}\n",
+                serde_json::json!({"jsonrpc": "2.0", "id": 42,
+                    "method": "tools/list", "params": {"case": case}
+                })
+            );
+            let mut output = Vec::new();
+            pump(
+                BufReader::new(input.as_bytes()),
+                &mut output,
+                &forwarder,
+                None,
+            )
+            .await
+            .unwrap();
+            let response: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(response["id"], 42, "{case}: {response}");
+            if matches!(case, "null" | "missing" | "matched") {
+                assert_eq!(response["error"]["code"], -32022);
+                assert_eq!(
+                    response["error"]["data"]["supported"],
+                    serde_json::json!(["2025-06-18"])
+                );
+            } else {
+                assert_eq!(response["error"]["code"], -32603);
+            }
+        }
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn a_request_is_forwarded_verbatim_and_its_reply_lands_on_stdout() {
         let forwarder =
             MockForwarder::replying(r#"{"jsonrpc":"2.0","id":7,"result":{"tools":[]}}"#);
@@ -623,7 +1100,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_notification_is_swallowed_and_never_forwarded() {
+    async fn a_notification_is_forwarded_without_a_stdout_response() {
         let forwarder = MockForwarder::replying(r#"{"jsonrpc":"2.0","id":1}"#);
 
         let out = run_pump(
@@ -632,7 +1109,11 @@ mod tests {
         )
         .await;
 
-        assert!(forwarder.received().is_empty(), "nothing should be sent");
+        assert_eq!(
+            forwarder.received().len(),
+            1,
+            "initialization notifications must reach the backend"
+        );
         assert!(out.is_empty(), "a notification produces no stdout line");
     }
 
@@ -855,7 +1336,6 @@ mod tests {
     async fn a_malformed_tools_call_is_forwarded_for_the_server_to_reject() {
         for request in [
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#.to_owned(),
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"nonsense"}"#.to_owned(),
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_issues"}}"#
                 .to_owned(),
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":7,"arguments":{}}}"#
@@ -866,6 +1346,21 @@ mod tests {
             run_pump_bound(&format!("{request}\n"), &forwarder, Some("BND")).await;
 
             assert_eq!(forwarder.received(), vec![request.clone()], "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_request_envelope_is_rejected_before_forwarding() {
+        for request in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"nonsense"}"#,
+            r#"{"jsonrpc":"1.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":{},"method":"tools/list"}"#,
+        ] {
+            let forwarder = MockForwarder::replying(OK);
+            let out = run_pump_bound(&format!("{request}\n"), &forwarder, None).await;
+            assert!(forwarder.received().is_empty(), "{request}");
+            assert_eq!(out[0]["error"]["code"], -32600, "{request}");
+            assert!(out[0]["id"].is_null(), "{request}");
         }
     }
 
