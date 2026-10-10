@@ -84,7 +84,7 @@ Manage it with the same commands as on the other platforms:
 | `lific service install` | Writes the entry for this `lific.exe` and configuration, replacing any earlier one, and starts the service. |
 | `lific service uninstall` | Stops the service and removes the entry. |
 
-Follow the log with `Get-Content -Wait lific.log` in the instance directory. Lific moves the log to `lific.log.1` when it passes 10 MB.
+Follow the log with `Get-Content -Wait lific.log` in the instance directory. Each time the supervisor starts, it checks whether `lific.log` is over 10 MB and, if so, moves it to `lific.log.1` before appending new output. The log can grow past 10 MB while the supervisor is running.
 
 A server that keeps exiting with an error is restarted at most five times in 60 seconds, two seconds apart. After that the supervisor writes "giving up" to the log and exits. Fix the cause the log shows, then run `lific service restart`. A server that exits cleanly is not restarted.
 
