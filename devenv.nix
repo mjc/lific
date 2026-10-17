@@ -80,7 +80,7 @@ let
     ];
     cargoLock = {
       lockFile = ./Cargo.lock;
-      outputHashes."topcoat-0.10.0" = "sha256-8PQwbTOtVQyw/q17off20+DeR12kp63vmo5e7YEs1RE=";
+      outputHashes."topcoat-0.10.0" = "sha256-c+AR4bHYevbh3w2BFdCeHeYT781hERY0IYKDK7PPnuY=";
     };
     buildType = "dist";
     doCheck = false;
