@@ -2,7 +2,7 @@
 
 use topcoat::runtime::{
     BoolSurrogate, Event, Expr, I64Surrogate, Js, StringSurrogate, Surrogate, Surrogated,
-    UsizeSurrogate,
+    UsizeSurrogate, VecSurrogate,
 };
 
 #[derive(Clone, Copy)]
@@ -145,6 +145,30 @@ impl Browser {
     }
 
     pub(crate) fn focus_selector(&self, _selector: StringSurrogate) {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    /// Read visible nodes in DOM order without choosing a keyboard destination.
+    pub(crate) fn visible_attribute_values(
+        &self,
+        _selector: StringSurrogate,
+        _attribute: StringSurrogate,
+    ) -> VecSurrogate<String> {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn click_selector(&self, _selector: StringSurrogate) {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn blur_id(&self, _id: StringSurrogate) {
+        panic!("browser bindings are only callable in client expressions")
+    }
+
+    pub(crate) fn request_frame<F>(&self, _callback: F)
+    where
+        F: FnOnce(),
+    {
         panic!("browser bindings are only callable in client expressions")
     }
 
@@ -326,8 +350,15 @@ pub(crate) fn bindings() -> Expr<Browser> {
 
 /// The browser facade factory, registered once in the shared shell asset.
 pub(crate) fn factory() -> Js {
+    let string_vector = serde_json::to_string(&Vec::<String>::new().into_surrogate())
+        .expect("string vector surrogate is serializable");
     Js::source(
-        r#"()=>({
+        r#"()=>{
+            const stringVector = __LIFIC_STRING_VECTOR__;
+            const visible = element => !element.closest('[hidden]') &&
+                element.getClientRects().length > 0 &&
+                !['hidden', 'collapse'].includes(getComputedStyle(element).visibility);
+            return({
                 json_string: (wire, key, fallback) => {
                     try { const value = JSON.parse(wire.toString())?.[key.toString()];
                         return cx.hydrate(typeof value === 'string' ? value : fallback.toString());
@@ -400,12 +431,25 @@ pub(crate) fn factory() -> Js {
                     return cx.hydrate(Boolean(node));
                 },
                 focus_selector: selector => document.querySelector(selector.toString())?.focus(),
+                visible_attribute_values: (selector, attribute) => cx.hydrate({
+                    ...stringVector,
+                    v: Array.from(document.querySelectorAll(selector.toString()))
+                        .filter(visible)
+                        .map(element => element.getAttribute(attribute.toString()) || '')
+                }),
+                click_selector: selector => document.querySelector(selector.toString())?.click(),
+                blur_id: id => document.getElementById(id.toString())?.blur(),
+                request_frame: callback => {
+                    if (cx.abortSignal.aborted) return;
+                    const cancel = () => cancelAnimationFrame(id);
+                    const id = requestAnimationFrame(() => {
+                        cx.abortSignal.removeEventListener('abort', cancel);
+                        if (!cx.abortSignal.aborted) callback();
+                    });
+                    cx.abortSignal.addEventListener('abort', cancel, {once:true});
+                },
                 has_visible_match: selector => cx.hydrate(
-                    Array.from(document.querySelectorAll(selector.toString())).some(element =>
-                        !element.closest('[hidden]') &&
-                        element.getClientRects().length > 0 &&
-                        !['hidden', 'collapse'].includes(getComputedStyle(element).visibility)
-                    )
+                    Array.from(document.querySelectorAll(selector.toString())).some(visible)
                 ),
                 is_typing_context: () => cx.hydrate(
                     ['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName) ||
@@ -595,13 +639,24 @@ pub(crate) fn factory() -> Js {
                 ),
                 navigate: path => { void cx.navigate(path.toString()); },
                 open_tab: url => { window.open(url.toString(), '_blank', 'noopener'); }
-            })"#,
+            });
+        }"#
+        .replace("__LIFIC_STRING_VECTOR__", &string_vector),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_dom_and_frame_bindings_use_current_nodes_and_dispose_pending_work() {
+        let output = super::super::home_fixture::evaluate_handler(
+            "src/topcoat/native/browser_keyboard.test.cjs",
+            &serde_json::json!({}),
+        );
+        assert_eq!(output["passed"], true);
+    }
 
     #[test]
     fn json_array_fields_agree_in_rust_and_emitted_browser_bindings() {
