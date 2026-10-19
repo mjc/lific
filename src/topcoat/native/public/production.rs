@@ -39,11 +39,8 @@ async fn public_project_search_signals_have_distinct_owners() {
         .execute("UPDATE projects SET is_public = 1", [])
         .unwrap();
     for (family, selector) in [
-        ("issues", "input[placeholder='Search issues']"),
-        (
-            "pages",
-            "input[placeholder='Title, identifier, or content']",
-        ),
+        ("issues", "#public-issue-search"),
+        ("pages", "#public-page-search"),
     ] {
         let mut bindings = Vec::new();
         for project in ["ACC", "HIDE"] {

@@ -198,6 +198,7 @@ pub(super) fn shell<'a>(
                 </header>
                 <nav
                     class="md:hidden px-2 pb-2 bg-[var(--chrome)]"
+                    data-native-public-mobile=""
                     :hidden=$(!mobile.get())
                     aria-label="Mobile published project"
                     data-topcoat-on:keydown=(dismiss.into_evaluated_and_js().1)

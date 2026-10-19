@@ -45,7 +45,10 @@ async fn replay_display_shard(
         "",
         "board",
         serde_json::to_value(filters.into_surrogate()).unwrap(),
-        {"t": "Signal", "id": display_signal, "v": display.to_string()}
+        [
+            {"t": "Signal", "id": display_signal, "v": display.to_string()},
+            {"t": "Signal", "id": "00000000000000000000000000000005", "v": ""}
+        ]
     ]);
     let mut request = axum::http::Request::builder()
         .method("POST")

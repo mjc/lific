@@ -25,11 +25,18 @@ async fn shard_rows(fixture: &home_fixture::Fixture, tab: &str) -> Vec<String> {
     .unwrap();
     args.as_array_mut()
         .expect("collection shard arguments are a tuple")
-        .push(serde_json::json!({
-            "t": "Signal",
-            "id": "00000000000000000000000000000003",
-            "v": r#"{"density":"compact","laneBy":"none"}"#,
-        }));
+        .push(serde_json::json!([
+            {
+                "t": "Signal",
+                "id": "00000000000000000000000000000003",
+                "v": r#"{"density":"compact","laneBy":"none"}"#,
+            },
+            {
+                "t": "Signal",
+                "id": "00000000000000000000000000000004",
+                "v": "",
+            }
+        ]));
     let mut request = Request::builder()
         .method("POST")
         .uri("/public/__native/issues")

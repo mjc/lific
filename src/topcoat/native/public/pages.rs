@@ -5,8 +5,8 @@ use std::collections::HashSet;
 
 use super::super::super::runtime::signal_vec::{SignalVecExt, VecPositionExt};
 use super::super::{browser, public_route::Route};
-use super::preferences;
 use super::{data, data::Body};
+use super::{preferences, search};
 use crate::db::models::{Folder, Page, Project};
 use topcoat::{
     context::Cx,
@@ -34,6 +34,16 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
     let tab_key = preferences::page_tab_storage_key(project.id);
     let preferences_attrs = preferences::pages_mount(cx, project.id, tab.clone());
     let query = signal(&owner, String::new);
+    let search_expanded = signal(&owner, || false);
+    let search_widget = search::control(
+        cx,
+        search::SearchControl {
+            kind: search::SearchKind::Pages,
+            query: query.clone(),
+            expanded: search_expanded,
+            persistence: None,
+        },
+    );
     let label = signal(&owner, String::new);
     let status = signal(&owner, || DEFAULT_STATUS.to_owned());
     let focus_folder = signal(&owner, || 0_i64);
@@ -52,7 +62,7 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
         public_pages_rows(
             project: shard_project,
             tab: $(shard_tab.get()),
-            query: query,
+            query: query.clone(),
             label: label,
             status: status,
             focus_folder: focus_folder,
@@ -68,7 +78,7 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
             data-public-pages=""
             (preferences_attrs)
         >
-            <header class="flex flex-wrap items-center justify-between gap-3">
+            <header class="relative flex flex-wrap items-center justify-between gap-3">
                 <h1 class="m-0 text-heading font-semibold">
                     (title)
                     " pages"
@@ -114,6 +124,7 @@ pub(super) fn content<'a>(cx: &'a Cx, project: &Project, folders: &[Folder]) -> 
                         "Archived"
                     </button>
                 </nav>
+                (search_widget)
             </header>
             (body)
         </main>
@@ -184,8 +195,6 @@ fn render<'a>(
     focus_folder: Signal<i64>,
     expanded: Signal<Vec<i64>>,
 ) -> BoxView<'a> {
-    let query_input = query.clone();
-    let query_change = expr!(|event: Event| query_input.set(event.target.value.to_owned()));
     let label_input = label.clone();
     let label_change = expr!(|event: Event| label_input.set(event.target.value.to_owned()));
     let status_input = status.clone();
@@ -195,7 +204,7 @@ fn render<'a>(
     let folder_change = expr!(|event: Event| {
         folder_input.set(browser.positive_i64(event.target.value, 0_i64));
     });
-    let clear_query = query.clone();
+    let clear_query = query;
     let clear_label = label.clone();
     let clear_status = status.clone();
     let clear_folder = focus_folder.clone();
@@ -256,17 +265,6 @@ fn render<'a>(
                 <div
                     class="flex flex-wrap items-end gap-3 rounded-lg border border-solid border-[var(--border)] p-3"
                 >
-                    <label class="flex min-w-48 flex-1 flex-col gap-1 text-caption">
-                        "Search pages"
-                        <input
-                            type="search"
-                            autocomplete="off"
-                            placeholder="Title, identifier, or content"
-                            :value=$(query.get())
-                            class="rounded-md border border-solid border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-                            data-topcoat-on:input=(query_change.into_evaluated_and_js().1)
-                        />
-                    </label>
                     <label class="flex min-w-36 flex-col gap-1 text-caption">
                         "Label"
                         <select

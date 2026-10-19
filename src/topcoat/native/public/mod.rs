@@ -3,9 +3,11 @@
 mod collection;
 mod comments;
 mod data;
+mod keyboard;
 mod layout;
 mod pages;
 mod preferences;
+mod search;
 mod view;
 
 pub(crate) fn screen<'a>(
@@ -57,3 +59,9 @@ mod display_preferences_production;
 
 #[cfg(test)]
 mod navigation_production;
+
+#[cfg(test)]
+mod keyboard_production;
+
+#[cfg(test)]
+mod search_production;

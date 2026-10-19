@@ -2,6 +2,7 @@
 use super::super::issue_collection::{model, view};
 use super::data::{self, Body};
 use super::preferences;
+use super::search::{self, SearchControl, SearchKind, SearchPersistence};
 use crate::services::issues::IssueCollection;
 use topcoat::{
     context::Cx,
@@ -15,6 +16,8 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let owner = cx.keyed(("public-issue-list", project.clone(), layout.clone()));
     let preference_owner = cx.keyed(("public-issue-preferences", project.clone()));
     let query = signal(&preference_owner, String::new);
+    let search_expanded = signal(&owner, || false);
+    let focused_id = signal(&owner, String::new);
     let list_href = super::super::navigation::attrs(cx, &format!("/public/{project}/issues"));
     let board_href = super::super::navigation::attrs(cx, &format!("/public/{project}/board"));
     let title = collection.project.name.clone();
@@ -34,12 +37,6 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let hydrated = signal(&preference_owner, || false);
     let state_key = preferences::issue_storage_key(&project);
     let tab_key = preferences::issue_tab_storage_key(project_id);
-    let query_handler = preferences::persist_input(
-        query.clone(),
-        state_wire.clone(),
-        state_key.clone(),
-        "searchQuery",
-    );
     let status_handler = preferences::persist_input(
         status.clone(),
         state_wire.clone(),
@@ -81,6 +78,19 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
         state_wire.clone(),
         state_key.clone(),
         "groupBy",
+    );
+    let search_control = search::control(
+        cx,
+        SearchControl {
+            kind: SearchKind::Issues,
+            query: query.clone(),
+            expanded: search_expanded,
+            persistence: Some(SearchPersistence {
+                wire: state_wire.clone(),
+                key: state_key.clone(),
+                field: "searchQuery".to_owned(),
+            }),
+        },
     );
     let density_buttons = [("compact", "Compact"), ("comfortable", "Comfortable")]
         .into_iter()
@@ -150,7 +160,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
         .iter()
         .map(|item| item.name.clone())
         .collect::<Vec<_>>();
-    let query_for_rows = query.clone();
+    let query_for_rows = query;
     let status_for_rows = status.clone();
     let priority_for_rows = priority.clone();
     let label_for_rows = label.clone();
@@ -160,6 +170,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
     let group_for_rows = group_by.clone();
     let sub_tab_for_rows = issue_sub_tab.clone();
     let display_for_rows = display.clone();
+    let focused_for_rows = focused_id;
     let lane_by = lane_by_control(cx, display.clone(), &project);
     let body = view! {
         owner =>
@@ -177,7 +188,7 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
                 group_for_rows.get(),
                 sub_tab_for_rows.get(),
             )),
-            display: display_for_rows.clone()
+            presentation: (display_for_rows.clone(), focused_for_rows)
         )
     }
     .boxed();
@@ -237,8 +248,11 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
             class="mx-auto flex min-h-0 w-full max-w-7xl flex-col gap-4 px-4 py-6 md:px-8"
             (preferences_attrs)
         >
-            <header class="flex flex-wrap items-center justify-between gap-3">
-                <h1 class="m-0 text-heading font-semibold">(title)</h1>
+            <header class="relative flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <h1 class="m-0 text-heading font-semibold">(title)</h1>
+                    (search_control)
+                </div>
                 <nav class="flex items-center gap-2" aria-label="Issue layout">
                     <a (list_href) aria-label="List view">"Issues"</a>
                     <a (board_href) aria-label="Board view">"Board"</a>
@@ -258,17 +272,6 @@ pub(super) fn content<'a>(cx: &'a Cx, collection: &IssueCollection, board: bool)
             <div
                 class="flex flex-wrap items-end gap-3 rounded-lg border border-solid border-[var(--border)] p-3"
             >
-                <label class="flex flex-col gap-1 text-caption">
-                    "Search"
-                    <input
-                        id="public-issue-search"
-                        type="search"
-                        :value=$(query.get())
-                        placeholder="Search issues"
-                        class="rounded-md border border-solid border-[var(--border)] bg-[var(--surface)] px-3 py-2"
-                        data-topcoat-on:input=(query_handler.into_evaluated_and_js().1)
-                    />
-                </label>
                 <label class="flex flex-col gap-1 text-caption">
                     "Status"
                     <select
@@ -417,8 +420,9 @@ async fn public_issue_rows(
         String,
         String,
     ),
-    display: Signal<String>,
+    presentation: (Signal<String>, Signal<String>),
 ) -> topcoat::Result<impl View> {
+    let (display, focused_id) = presentation;
     let route = match layout.as_str() {
         "list" => super::super::public_route::Route::Issues { project },
         "board" => super::super::public_route::Route::Board { project },
@@ -446,6 +450,12 @@ async fn public_issue_rows(
     state.issue_sub_tab = filters.7;
     let selection = model::select(&collection, &state, &layout);
     let project_identifier = snapshot.project.identifier;
+    let keyboard_layout = if layout == "board" {
+        super::keyboard::Layout::Board
+    } else {
+        super::keyboard::Layout::List
+    };
+    let keyboard_owner = super::keyboard::owner(cx, focused_id.clone(), keyboard_layout);
     let display_for_disclosures = display.clone();
     let disclosures = |disclosure: view::Disclosure<'_>| {
         disclosure_attributes(
@@ -455,13 +465,14 @@ async fn public_issue_rows(
             disclosure,
         )
     };
-    let region = view::region_with_disclosures(
+    let region = view::region_with_public_focus(
         cx,
         &collection,
         &selection,
         Attributes::default(),
         view::Audience::Published(&project_identifier),
         Some(&disclosures),
+        focused_id.clone(),
     );
     let column_controls = if layout == "board" {
         board_column_visibility(cx, &selection, display, &project_identifier)
@@ -470,7 +481,12 @@ async fn public_issue_rows(
     };
     Ok(view! {
         cx =>
-        <div class="flex min-h-0 flex-1 flex-col">
+        <div
+            class="flex min-h-0 flex-1 flex-col"
+            data-native-public-issue-keyboard=""
+            :data-native-public-focused-id=$(focused_id.get())
+            (keyboard_owner)
+        >
             (column_controls)
             (region)
         </div>

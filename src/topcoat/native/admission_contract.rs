@@ -852,10 +852,13 @@ async fn native_published_shards_cannot_replay_private_project_arguments() {
     issue_arguments
         .as_array_mut()
         .expect("collection shard arguments are a tuple")
-        .push(carried_signal(
-            6,
-            serde_json::json!(r#"{"density":"compact","laneBy":"none"}"#),
-        ));
+        .push(serde_json::json!([
+            carried_signal(
+                6,
+                serde_json::json!(r#"{"density":"compact","laneBy":"none"}"#),
+            ),
+            carried_signal(7, serde_json::json!("")),
+        ]));
     let page_arguments = serde_json::json!([
         "MEM",
         "browse",

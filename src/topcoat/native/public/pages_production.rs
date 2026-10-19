@@ -143,7 +143,7 @@ async fn public_page_controls_execute_emitted_search_tabs_filters_and_folder_han
     assert_eq!(status, axum::http::StatusCode::OK, "{html}");
     let document = Html::parse_document(&html);
     let search = document
-        .select(&Selector::parse("input[type='search']").unwrap())
+        .select(&Selector::parse("#public-page-search").unwrap())
         .next()
         .unwrap();
     let filters = document

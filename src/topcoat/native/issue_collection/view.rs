@@ -4,6 +4,7 @@ use super::{data::Collection, model::Selection};
 use crate::db::models::{Issue, Status};
 use topcoat::{
     context::Cx,
+    runtime::Signal,
     view::{Attributes, BoxView, ViewExt, view},
 };
 
@@ -40,6 +41,46 @@ pub(crate) fn region_with_disclosures<'a>(
     audience: Audience<'_>,
     disclosures: Option<DisclosureAttributes<'_>>,
 ) -> BoxView<'a> {
+    region_inner(
+        cx,
+        collection,
+        selection,
+        clear_filters,
+        audience,
+        disclosures,
+        None,
+    )
+}
+
+pub(crate) fn region_with_public_focus<'a>(
+    cx: &'a Cx,
+    collection: &Collection,
+    selection: &Selection,
+    clear_filters: Attributes,
+    audience: Audience<'_>,
+    disclosures: Option<DisclosureAttributes<'_>>,
+    focused_id: Signal<String>,
+) -> BoxView<'a> {
+    region_inner(
+        cx,
+        collection,
+        selection,
+        clear_filters,
+        audience,
+        disclosures,
+        Some(focused_id),
+    )
+}
+
+fn region_inner<'a>(
+    cx: &'a Cx,
+    collection: &Collection,
+    selection: &Selection,
+    clear_filters: Attributes,
+    audience: Audience<'_>,
+    disclosures: Option<DisclosureAttributes<'_>>,
+    focused_id: Option<Signal<String>>,
+) -> BoxView<'a> {
     if selection.layout == "board" {
         return board(cx, collection, selection, audience, disclosures);
     }
@@ -51,7 +92,14 @@ pub(crate) fn region_with_disclosures<'a>(
             let key = group.key.clone(); let label = group.label.clone(); let collapsed = group.collapsed;
             let label_class = if group.kind == "module" { "font-semibold text-caption" } else { "font-semibold text-caption capitalize" };
             let count = group.issues.len().to_string();
-            let rows = list_rows(cx, &project, &group.issues, selection, audience);
+            let rows = list_rows(
+                cx,
+                &project,
+                &group.issues,
+                selection,
+                audience,
+                focused_id.clone(),
+            );
             let attributes = disclosures.map(|disclose| disclose(Disclosure::Group { kind: &group.kind, key: &key }));
             let heading = disclosure_heading(cx, label, label_class, count, collapsed, attributes,
                 "sticky top-0 z-10 flex items-center gap-2 px-6 py-2 bg-[var(--surface)] border-b border-solid border-[var(--border)]");
@@ -76,7 +124,14 @@ pub(crate) fn region_with_disclosures<'a>(
         }
         .boxed()
     } else {
-        list_rows(cx, &project, &selection.issues, selection, audience)
+        list_rows(
+            cx,
+            &project,
+            &selection.issues,
+            selection,
+            audience,
+            focused_id,
+        )
     };
     let capped = selection.show_search_cap;
     let count = selection.count_label.clone();
@@ -184,6 +239,7 @@ fn list_rows<'a>(
     issues: &[Issue],
     selection: &Selection,
     audience: Audience<'_>,
+    focused_id: Option<Signal<String>>,
 ) -> BoxView<'a> {
     let rows = issues.iter().map(|issue| {
         let id = issue.id.to_string(); let status = issue.status; let priority = issue.priority;
@@ -194,36 +250,56 @@ fn list_rows<'a>(
             else if selection.density == "comfortable" { description_preview(&issue.description) }
             else { String::new() };
         let labels = issue.labels.clone();
-        view! {
+        let anchor = view! {
             cx =>
-            <li data-native-issue-row=(id) class="group flex items-center">
-                <a class="native-issue-list__row flex-1 min-w-0" (href)>
-                    (icons::status_icon(cx, status, 16))
-                    <span class="native-issue-list__identifier">(identifier)</span>
-                    <span class="flex-1 min-w-0">
-                        <span class="native-issue-list__title block">(title)</span>
-                        if !preview.is_empty() {
-                            <span
-                                class="block truncate text-caption text-[var(--text-faint)]"
-                            >
-                                (preview)
-                            </span>
-                        }
-                    </span>
-                    for label in labels {
+            <a class="native-issue-list__row flex-1 min-w-0" (href)>
+                (icons::status_icon(cx, status, 16))
+                <span class="native-issue-list__identifier">(identifier)</span>
+                <span class="flex-1 min-w-0">
+                    <span class="native-issue-list__title block">(title)</span>
+                    if !preview.is_empty() {
                         <span
-                            class="hidden md:inline text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+                            class="block truncate text-caption text-[var(--text-faint)]"
                         >
-                            (label)
+                            (preview)
                         </span>
                     }
-                    (icons::priority_icon(cx, priority, 21))
-                </a>
-                if let Some(peek) = peek {
-                    <span class="mr-3">(peek)</span>
+                </span>
+                for label in labels {
+                    <span
+                        class="hidden md:inline text-micro px-1.5 py-0.5 rounded bg-[var(--bg-subtle)] text-[var(--text-muted)]"
+                    >
+                        (label)
+                    </span>
                 }
-            </li>
-        }.boxed()
+                (icons::priority_icon(cx, priority, 21))
+            </a>
+        }.boxed();
+        if let Some(focused_id) = focused_id.clone() {
+            view! {
+                cx =>
+                <li
+                    data-native-issue-row=(id.clone())
+                    :data-native-public-focused=$(focused_id.get() == id)
+                    class="group flex items-center border-l-2 border-l-transparent transition-colors data-[native-public-focused=true]:border-l-[var(--accent)] data-[native-public-focused=true]:bg-[var(--accent-subtle)]"
+                >
+                    (anchor)
+                    if let Some(peek) = peek {
+                        <span class="mr-3">(peek)</span>
+                    }
+                </li>
+            }.boxed()
+        } else {
+            view! {
+                cx =>
+                <li data-native-issue-row=(id) class="group flex items-center">
+                    (anchor)
+                    if let Some(peek) = peek {
+                        <span class="mr-3">(peek)</span>
+                    }
+                </li>
+            }.boxed()
+        }
     }).collect::<Vec<_>>();
     view! {
         cx =>

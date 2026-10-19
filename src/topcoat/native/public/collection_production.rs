@@ -77,11 +77,18 @@ fn append_display_signal(arguments: &mut serde_json::Value, id: u64) {
     arguments
         .as_array_mut()
         .expect("collection shard arguments are a tuple")
-        .push(serde_json::json!({
-            "t": "Signal",
-            "id": format!("{id:032x}"),
-            "v": r#"{"density":"compact","laneBy":"none"}"#,
-        }));
+        .push(serde_json::json!([
+            {
+                "t": "Signal",
+                "id": format!("{id:032x}"),
+                "v": r#"{"density":"compact","laneBy":"none"}"#,
+            },
+            {
+                "t": "Signal",
+                "id": format!("{:032x}", id + 1),
+                "v": "",
+            }
+        ]));
 }
 
 #[tokio::test]
