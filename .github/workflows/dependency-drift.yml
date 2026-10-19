@@ -1,11 +1,7 @@
 name: Dependency drift
 
-# CI and release builds use Cargo.lock, but `cargo install lific` ignores it
-# and resolves the newest versions Cargo.toml allows. A dependency that breaks
-# its API within a semver range (rmcp 1.7 did, breaking 2.10.0 on crates.io)
-# passes every locked check while the published crate fails to install. This
-# builds against a fresh resolution, and runs weekly because drift happens
-# between pushes.
+# Check dependency ranges independently of the locked build. This also runs
+# weekly because dependency releases can break compatibility between pushes.
 
 on:
   push:
@@ -34,10 +30,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.99.0"
       - name: Resolve the newest versions Cargo.toml allows
         # Prints each package that moved, so a failure names its suspects.
         run: cargo update
-      - name: Ensure web/dist exists for rust-embed
-        run: mkdir -p web/dist
       - name: Check against the fresh resolution
         run: cargo check --all-targets
