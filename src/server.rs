@@ -11,7 +11,6 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::http::StatusCode;
 use axum::{
     Router,
     body::Body,

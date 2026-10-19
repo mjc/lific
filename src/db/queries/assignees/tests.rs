@@ -372,7 +372,6 @@ fn describe_renders_each_state() {
     );
 }
 
-
 #[test]
 fn assignments_batch_and_hard_issue_deletion_clear_derived_rows() {
     let f = fixture();
@@ -381,8 +380,15 @@ fn assignments_batch_and_hard_issue_deletion_clear_derived_rows() {
         let conn = f.db.read().unwrap();
         let batch = queries::assignees::assignments_by_issue(&conn, &[f.issue, i64::MAX]).unwrap();
         assert_eq!(batch.len(), 1);
-        assert_eq!(batch[&f.issue], queries::assignees::assignment(&conn, f.issue).unwrap());
-        assert!(queries::assignees::assignments_by_issue(&conn, &[]).unwrap().is_empty());
+        assert_eq!(
+            batch[&f.issue],
+            queries::assignees::assignment(&conn, f.issue).unwrap()
+        );
+        assert!(
+            queries::assignees::assignments_by_issue(&conn, &[])
+                .unwrap()
+                .is_empty()
+        );
     }
     {
         let conn = f.db.write().unwrap();
@@ -415,7 +421,10 @@ fn outer_transaction_rollback_reverts_assignment_cursor_and_audit() {
         }
     );
     conn.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(assignment(&conn, f.issue).unwrap().assignees[0].username, "alice");
+    assert_eq!(
+        assignment(&conn, f.issue).unwrap().assignees[0].username,
+        "alice"
+    );
     assert_eq!(queries::issue_seq(&conn, f.issue).unwrap(), before_seq);
     let after_audit: i64 = conn
         .query_row(

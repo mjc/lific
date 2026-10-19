@@ -301,6 +301,21 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "issue assignments",
         include_str!("../../migrations/061_issue_assignees.sql"),
     ),
+    (
+        62,
+        "archived projects",
+        include_str!("../../migrations/062_archived_projects.sql"),
+    ),
+    (
+        63,
+        "audio MP4 attachment MIME (replay)",
+        include_str!("../../migrations/063_audio_mp4_attachment_mime_replay.sql"),
+    ),
+    (
+        64,
+        "audit issue identifier lookup (replay)",
+        include_str!("../../migrations/064_audit_issue_identifier_replay.sql"),
+    ),
 ];
 
 /// Migrations that rebuild a table other tables reference by foreign key.
@@ -329,7 +344,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
 /// before its savepoint releases, and `run_inner` repeats the check
 /// batch-wide before commit to cover every other migration that ran while
 /// enforcement was off.
-const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57, 58];
+const FK_REBUILD_MIGRATIONS: &[i64] = &[39, 43, 50, 57, 58, 63];
 
 /// Highest migration version this binary knows how to apply. Used by
 /// `lific dump`/`restore` (LIF-266) to stamp and gate archives on schema
@@ -574,7 +589,7 @@ fn verify_checksums(conn: &Connection) -> Result<(), crate::error::LificError> {
                 )?;
                 backfilled += 1;
             }
-            Some(stored) if stored != expected => {
+            Some(stored) if stored != expected && !is_known_upstream_checksum(version, &stored) => {
                 return Err(crate::error::LificError::Internal(format!(
                     "migration {version} ({name}) has changed since it was applied to this \
                      database: recorded checksum {}, this binary's copy hashes to {}. Applied \
@@ -596,6 +611,17 @@ fn verify_checksums(conn: &Connection) -> Result<(), crate::error::LificError> {
     }
 
     Ok(())
+}
+
+/// The upstream line used versions 58 and 59 for different migrations.
+/// Preserve those exact historical checksums so databases that applied either
+/// migration before the lines were joined can continue upgrading safely.
+fn is_known_upstream_checksum(version: i64, stored: &str) -> bool {
+    match version {
+        58 => stored == "9f7fe34e4716c34896f14f73312662f1c2f867cf60aaa4c9cc7191bbd90e84cb",
+        59 => stored == "7ba12d9f001227fd5c45b8b320eec37394db69506a1a1431d1946809706cf463",
+        _ => false,
+    }
 }
 
 /// Only trusted destination schema is suspended, inside a write transaction.
@@ -641,6 +667,293 @@ mod tests {
             )
             .unwrap();
         assert!(assignments, "assignment storage is installed on upgrade");
+    }
+
+    fn seed_attachment_rebuild_fixture(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO attachments (id, sha256, filename, mime, size_bytes)
+                 VALUES (7, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'linked.mp4', 'video/mp4', 5),
+                        (900, 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'deleted.mp4', 'video/mp4', 6);
+             INSERT INTO attachment_links (attachment_id, entity_type, entity_id)
+                 VALUES (7, 'issue', 1);
+             UPDATE attachments_fts SET extracted_text = 'preserved transcript' WHERE attachment_id = 7;
+             DELETE FROM attachments WHERE id = 900;",
+        )
+        .unwrap();
+        let watermark: i64 = conn
+            .query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'attachments'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            watermark, 900,
+            "deleting the highest attachment keeps its ID watermark"
+        );
+    }
+
+    fn assert_attachment_rebuild_preserved(conn: &Connection) {
+        let preserved: (String, String, i64) = conn
+            .query_row(
+                "SELECT filename, mime, size_bytes FROM attachments WHERE id = 7",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(preserved, ("linked.mp4".into(), "video/mp4".into(), 5));
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM attachment_links WHERE attachment_id = 7",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the table rebuild must not cascade-delete attachment links"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM attachments_fts WHERE attachments_fts MATCH 'transcript' AND attachment_id = 7", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1,
+            "transcript FTS content survives the table rebuild"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM attachments WHERE id = 900",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "the deleted high ID stays deleted"
+        );
+        conn.execute(
+            "INSERT INTO attachments (sha256, filename, mime, size_bytes)
+             VALUES ('cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'voice.m4a', 'audio/mp4', 7)",
+            [],
+        )
+        .expect("audio/mp4 is accepted after replay migration 63");
+        let new_id: i64 = conn
+            .query_row(
+                "SELECT id FROM attachments WHERE filename = 'voice.m4a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            new_id, 901,
+            "the rebuild must retain the deleted-ID watermark"
+        );
+    }
+
+    #[test]
+    fn upstream_58_and_59_database_upgrades_through_combined_history() {
+        // Build the actual upstream lineage: 1–57 are shared, upstream 58 is
+        // the byte-identical assignment migration, and upstream 59 is archive.
+        let conn = migrated_up_to(58);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, identifier) VALUES (1, 'Lineage', 'LIN');
+             INSERT INTO issues (id, project_id, sequence, title) VALUES (1, 1, 1, 'Preserved issue');",
+        )
+        .unwrap();
+        seed_attachment_rebuild_fixture(&conn);
+
+        let upstream_58 = MIGRATIONS
+            .iter()
+            .find(|(version, _, _)| *version == 61)
+            .unwrap()
+            .2;
+        let upstream_59 = include_str!("../../migrations/062_archived_projects.sql");
+        assert_eq!(
+            checksum(upstream_58),
+            "9f7fe34e4716c34896f14f73312662f1c2f867cf60aaa4c9cc7191bbd90e84cb"
+        );
+        assert_eq!(
+            checksum(upstream_59),
+            "7ba12d9f001227fd5c45b8b320eec37394db69506a1a1431d1946809706cf463"
+        );
+        conn.execute_batch(upstream_58).unwrap();
+        conn.execute_batch(upstream_59).unwrap();
+        conn.execute_batch("ALTER TABLE _migrations ADD COLUMN checksum TEXT;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO _migrations (version, name, checksum) VALUES (58, 'issue assignees', ?1)",
+            ["9f7fe34e4716c34896f14f73312662f1c2f867cf60aaa4c9cc7191bbd90e84cb"],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO _migrations (version, name, checksum) VALUES (59, 'archived projects', ?1)",
+            ["7ba12d9f001227fd5c45b8b320eec37394db69506a1a1431d1946809706cf463"],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO issue_assignees (issue_id) VALUES (1)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO archived_projects (identifier, name, file_name, sha256, size_bytes)
+             VALUES ('OLD', 'Archived', 'old.lific', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 10)",
+            [],
+        )
+        .unwrap();
+
+        run(&conn).expect("an actual upstream 58/59 database must upgrade");
+
+        for (version, expected) in [
+            (
+                58,
+                "9f7fe34e4716c34896f14f73312662f1c2f867cf60aaa4c9cc7191bbd90e84cb",
+            ),
+            (
+                59,
+                "7ba12d9f001227fd5c45b8b320eec37394db69506a1a1431d1946809706cf463",
+            ),
+        ] {
+            let recorded: String = conn
+                .query_row(
+                    "SELECT checksum FROM _migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                recorded, expected,
+                "accepted historical checksum {version} is preserved"
+            );
+        }
+        assert_attachment_rebuild_preserved(&conn);
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM issue_assignees WHERE issue_id = 1",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "assignment history survives the upgrade"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM archived_projects WHERE identifier = 'OLD'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "archived project rows survive the upgrade"
+        );
+        assert!(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_audit_issue_label')",
+            [],
+            |row| row.get::<_, bool>(0)
+        ).unwrap(), "replayed audit lookup index is installed");
+        assert!(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'page_labels_bump_ai')",
+            [],
+            |row| row.get::<_, bool>(0)
+        ).unwrap(), "branch page-label sequence trigger is applied");
+        assert!(
+            !has_fk_violations(&conn).unwrap(),
+            "combined history preserves foreign keys"
+        );
+        assert_eq!(latest_version(), 64);
+    }
+
+    #[test]
+    fn branch_version_61_database_upgrades_with_history_intact() {
+        let conn = migrated_up_to(62);
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, identifier) VALUES (1, 'Branch', 'BRN');
+             INSERT INTO issues (id, project_id, sequence, title) VALUES (1, 1, 1, 'Preserved issue');",
+        )
+        .unwrap();
+        seed_attachment_rebuild_fixture(&conn);
+        conn.execute_batch("ALTER TABLE _migrations ADD COLUMN checksum TEXT;")
+            .unwrap();
+        for &(version, _, sql) in MIGRATIONS
+            .iter()
+            .filter(|(version, _, _)| (58..=61).contains(version))
+        {
+            conn.execute(
+                "UPDATE _migrations SET checksum = ?1 WHERE version = ?2",
+                rusqlite::params![checksum(sql), version],
+            )
+            .unwrap();
+        }
+
+        run(&conn).expect("branch databases through version 61 must continue upgrading");
+        assert_attachment_rebuild_preserved(&conn);
+
+        let versions: Vec<i64> = conn
+            .prepare("SELECT version FROM _migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(versions.last(), Some(&64));
+        for &(version, _, sql) in MIGRATIONS
+            .iter()
+            .filter(|(version, _, _)| (58..=61).contains(version))
+        {
+            let recorded: String = conn
+                .query_row(
+                    "SELECT checksum FROM _migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                recorded,
+                checksum(sql),
+                "branch migration {version} checksum is unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn fresh_database_gets_the_canonical_combined_history() {
+        let conn = fully_migrated();
+        assert_eq!(latest_version(), 64);
+        for version in 58..=64 {
+            let stored: String = conn
+                .query_row(
+                    "SELECT checksum FROM _migrations WHERE version = ?1",
+                    [version],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let sql = MIGRATIONS.iter().find(|(v, _, _)| *v == version).unwrap().2;
+            assert_eq!(
+                stored,
+                checksum(sql),
+                "fresh migration {version} uses canonical SQL"
+            );
+        }
+        for table in ["issue_assignees", "archived_projects"] {
+            assert!(
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                    [table],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap(),
+                "fresh schema contains {table}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_checksum_mismatch_remains_an_error() {
+        let conn = migrated_up_to(59);
+        conn.execute_batch("ALTER TABLE _migrations ADD COLUMN checksum TEXT;")
+            .unwrap();
+        conn.execute(
+            "UPDATE _migrations SET checksum = 'not-a-known-history' WHERE version = 58",
+            [],
+        )
+        .unwrap();
+
+        let error = run(&conn).expect_err("corrupt applied history must be rejected");
+        assert!(error.to_string().contains("migration 58"));
     }
 
     /// A database in the exact state a real instance is in just before

@@ -33,7 +33,7 @@ pub(super) enum Body {
         folders: Vec<Folder>,
     },
     Issue {
-        issue: Issue,
+        issue: Box<Issue>,
         comments: CommentPage,
         attachments: Vec<Attachment>,
         modules: Vec<Module>,
@@ -96,7 +96,7 @@ pub(super) fn load(cx: &Cx, route: &Route) -> Result<Snapshot, LificError> {
                     q::public_entity_attachments(conn, project, AttachmentEntity::Issue, issue.id)?
                         .ok_or_else(not_found)?;
                 Body::Issue {
-                    issue,
+                    issue: Box::new(issue),
                     comments,
                     attachments,
                     modules: q::public_modules(conn, project)?,

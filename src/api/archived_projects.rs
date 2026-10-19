@@ -21,9 +21,9 @@ use crate::error::LificError;
 use crate::project_archive::Grant;
 use crate::realtime::{RealtimeEvent, RealtimeHub};
 use crate::resolve_caller::ResolvedIdentity;
+use crate::services::export::blocking_export;
 use crate::storage::AttachmentStore;
 
-use super::export::blocking_export;
 use super::with_read;
 
 fn not_admin() -> LificError {
@@ -60,7 +60,7 @@ pub(super) async fn archive_project(
 ) -> Result<Response, LificError> {
     // Preflight on a read connection, so a caller without the right never
     // takes the archive slot or the writer.
-    super::require_project_delete(&db, &identity, project_id)?;
+    crate::authz::require_project_delete_role(&db, &identity, project_id)?;
     let caller_id = super::require_user(&identity)?.id;
     let transport = transport_of(&identity);
     let slot = db.acquire_archive_slot()?;

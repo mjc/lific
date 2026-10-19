@@ -42,7 +42,7 @@ pub(super) fn content<'a>(cx: &'a Cx, snapshot: &Snapshot) -> BoxView<'a> {
                 issue_cx =>
                 issue_detail_component(
                     project: project,
-                    issue: issue,
+                    issue: *issue,
                     comments: comments,
                     attachments: attachments,
                     modules: modules,

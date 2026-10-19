@@ -159,6 +159,8 @@ mod tests {
             duplicates: Vec::new(),
             duplicated_by: Vec::new(),
             waits: Vec::new(),
+            needs_human: false,
+            assignees: Vec::new(),
         }
     }
 

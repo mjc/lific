@@ -1,7 +1,8 @@
 # Native Topcoat migration
 
-Upstream master is the behavior and visual reference. The recent native batches
-use `1be6617aa21f70ee4e6ad355efc147f3e537085b`; earlier ports used
+Upstream master is the behavior and visual reference. The server now includes
+`54b57cc9`. Existing native parity checks use
+`1be6617aa21f70ee4e6ad355efc147f3e537085b`; earlier ports used
 `9683d38af8e1e6f9b076439fe90d9519109b2218`. Application state, rendering,
 validation, and workflows belong
 in Rust. Native components use shared services and Topcoat procedures rather
@@ -23,6 +24,9 @@ and reactivation. The native procedures and existing API share the same
 transactions, including last-active-admin protection, recent authentication for
 granting access, and credential/socket revocation after deactivation commits.
 Destructive row actions require inline confirmation; own-row actions are hidden.
+
+The latest Home layout, project archiving controls, rendered task checkboxes,
+and cross-project relation picker still need native ports and parity checks.
 
 Pages and Plans have native private list and detail routes. Pages supports
 search, tabs and filters, creation, Markdown editing, lifecycle status changes,
@@ -76,6 +80,17 @@ The intermediate JavaScript frontend is deleted, including controllers,
 frontend API clients, vendor libraries used by those controllers, generated
 controller fixtures, and dormant Rust screen scaffolds. The only production
 JavaScript assets are Topcoat's framework runtime and Rust-generated bindings.
+
+## Deployment and rollback
+
+The migration runner accepts databases from earlier native builds and 2.11.
+It preserves their recorded migration checksums. Migrations 62–64 install
+project archive storage and reconcile attachment and audit schemas across
+both histories.
+
+Stop every process sharing the database and take a backup before upgrading.
+Keep the previous executable with that backup. Older binaries refuse schema
+version 64; rollback requires restoring the pre-upgrade database first.
 
 ## Unfinished features
 

@@ -78,13 +78,16 @@ pub(crate) fn list_project_collection(
 pub(crate) fn list_issues(
     db: &DbPool,
     identity: &Option<ResolvedIdentity>,
-    query: &ListIssuesQuery,
+    mut query: ListIssuesQuery,
 ) -> Result<Vec<Issue>, LificError> {
     if let Some(project_id) = query.project_id {
         authz::require_role(db, identity, project_id, Role::Viewer)?;
         let mut issues = {
             let conn = db.read()?;
-            crate::db::queries::list_issues(&conn, query)?
+            if query.assignee.is_some() {
+                query.caller_user_id = effective_caller_id_conn(&conn, identity);
+            }
+            crate::db::queries::list_issues(&conn, &query)?
         };
         retain_visible_relations(db, identity, &mut issues)?;
         return Ok(issues);
@@ -92,12 +95,43 @@ pub(crate) fn list_issues(
     let visible = authz::visible_project_ids(db, identity)?;
     let mut issues = {
         let conn = db.read()?;
-        let mut issues = crate::db::queries::list_issues(&conn, query)?;
+        if query.assignee.is_some() {
+            query.caller_user_id = effective_caller_id_conn(&conn, identity);
+        }
+        let mut issues = crate::db::queries::list_issues(&conn, &query)?;
         crate::db::queries::retain_visible_relations(&conn, &mut issues, visible.as_ref());
         issues
     };
     issues = authz::filter_visible(issues, &visible, |issue| Some(issue.project_id));
     Ok(issues)
+}
+
+/// The account that `me` means for assignment input and issue filters.
+/// `effective_user` maps a signed bot identity onto its owner.
+pub(crate) fn effective_caller_id_conn(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+) -> Option<i64> {
+    let user = identity.as_ref().map(|identity| identity.user.clone());
+    authz::effective_user(conn, &user).map(|user| user.id)
+}
+
+/// Resolve assignment input on the writer snapshot, after refreshing identity.
+/// Assignment audit and `created_by` attribution still use the original caller.
+fn resolve_assignees_conn(
+    conn: &rusqlite::Connection,
+    identity: &Option<ResolvedIdentity>,
+    names: Option<&mut Vec<String>>,
+) -> Result<(), LificError> {
+    let Some(names) = names else {
+        return Ok(());
+    };
+    let user = identity.as_ref().map(|identity| identity.user.clone());
+    let caller = authz::effective_user(conn, &user);
+    crate::db::queries::assignees::resolve_me(
+        names,
+        caller.as_ref().map(|user| user.username.as_str()),
+    )
 }
 
 /// Read the private issue shape through the same Viewer and relation scope
@@ -178,6 +212,7 @@ pub(crate) fn commit_issue_create(
         let identity = crate::auth::refresh_identity(conn, identity.as_ref())?;
         authz::require_role_conn(conn, &identity, input.project_id, Role::Maintainer)?;
         let user = crate::api::require_user(&identity)?;
+        resolve_assignees_conn(conn, &identity, input.assignees.as_mut())?;
         input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         crate::db::queries::create_issue(conn, &input)
     })?;
@@ -291,7 +326,7 @@ pub(crate) fn commit_issue_assignment(
                 &current,
             ));
         }
-        crate::db::queries::assignees::resolve_me(&mut names, Some(&user.username))?;
+        resolve_assignees_conn(conn, &identity, Some(&mut names))?;
         crate::db::queries::assignees::set_assignment(
             conn,
             id,
@@ -334,6 +369,7 @@ fn commit_issue_update_with(
         let current = crate::db::queries::get_issue(conn, id)?;
         authz::require_role_conn(conn, &identity, current.project_id, Role::Maintainer)?;
         let mut input = patch(&current);
+        resolve_assignees_conn(conn, &identity, input.assignees.as_mut())?;
         input.attachments = AttachmentActor::Authenticated(CommentActor::from(&user));
         // LIF-262: `update_issue` re-scans the stored description and
         // reconciles links in the same savepoint as the edit.
@@ -526,6 +562,131 @@ mod read_tests {
             assignment
         );
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn service_assignment_me_uses_bot_owner_and_keeps_bot_attribution() {
+        let (db, admin, _, _, issue) = fixture();
+        let bot = queries::users::create_bot_user(
+            &db.write().unwrap(),
+            admin.id,
+            "assignment-bot",
+            "Assignment bot",
+            None,
+        )
+        .unwrap();
+        let identity = crate::auth::fresh_identity(&bot, Transport::Mcp);
+        let actor = crate::actor::ActorCtx {
+            user_id: Some(bot.id),
+            transport: Transport::Mcp,
+        };
+        let realtime = RealtimeHub::new();
+
+        let created = crate::actor::scope(actor, async {
+            commit_issue_create(
+                &db,
+                &realtime,
+                &Some(identity.clone()),
+                CreateIssue {
+                    project_id: issue.project_id,
+                    title: "Assigned to owner".into(),
+                    assignees: Some(vec!["me".into()]),
+                    ..Default::default()
+                },
+            )
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            queries::assignees::assignment(&db.read().unwrap(), created.id)
+                .unwrap()
+                .assignees[0]
+                .user_id,
+            admin.id,
+            "create resolves bot `me` to its owner"
+        );
+
+        for assignees in [vec!["viewer".into()], vec!["me".into()]] {
+            crate::actor::scope(actor, async {
+                commit_issue_update(
+                    &db,
+                    &realtime,
+                    &Some(identity.clone()),
+                    created.id,
+                    UpdateIssue {
+                        assignees: Some(assignees),
+                        ..Default::default()
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        }
+        let current = queries::get_issue(&db.read().unwrap(), created.id).unwrap();
+        let mut expected_seq = current.seq;
+        for names in [Vec::new(), vec!["me".into()]] {
+            let saved = crate::actor::scope(actor, async {
+                commit_issue_assignment(
+                    &db,
+                    &realtime,
+                    &Some(identity.clone()),
+                    created.id,
+                    expected_seq,
+                    names,
+                )
+            })
+            .await
+            .unwrap();
+            expected_seq = saved.issue.seq;
+        }
+
+        let conn = db.read().unwrap();
+        let (user_id, created_by): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT user_id, created_by FROM issue_assignees WHERE issue_id = ?1",
+                [created.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            user_id,
+            Some(admin.id),
+            "native `me` resolves to the owner too"
+        );
+        assert_eq!(
+            created_by,
+            Some(bot.id),
+            "assignment author stays the bot caller"
+        );
+        let audit_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM audit_log
+                 WHERE issue_id = ?1 AND field = 'assignee'
+                   AND actor_user_id = ?2 AND transport = 'mcp'",
+                rusqlite::params![created.id, bot.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            audit_count, 7,
+            "assignment audit attribution stays with the bot caller"
+        );
+        drop(conn);
+
+        let filtered = list_issues(
+            &db,
+            &Some(identity),
+            ListIssuesQuery {
+                project_id: Some(issue.project_id),
+                assignee: Some("me".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            filtered.iter().map(|issue| issue.id).collect::<Vec<_>>(),
+            vec![created.id]
+        );
     }
 
     #[test]

@@ -13,38 +13,9 @@ use super::{retain_visible_relations, with_read, with_write};
 pub(super) async fn list_issues(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
-    Query(mut q): Query<ListIssuesQuery>,
+    Query(q): Query<ListIssuesQuery>,
 ) -> Result<Json<Vec<Issue>>, LificError> {
-    if q.assignee.is_some() {
-        q.caller_user_id = caller_id(&db, &identity)?;
-    }
-    crate::services::issues::list_issues(&db, &identity, &q).map(Json)
-}
-
-/// LIF-147: the account `me` means. A bot's "me" is its owner, as in MCP.
-fn caller_id(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-) -> Result<Option<i64>, LificError> {
-    let user = identity.as_ref().map(|identity| identity.user.clone());
-    with_read(db, |conn| {
-        Ok(authz::effective_user(conn, &user).map(|u| u.id))
-    })
-}
-
-/// LIF-147: replace `me` in a requested assignment with the caller's
-/// username, on the connection that writes it.
-fn resolve_me(
-    conn: &rusqlite::Connection,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    names: Option<&mut Vec<String>>,
-) -> Result<(), LificError> {
-    let Some(names) = names else {
-        return Ok(());
-    };
-    let user = identity.as_ref().map(|identity| identity.user.clone());
-    let caller = authz::effective_user(conn, &user).map(|u| u.username);
-    crate::db::queries::assignees::resolve_me(names, caller.as_deref())
+    crate::services::issues::list_issues(&db, &identity, q).map(Json)
 }
 
 /// LIF-147/LIF-506: what is waiting on the caller across every project they
@@ -55,8 +26,12 @@ pub(super) async fn my_attention(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<crate::db::queries::assignees::Attention>, LificError> {
     super::require_user(&identity)?;
-    let user_id = caller_id(&db, &identity)?
-        .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
+    let user_id = with_read(&db, |conn| {
+        Ok(crate::services::issues::effective_caller_id_conn(
+            conn, &identity,
+        ))
+    })?
+    .ok_or_else(|| LificError::Forbidden("authentication required".into()))?;
     let visible = authz::visible_project_ids(&db, &identity)?;
     let mut attention = with_read(&db, |conn| {
         crate::db::queries::assignees::attention(conn, user_id, visible.as_ref())
