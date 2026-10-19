@@ -1,283 +1,21 @@
 use axum::Extension;
-use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::IntoResponse;
-use futures_util::StreamExt;
-use std::time::Duration;
-use tokio::io::AsyncReadExt;
-use tokio::sync::OwnedSemaphorePermit;
 
-use crate::authz;
-use crate::db::DbPool;
-use crate::db::models::Role;
-use crate::error::LificError;
+use crate::{db::DbPool, error::LificError};
 
-use super::with_read;
-
-const EXPORT_STREAM_CHUNK_BYTES: usize = 64 * 1024;
-const EXPORT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const EXPORT_STREAM_MAX_DURATION: Duration = Duration::from_secs(30 * 60);
+// Preserve the established API/archive helper and test-gate entry points.
+pub(super) use crate::services::export::stream_body;
+#[cfg(test)]
+use crate::services::export::{EXPORT_STREAM_CHUNK_BYTES, stream_response_with_timeouts};
+#[cfg(test)]
+pub(super) use crate::services::export::{EXPORT_TEST_GATE, ExportTestGate};
+#[cfg(test)]
+pub(super) use crate::services::export::{PreparedExport, blocking_export, stream_response};
 
 #[derive(serde::Deserialize)]
 pub(super) struct ExportQuery {
     pub format: Option<String>,
-}
-
-/// A finished export sitting in a private temp directory, ready to stream.
-///
-/// LIF-467: crate-visible so the project-archive routes reuse this streaming
-/// path (its idle/total deadlines, its temp-dir-owning body, its slot
-/// handling) instead of growing a second one.
-pub(super) struct PreparedExport {
-    pub(super) temp_dir: tempfile::TempDir,
-    pub(super) path: std::path::PathBuf,
-    pub(super) content_type: HeaderValue,
-    pub(super) download_name: Option<String>,
-    /// Extra response headers this download needs. Empty for the ordinary
-    /// bundle exports; the archive download uses it for `Cache-Control:
-    /// no-store` and the sniffing/scripting defenses.
-    pub(super) extra_headers: HeaderMap,
-}
-
-impl PreparedExport {
-    fn json(bundle: &crate::export::ExportBundle) -> Result<Self, LificError> {
-        let temp_dir = export_temp_dir()?;
-        let path = temp_dir.path().join("export.json");
-        crate::export::bundle_to_json_file(bundle, &path)?;
-        Ok(Self {
-            temp_dir,
-            path,
-            content_type: HeaderValue::from_static("application/json"),
-            download_name: None,
-            extra_headers: HeaderMap::new(),
-        })
-    }
-
-    fn markdown(
-        bundle: crate::export::ExportBundle,
-        fallback_name: &str,
-    ) -> Result<Self, LificError> {
-        let file = bundle.files.into_iter().next().ok_or_else(|| {
-            LificError::Internal(format!("export produced no files for {fallback_name}"))
-        })?;
-        let download_name = file
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or(fallback_name)
-            .to_string();
-        let temp_dir = export_temp_dir()?;
-        let path = temp_dir.path().join("export.md");
-        std::fs::write(&path, file.content)
-            .map_err(|error| LificError::Internal(format!("write export file: {error}")))?;
-        Ok(Self {
-            temp_dir,
-            path,
-            content_type: HeaderValue::from_static("text/markdown; charset=utf-8"),
-            download_name: Some(download_name),
-            extra_headers: HeaderMap::new(),
-        })
-    }
-
-    fn zip(bundle: &crate::export::ExportBundle) -> Result<Self, LificError> {
-        let download_name = format!("{}-export.zip", bundle.root.to_ascii_lowercase());
-        let temp_dir = export_temp_dir()?;
-        let path = temp_dir.path().join("export.zip");
-        crate::export::bundle_to_zip_file(bundle, &path)?;
-        Ok(Self {
-            temp_dir,
-            path,
-            content_type: HeaderValue::from_static("application/zip"),
-            download_name: Some(download_name),
-            extra_headers: HeaderMap::new(),
-        })
-    }
-}
-
-fn export_temp_dir() -> Result<tempfile::TempDir, LificError> {
-    tempfile::tempdir()
-        .map_err(|error| LificError::Internal(format!("create export temp dir: {error}")))
-}
-
-async fn blocking<T>(
-    operation: impl FnOnce() -> Result<T, LificError> + Send + 'static,
-) -> Result<T, LificError>
-where
-    T: Send + 'static,
-{
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(|error| LificError::Internal(format!("export worker failed: {error}")))?
-}
-
-/// LIF-467: also used by the project-archive tests, which need to hold a
-/// blocking worker open between "spawned" and "committed".
-#[cfg(test)]
-pub(super) struct ExportTestGate {
-    started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-#[cfg(test)]
-impl ExportTestGate {
-    pub(super) fn new(
-        started: tokio::sync::oneshot::Sender<()>,
-        release: std::sync::mpsc::Receiver<()>,
-    ) -> Self {
-        Self {
-            started: std::sync::Mutex::new(Some(started)),
-            release: std::sync::Mutex::new(release),
-        }
-    }
-
-    fn wait(&self) {
-        let Some(started) = self.started.lock().unwrap().take() else {
-            return;
-        };
-        let _ = started.send(());
-        self.release.lock().unwrap().recv().unwrap();
-    }
-}
-
-#[cfg(test)]
-tokio::task_local! {
-    pub(super) static EXPORT_TEST_GATE: std::sync::Arc<ExportTestGate>;
-}
-
-pub(super) async fn blocking_export<T>(
-    permit: OwnedSemaphorePermit,
-    operation: impl FnOnce() -> Result<T, LificError> + Send + 'static,
-) -> Result<(T, OwnedSemaphorePermit), LificError>
-where
-    T: Send + 'static,
-{
-    #[cfg(test)]
-    let gate = EXPORT_TEST_GATE.try_with(std::sync::Arc::clone).ok();
-    blocking(move || {
-        #[cfg(test)]
-        if let Some(gate) = gate {
-            gate.wait();
-        }
-        Ok((operation()?, permit))
-    })
-    .await
-}
-
-async fn single_file_response(
-    bundle: crate::export::ExportBundle,
-    format: &str,
-    fallback_name: &'static str,
-    permit: OwnedSemaphorePermit,
-) -> Result<axum::response::Response, LificError> {
-    let (prepared, permit) = match format {
-        "json" => blocking_export(permit, move || PreparedExport::json(&bundle)).await?,
-        "markdown" => {
-            blocking_export(permit, move || {
-                PreparedExport::markdown(bundle, fallback_name)
-            })
-            .await?
-        }
-        _ => unreachable!("format was validated before export"),
-    };
-    stream_response(prepared, permit).await
-}
-
-pub(super) async fn stream_response(
-    prepared: PreparedExport,
-    permit: OwnedSemaphorePermit,
-) -> Result<axum::response::Response, LificError> {
-    stream_response_with_timeouts(
-        prepared,
-        permit,
-        EXPORT_STREAM_IDLE_TIMEOUT,
-        EXPORT_STREAM_MAX_DURATION,
-    )
-    .await
-}
-
-async fn stream_response_with_timeouts(
-    prepared: PreparedExport,
-    permit: OwnedSemaphorePermit,
-    idle_timeout: Duration,
-    max_duration: Duration,
-) -> Result<axum::response::Response, LificError> {
-    let mut file = tokio::fs::File::open(&prepared.path)
-        .await
-        .map_err(|error| LificError::Internal(format!("open export file: {error}")))?;
-    let (sender, receiver) = tokio::sync::mpsc::channel(1);
-    let (terminal_sender, terminal_receiver) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        let _temp_dir = prepared.temp_dir;
-        let _permit = permit;
-        let mut buffer = vec![0; EXPORT_STREAM_CHUNK_BYTES];
-        let result = tokio::time::timeout(max_duration, async {
-            loop {
-                match file.read(&mut buffer).await {
-                    Ok(0) => return Ok(()),
-                    Ok(read) => {
-                        let chunk = Bytes::copy_from_slice(&buffer[..read]);
-                        match tokio::time::timeout(idle_timeout, sender.send(chunk)).await {
-                            Ok(Ok(())) => {}
-                            Ok(Err(_)) => return Ok(()),
-                            Err(_) => {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::TimedOut,
-                                    "export stream idle timeout",
-                                ));
-                            }
-                        }
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        })
-        .await;
-        let result = result.unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "export stream deadline exceeded",
-            ))
-        });
-        let _ = terminal_sender.send(result);
-    });
-    let body = stream_body(receiver, terminal_receiver);
-    let mut headers = prepared.extra_headers;
-    headers.insert(header::CONTENT_TYPE, prepared.content_type);
-    if let Some(filename) = prepared.download_name {
-        headers.insert(header::CONTENT_DISPOSITION, content_disposition(&filename)?);
-    }
-    Ok((headers, body).into_response())
-}
-
-pub(super) fn stream_body(
-    receiver: tokio::sync::mpsc::Receiver<Bytes>,
-    terminal: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
-) -> Body {
-    // Compression can poll for trailers after EOF. Unfold alone panics on
-    // that second terminal poll; fuse keeps the completed body exhausted.
-    Body::from_stream(
-        futures_util::stream::unfold(
-            (receiver, Some(terminal)),
-            |(mut receiver, mut terminal)| async move {
-                if let Some(chunk) = receiver.recv().await {
-                    return Some((Ok::<_, std::io::Error>(chunk), (receiver, terminal)));
-                }
-                let result = terminal.take()?.await.unwrap_or_else(|_| {
-                    Err(std::io::Error::other(
-                        "export stream task ended without a result",
-                    ))
-                });
-                result.err().map(|error| (Err(error), (receiver, terminal)))
-            },
-        )
-        .fuse(),
-    )
-}
-
-pub(super) fn content_disposition(filename: &str) -> Result<HeaderValue, LificError> {
-    HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
-        .map_err(|e| LificError::Internal(format!("invalid content-disposition header: {e}")))
 }
 
 pub(super) async fn export_issue(
@@ -286,33 +24,7 @@ pub(super) async fn export_issue(
     Path(identifier): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, LificError> {
-    if let Some(format) = q.format.as_deref()
-        && !matches!(format, "json" | "markdown")
-    {
-        return Err(LificError::BadRequest(
-            "invalid export format. Expected 'markdown' or 'json'".into(),
-        ));
-    }
-    let project_id = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_identifier(conn, &identifier)?;
-        crate::db::queries::issue_project_id(conn, id)
-    })?;
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    let visible = authz::visible_project_ids(&db, &identity)?;
-    let slot = db.acquire_export_slot()?;
-    let (bundle, slot) = blocking_export(slot, move || {
-        with_read(&db, |conn| {
-            crate::export::export_issue(conn, &identifier, visible.as_ref())
-        })
-    })
-    .await?;
-    single_file_response(
-        bundle,
-        q.format.as_deref().unwrap_or("markdown"),
-        "issue.md",
-        slot,
-    )
-    .await
+    crate::services::export::issue(db, &identity, identifier, q.format).await
 }
 
 pub(super) async fn export_page(
@@ -321,33 +33,7 @@ pub(super) async fn export_page(
     Path(identifier): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, LificError> {
-    if let Some(format) = q.format.as_deref()
-        && !matches!(format, "json" | "markdown")
-    {
-        return Err(LificError::BadRequest(
-            "invalid export format. Expected 'markdown' or 'json'".into(),
-        ));
-    }
-    let project_id = with_read(&db, |conn| {
-        let id = crate::db::queries::resolve_page_identifier(conn, &identifier)?;
-        crate::db::queries::page_project_id(conn, id)
-    })?;
-    match project_id {
-        Some(pid) => authz::require_role(&db, &identity, pid, Role::Viewer)?,
-        None => authz::require_workspace_admin(&db, &identity)?,
-    }
-    let slot = db.acquire_export_slot()?;
-    let (bundle, slot) = blocking_export(slot, move || {
-        with_read(&db, |conn| crate::export::export_page(conn, &identifier))
-    })
-    .await?;
-    single_file_response(
-        bundle,
-        q.format.as_deref().unwrap_or("markdown"),
-        "page.md",
-        slot,
-    )
-    .await
+    crate::services::export::page(db, &identity, identifier, q.format).await
 }
 
 pub(super) async fn export_project(
@@ -356,41 +42,19 @@ pub(super) async fn export_project(
     Path(identifier): Path<String>,
     Query(q): Query<ExportQuery>,
 ) -> Result<impl IntoResponse, LificError> {
-    if let Some(format) = q.format.as_deref()
-        && !matches!(format, "json" | "zip")
-    {
-        return Err(LificError::BadRequest(
-            "invalid export format. Expected 'zip' or 'json'".into(),
-        ));
-    }
-    let project_id = with_read(&db, |conn| {
-        crate::db::queries::resolve_project_identifier(conn, &identifier)
-    })?;
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    let visible = authz::visible_project_ids(&db, &identity)?;
-    let slot = db.acquire_export_slot()?;
-    let format = q.format.unwrap_or_else(|| "zip".into());
-    let (bundle, slot) = blocking_export(slot, move || {
-        with_read(&db, |conn| {
-            crate::export::export_project(conn, &identifier, visible.as_ref())
-        })
-    })
-    .await?;
-    let (prepared, slot) = match format.as_str() {
-        "json" => blocking_export(slot, move || PreparedExport::json(&bundle)).await?,
-        "zip" => blocking_export(slot, move || PreparedExport::zip(&bundle)).await?,
-        _ => unreachable!("format was validated before export"),
-    };
-    stream_response(prepared, slot).await
+    crate::services::export_project::project(db, &identity, identifier, q.format).await
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use axum::body::Bytes;
-    use axum::http::{Request, StatusCode};
+    use axum::{
+        http::{Request, StatusCode},
+        response::IntoResponse,
+    };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -401,6 +65,131 @@ mod tests {
         json_post, parse_json, seed_project, setup_membership_test, test_app,
     };
     use crate::error::LificError;
+
+    async fn held_page_export(
+        db: &crate::db::DbPool,
+        identity: crate::resolve_caller::ResolvedIdentity,
+        identifier: String,
+        change: impl FnOnce(&crate::db::DbPool),
+    ) -> Result<axum::response::Response, LificError> {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let gate = Arc::new(ExportTestGate::new(started_tx, release_rx));
+        let work_db = db.clone();
+        let task = tokio::spawn(EXPORT_TEST_GATE.scope(gate, async move {
+            super::export_page(
+                axum::extract::State(work_db),
+                axum::Extension(Some(identity)),
+                axum::extract::Path(identifier),
+                axum::extract::Query(super::ExportQuery { format: None }),
+            )
+            .await
+            .map(|response| response.into_response())
+        }));
+        tokio::time::timeout(Duration::from_secs(10), started_rx)
+            .await
+            .expect("page export reaches the queued worker")
+            .expect("page export announces its worker boundary");
+        change(db);
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("released page export completes")
+            .unwrap()
+    }
+
+    fn seed_page_export_pair(
+        db: &crate::db::DbPool,
+        lead_id: i64,
+        allowed_project_id: i64,
+    ) -> (i64, String, String) {
+        let conn = db.write().unwrap();
+        let hidden_project = crate::db::queries::create_project(
+            &conn,
+            &crate::db::models::CreateProject {
+                name: "Private project".into(),
+                identifier: "HID".into(),
+                lead_user_id: Some(lead_id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .id;
+        let allowed = crate::db::queries::create_page(
+            &conn,
+            &crate::db::models::CreatePage {
+                project_id: Some(allowed_project_id),
+                title: "Allowed export page".into(),
+                content: "allowed-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let hidden = crate::db::queries::create_page(
+            &conn,
+            &crate::db::models::CreatePage {
+                project_id: Some(hidden_project),
+                title: "Private export page".into(),
+                content: "private-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (hidden_project, allowed.identifier, hidden.identifier)
+    }
+
+    #[tokio::test]
+    async fn page_export_keeps_selected_page_id_when_project_identifiers_are_reassigned() {
+        let (db, _, lead, _, viewer, _, allowed_project_id) = setup_membership_test();
+        let (hidden_project_id, allowed_identifier, _) =
+            seed_page_export_pair(&db, lead.id, allowed_project_id);
+        let identity = crate::auth::fresh_identity(&viewer, crate::actor::Transport::Web);
+        let response = held_page_export(&db, identity, allowed_identifier, |db| {
+            db.transaction(|tx| {
+                tx.execute(
+                    "UPDATE projects SET identifier='REN' WHERE id=?1",
+                    [allowed_project_id],
+                )?;
+                tx.execute(
+                    "UPDATE projects SET identifier='MEM' WHERE id=?1",
+                    [hidden_project_id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let markdown = String::from_utf8(body.to_vec()).unwrap();
+        assert!(markdown.contains("allowed-export-body"), "{markdown}");
+        assert!(!markdown.contains("private-export-body"), "{markdown}");
+        assert!(markdown.contains("identifier: REN-DOC-1"), "{markdown}");
+    }
+
+    #[tokio::test]
+    async fn page_export_rechecks_membership_at_the_worker_snapshot() {
+        let (db, _, _, _, viewer, _, project_id) = setup_membership_test();
+        let identifier = crate::db::queries::create_page(
+            &db.write().unwrap(),
+            &crate::db::models::CreatePage {
+                project_id: Some(project_id),
+                title: "Revoked export page".into(),
+                content: "revoked-export-body".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .identifier;
+        let identity = crate::auth::fresh_identity(&viewer, crate::actor::Transport::Web);
+        let result = held_page_export(&db, identity, identifier, |db| {
+            crate::db::queries::members::remove_member(&db.write().unwrap(), project_id, viewer.id)
+                .unwrap();
+        })
+        .await;
+        assert!(matches!(result, Err(LificError::Forbidden(_))));
+    }
 
     #[tokio::test]
     async fn export_body_remains_exhausted_when_polled_after_eof() {

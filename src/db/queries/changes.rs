@@ -53,7 +53,7 @@ pub const PREVIEW_CHARS: usize = 200;
 /// The first non-empty line of `text`, trimmed and truncated to
 /// [`PREVIEW_CHARS`] characters. Empty when `text` has no non-blank line,
 /// which covers both an empty body and one that is only whitespace.
-fn preview_of(text: &str) -> String {
+pub(crate) fn preview_of(text: &str) -> String {
     text.lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
@@ -177,6 +177,8 @@ fn issue_change(row: &Row) -> rusqlite::Result<IssueChange> {
         preview: preview_of(&row.get::<_, Option<String>>(BODY)?.unwrap_or_default()),
         labels: Vec::new(),
         waits: Vec::new(),
+        needs_human: false,
+        assignees: Vec::new(),
     })
 }
 
@@ -360,12 +362,17 @@ pub fn list_changes(
         .collect();
     let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
     let mut issue_waits = super::waits::waits_by_issue(conn, &issue_ids)?;
+    let mut issue_assignments = super::assignees::assignments_by_issue(conn, &issue_ids)?;
     let mut page_labels = labels_by_page(conn, &page_ids)?;
     for change in &mut changes {
         match change {
             Change::Issue(issue) => {
                 issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
                 issue.waits = issue_waits.remove(&issue.id).unwrap_or_default();
+                if let Some(a) = issue_assignments.remove(&issue.id) {
+                    issue.needs_human = a.needs_human;
+                    issue.assignees = a.assignees;
+                }
             }
             Change::Page(page) => {
                 page.labels = page_labels.remove(&page.id).unwrap_or_default();
@@ -427,9 +434,14 @@ pub fn index_rows(
     let issue_ids: Vec<i64> = issues.iter().map(|issue| issue.id).collect();
     let mut issue_labels = labels_by_issue(conn, &issue_ids)?;
     let mut issue_waits = super::waits::waits_by_issue(conn, &issue_ids)?;
+    let mut issue_assignments = super::assignees::assignments_by_issue(conn, &issue_ids)?;
     for issue in &mut issues {
         issue.labels = issue_labels.remove(&issue.id).unwrap_or_default();
         issue.waits = issue_waits.remove(&issue.id).unwrap_or_default();
+        if let Some(a) = issue_assignments.remove(&issue.id) {
+            issue.needs_human = a.needs_human;
+            issue.assignees = a.assignees;
+        }
     }
 
     let page_ids: Vec<i64> = pages.iter().map(|page| page.id).collect();
@@ -980,6 +992,157 @@ mod tests {
             panic!("expected the page in the delta");
         };
         assert_eq!(row.labels, vec!["design".to_string(), "spec".to_string()]);
+    }
+
+    fn assert_page_label_delta(
+        conn: &Connection,
+        project: i64,
+        page_id: i64,
+        cursor: i64,
+        labels: &[&str],
+    ) {
+        assert!(cursor > 0);
+        let page = crate::db::queries::get_page(conn, page_id).unwrap();
+        assert!(
+            page.seq > cursor,
+            "label changes must advance the parent page sequence"
+        );
+        let delta = list_changes(conn, project, cursor, 100).unwrap();
+        let rows: Vec<_> = delta
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Page(row) if row.id == page_id => Some(row),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].seq, page.seq);
+        assert_eq!(rows[0].labels, labels);
+        assert_eq!(delta.cursor, page.seq);
+    }
+
+    #[test]
+    fn page_label_only_attach_and_remove_advance_sequence_and_delta() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO labels (project_id, name) VALUES (?1, 'design')",
+            [project],
+        )
+        .unwrap();
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for labels in [vec!["design".to_owned()], vec![]] {
+            let cursor = get_index(&conn, project).unwrap().cursor;
+            crate::db::queries::update_page(
+                &conn,
+                page.id,
+                &UpdatePage {
+                    labels: Some(labels.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let names: Vec<_> = labels.iter().map(String::as_str).collect();
+            assert_page_label_delta(&conn, project, page.id, cursor, &names);
+        }
+    }
+
+    #[test]
+    fn page_label_merge_and_delete_cascade_advance_sequence_and_delta() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        for name in ["source", "target"] {
+            conn.execute(
+                "INSERT INTO labels (project_id, name) VALUES (?1, ?2)",
+                params![project, name],
+            )
+            .unwrap();
+        }
+        let label_id = |name: &str| {
+            conn.query_row(
+                "SELECT id FROM labels WHERE project_id = ?1 AND name = ?2",
+                params![project, name],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let source = label_id("source");
+        let target = label_id("target");
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                labels: vec!["source".into(), "target".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        crate::db::queries::merge_label(&conn, source, target).unwrap();
+        assert_page_label_delta(&conn, project, page.id, cursor, &["target"]);
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        crate::db::queries::delete_label(&conn, target).unwrap();
+        assert_page_label_delta(&conn, project, page.id, cursor, &[]);
+    }
+
+    #[test]
+    fn page_label_ignored_insert_and_absent_delete_leave_sequence_unchanged() {
+        let (db, project, _) = seed();
+        let conn = db.write().unwrap();
+        conn.execute(
+            "INSERT INTO labels (project_id, name) VALUES (?1, 'design')",
+            [project],
+        )
+        .unwrap();
+        let label_id = conn.last_insert_rowid();
+        let page = crate::db::queries::create_page(
+            &conn,
+            &CreatePage {
+                project_id: Some(project),
+                title: "Labels".into(),
+                labels: vec!["design".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cursor = get_index(&conn, project).unwrap().cursor;
+        assert_eq!(
+            conn.execute(
+                "INSERT OR IGNORE INTO page_labels (page_id, label_id) VALUES (?1, ?2)",
+                params![page.id, label_id]
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.execute(
+                "DELETE FROM page_labels WHERE page_id = ?1 AND label_id = -1",
+                [page.id]
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            crate::db::queries::get_page(&conn, page.id).unwrap().seq,
+            page.seq
+        );
+        assert_eq!(get_index(&conn, project).unwrap().cursor, cursor);
+        assert!(
+            list_changes(&conn, project, cursor, 100)
+                .unwrap()
+                .changes
+                .is_empty()
+        );
     }
 
     #[test]

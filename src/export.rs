@@ -430,6 +430,13 @@ pub fn export_page(conn: &Connection, identifier: &str) -> Result<ExportBundle, 
 
 fn export_page_snapshot(conn: &Connection, identifier: &str) -> Result<ExportBundle, LificError> {
     let page_id = queries::resolve_page_identifier(conn, identifier)?;
+    export_page_snapshot_by_id(conn, page_id)
+}
+
+pub(crate) fn export_page_snapshot_by_id(
+    conn: &Connection,
+    page_id: i64,
+) -> Result<ExportBundle, LificError> {
     let oversized: i64 = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pages WHERE id = ?1 AND deleted_at IS NULL AND (length(CAST(title AS BLOB)) > ?2 OR length(CAST(content AS BLOB)) > ?2))",
         rusqlite::params![page_id, MAX_EXPORT_FILE_BYTES],
@@ -468,7 +475,8 @@ pub fn export_project(
     visible: VisibleProjects<'_>,
 ) -> Result<ExportBundle, LificError> {
     let transaction = conn.unchecked_transaction()?;
-    let bundle = export_project_snapshot(&transaction, identifier, visible)?;
+    let project_id = queries::resolve_project_identifier(&transaction, identifier)?;
+    let bundle = export_project_snapshot_by_id(&transaction, project_id, visible)?;
     transaction.commit()?;
     Ok(bundle)
 }
@@ -594,12 +602,14 @@ fn ensure_project_preflight(
     Ok(())
 }
 
-fn export_project_snapshot(
+/// Render the selected project using the caller's authorized read snapshot.
+/// The caller must establish that snapshot and authorize this immutable row ID
+/// before passing its connection. CLI identifier exports use the same renderer.
+pub(crate) fn export_project_snapshot_by_id(
     conn: &Connection,
-    identifier: &str,
+    project_id: i64,
     visible: VisibleProjects<'_>,
 ) -> Result<ExportBundle, LificError> {
-    let project_id = queries::resolve_project_identifier(conn, identifier)?;
     ensure_project_preflight(
         conn,
         project_id,
@@ -941,6 +951,9 @@ fn render_issue_markdown(
         duplicates: &'a [String],
         #[serde(skip_serializing_if = "<[String]>::is_empty")]
         duplicated_by: &'a [String],
+        /// LIF-147: `[human]` or usernames; absent when agents may take it.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        assigned: Vec<String>,
         start_date: &'a Option<String>,
         target_date: &'a Option<String>,
         created_at: &'a str,
@@ -963,6 +976,11 @@ fn render_issue_markdown(
             relates_to: &issue.relates_to,
             duplicates: &issue.duplicates,
             duplicated_by: &issue.duplicated_by,
+            assigned: match (issue.needs_human, issue.assignees.is_empty()) {
+                (false, _) => Vec::new(),
+                (true, true) => vec![queries::assignees::HUMAN.to_string()],
+                (true, false) => issue.assignees.iter().map(|a| a.username.clone()).collect(),
+            },
             start_date: &issue.start_date,
             target_date: &issue.target_date,
             created_at: &issue.created_at,
@@ -1176,6 +1194,43 @@ mod tests {
         // The single-entity exports 404 rather than rendering a tombstone.
         assert!(export_issue(&conn, &doomed.identifier, None).is_err());
         assert!(export_page(&conn, &doomed_page.identifier).is_err());
+    }
+
+    /// LIF-147: who must do an issue rides in the frontmatter, and an issue
+    /// agents may take carries no key at all.
+    #[test]
+    fn issue_export_names_the_assignment() {
+        let db = open_memory().unwrap();
+        let conn = db.write().unwrap();
+        let project = queries::create_project(
+            &conn,
+            &CreateProject {
+                name: "Export Test".into(),
+                identifier: "EXA".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (title, who) in [("Free", None), ("Anyone", Some(vec!["human".to_string()]))] {
+            queries::create_issue(
+                &conn,
+                &CreateIssue {
+                    project_id: project.id,
+                    title: title.into(),
+                    assignees: who,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let free = export_issue(&conn, "EXA-1", None).unwrap().files.remove(0);
+        assert!(!free.content.contains("assigned:"), "{}", free.content);
+        let anyone = export_issue(&conn, "EXA-2", None).unwrap().files.remove(0);
+        assert!(
+            anyone.content.contains("assigned:\n- human\n"),
+            "{}",
+            anyone.content
+        );
     }
 
     #[test]

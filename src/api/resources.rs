@@ -14,20 +14,10 @@ use super::{require_structure_role, with_read, with_write};
 
 // ── Shared structure CRUD ────────────────────────────────────
 //
-// LIF-382: modules, labels and folders are one resource shape wearing three
-// names. Each is a project-scoped row whose list/create/update/delete
-// endpoints do the same four things: authorize against the owning project,
-// read or write through the pool, and broadcast `ProjectUpdated`. That shape
-// lives once, in the generic handlers below; a resource only supplies its
-// query functions through `Structure`.
-//
-// Generic functions rather than a macro, deliberately: every line here stays
-// ordinary Rust, so go-to-definition lands on a real `impl` block, types show
-// up in hover and inlay hints, and a mistake in one resource is a normal
-// trait mismatch pointing at the offending line instead of an error inside a
-// macro expansion nobody can step through.
+// Labels and folders share these handlers. Modules use the same domain
+// service as the native views, with authorization inside each transaction.
 
-/// One project-scoped structure resource (a module, label, or folder).
+/// One project-scoped label or folder.
 pub(super) trait Structure: 'static {
     /// Row type handed back to the client.
     type Model: serde::Serialize + Send + 'static;
@@ -46,36 +36,6 @@ pub(super) trait Structure: 'static {
     fn create(conn: &Connection, input: &Self::Create) -> Result<Self::Model, LificError>;
     fn update(conn: &Connection, id: i64, input: &Self::Update) -> Result<Self::Model, LificError>;
     fn delete(conn: &Connection, id: i64) -> Result<(), LificError>;
-}
-
-pub(super) struct Modules;
-
-impl Structure for Modules {
-    type Model = Module;
-    type Create = CreateModule;
-    type Update = UpdateModule;
-
-    const TABLE: ResourceTable = ResourceTable::Modules;
-
-    fn create_project_id(input: &CreateModule) -> i64 {
-        input.project_id
-    }
-
-    fn list(conn: &Connection, project_id: i64) -> Result<Vec<Module>, LificError> {
-        crate::db::queries::list_modules(conn, project_id)
-    }
-
-    fn create(conn: &Connection, input: &CreateModule) -> Result<Module, LificError> {
-        crate::db::queries::create_module(conn, input)
-    }
-
-    fn update(conn: &Connection, id: i64, input: &UpdateModule) -> Result<Module, LificError> {
-        crate::db::queries::update_module(conn, id, input)
-    }
-
-    fn delete(conn: &Connection, id: i64) -> Result<(), LificError> {
-        crate::db::queries::delete_module(conn, id)
-    }
 }
 
 pub(super) struct Labels;
@@ -175,10 +135,10 @@ pub(super) async fn create_structure<R: Structure>(
     Json(input): Json<R::Create>,
 ) -> Result<Json<R::Model>, LificError> {
     let project_id = R::create_project_id(&input);
-    require_structure_role(&db, &identity, project_id)?;
-    let created = with_write(&db, |conn| R::create(conn, &input))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(created))
+    crate::services::structure::commit_create(&db, &realtime, &identity, project_id, |conn| {
+        R::create(conn, &input)
+    })
+    .map(Json)
 }
 
 pub(super) async fn update_structure<R: Structure>(
@@ -200,22 +160,69 @@ pub(super) async fn delete_structure<R: Structure>(
     Path(id): Path<i64>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = authorize_existing::<R>(&db, &identity, id)?;
-    with_write(&db, |conn| R::delete(conn, id))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+    crate::services::structure::commit_delete(
+        &db,
+        &realtime,
+        &identity,
+        R::TABLE,
+        id,
+        |conn, _project_id| R::delete(conn, id),
+    )?;
     Ok(Json(serde_json::json!({"deleted": true})))
 }
 
 // ── Module endpoints ─────────────────────────────────────────
+
+pub(super) async fn list_modules(
+    State(db): State<DbPool>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Query(q): Query<ProjectQuery>,
+) -> Result<Json<Vec<Module>>, LificError> {
+    let listing = crate::services::modules::list(&db, &identity, q.project_id)?;
+    Ok(Json(
+        listing
+            .modules
+            .into_iter()
+            .map(|entry| entry.module)
+            .collect(),
+    ))
+}
+
+pub(super) async fn create_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Json(input): Json<CreateModule>,
+) -> Result<Json<Module>, LificError> {
+    crate::services::modules::create(&db, &realtime, &identity, input).map(Json)
+}
+
+pub(super) async fn update_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+    Json(input): Json<UpdateModule>,
+) -> Result<Json<Module>, LificError> {
+    crate::services::modules::update(&db, &realtime, &identity, id, input).map(Json)
+}
+
+pub(super) async fn delete_module(
+    State(db): State<DbPool>,
+    Extension(realtime): Extension<RealtimeHub>,
+    Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, LificError> {
+    crate::services::modules::delete(&db, &realtime, &identity, id)?;
+    Ok(Json(serde_json::json!({"deleted": true})))
+}
 
 pub(super) async fn get_module(
     State(db): State<DbPool>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Module>, LificError> {
-    let module = with_read(&db, |conn| crate::db::queries::get_module(conn, id))?;
-    authz::require_role(&db, &identity, module.project_id, Role::Viewer)?;
-    Ok(Json(module))
+    crate::services::modules::get(&db, &identity, id).map(Json)
 }
 
 // ── Label endpoints ──────────────────────────────────────────
@@ -444,6 +451,84 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn folder_creation_rechecks_current_admin_authority_before_inserting() {
+        let (db, admin, _, _, _, _, project_id) = setup_membership_test();
+        let identity = Some(crate::auth::fresh_identity(
+            &admin,
+            crate::actor::Transport::Web,
+        ));
+        db.write()
+            .unwrap()
+            .execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id])
+            .unwrap();
+
+        let result = super::create_structure::<super::Folders>(
+            axum::extract::State(db.clone()),
+            axum::Extension(crate::realtime::RealtimeHub::new()),
+            axum::Extension(identity),
+            axum::Json(crate::db::models::CreateFolder {
+                project_id,
+                parent_id: None,
+                name: "Must not create".into(),
+            }),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(crate::error::LificError::Forbidden(_))),
+            "stale admin snapshot must not authorize folder creation"
+        );
+        assert!(
+            crate::db::queries::list_folders(&db.read().unwrap(), project_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn folder_deletion_rechecks_current_admin_authority_before_removing() {
+        let (db, admin, _, _, _, _, project_id) = setup_membership_test();
+        let identity = Some(crate::auth::fresh_identity(
+            &admin,
+            crate::actor::Transport::Web,
+        ));
+        let folder = {
+            let conn = db.write().unwrap();
+            let folder = crate::db::queries::create_folder(
+                &conn,
+                &crate::db::models::CreateFolder {
+                    project_id,
+                    parent_id: None,
+                    name: "Keep".into(),
+                },
+            )
+            .unwrap();
+            conn.execute("UPDATE users SET is_admin=0 WHERE id=?1", [admin.id])
+                .unwrap();
+            folder
+        };
+        let realtime = crate::realtime::RealtimeHub::new();
+        let mut events = realtime.subscribe();
+        let result = super::delete_structure::<super::Folders>(
+            axum::extract::State(db.clone()),
+            axum::Extension(realtime),
+            axum::extract::Path(folder.id),
+            axum::Extension(identity),
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(crate::error::LificError::Forbidden(_))),
+            "stale admin snapshot must not authorize folder deletion"
+        );
+        assert_eq!(
+            crate::db::queries::list_folders(&db.read().unwrap(), project_id).unwrap()[0].id,
+            folder.id
+        );
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

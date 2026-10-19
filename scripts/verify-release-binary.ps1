@@ -73,18 +73,45 @@ allow_signup = false
 
     $page = Invoke-WebRequest "http://127.0.0.1:$port/" -TimeoutSec 5
     if ($page.StatusCode -ne 200 -or $page.Content -notmatch "<html") { throw "Embedded web UI did not respond with HTML" }
-    foreach ($extension in @("js", "css")) {
-        $pattern = '(?:src|href)="(/assets/[^"\s]+\.' + $extension + ')"'
-        $asset = [regex]::Match($page.Content, $pattern).Groups[1].Value
-        if (-not $asset) { throw "Embedded web UI did not reference a $extension asset" }
+    if ($page.Content -match '(?:src|href)="/assets/') { throw "Web UI references a retired frontend bundle" }
+    $assets = [regex]::Matches($page.Content, '/__topcoat-[A-Za-z0-9._~%+-]+\.(?:js|css)(?:\?[^"<>\s]*)?') |
+        ForEach-Object { $_.Value } | Sort-Object -Unique
+    if (-not ($assets | Where-Object { $_ -match '^/__topcoat-runtime\.js(?:\?v=[0-9a-f]{64})?$' }) -or -not ($assets | Where-Object { $_ -match '^[^?]+\.css(?:\?.*)?$' })) {
+        throw "Web UI is missing the Topcoat runtime or stylesheet"
+    }
+    foreach ($asset in $assets) {
         $response = Invoke-WebRequest "http://127.0.0.1:$port$asset" -TimeoutSec 5
         $mime = $response.Headers["Content-Type"] -join ","
-        $expectedMime = if ($extension -eq "js") { "(?:java|ecma)script" } else { "text/css" }
-        if ($response.StatusCode -ne 200 -or $response.RawContentLength -eq 0 -or $mime -notmatch $expectedMime) {
+        $expectedMime = if ($asset -match '^[^?]+\.js(?:\?.*)?$') { "(?:java|ecma)script" } else { "text/css" }
+        $assetStart = $response.Content.Substring(0, [Math]::Min(200, $response.Content.Length))
+        if ($response.StatusCode -ne 200 -or $response.RawContentLength -eq 0 -or $mime -notmatch $expectedMime -or $assetStart -match "<!doctype html|<html") {
             throw "Embedded asset $asset was empty or returned the wrong content type: $mime"
         }
     }
-    Write-Host "Verified artifact checksum, startup, database, API, and embedded JavaScript/CSS."
+    $manifestResponse = Invoke-WebRequest "http://127.0.0.1:$port/manifest.webmanifest" -TimeoutSec 5
+    $manifestMime = $manifestResponse.Headers["Content-Type"] -join ","
+    if ($manifestResponse.StatusCode -ne 200 -or $manifestResponse.RawContentLength -eq 0 -or $manifestMime -notmatch '^application/manifest\+json(?:;|$)') {
+        throw "Install manifest was empty or returned the wrong content type: $manifestMime"
+    }
+    # application/manifest+json may be classified as binary by Invoke-WebRequest.
+    $manifest = [Text.Encoding]::UTF8.GetString($manifestResponse.RawContentStream.ToArray()) | ConvertFrom-Json
+    foreach ($field in @("id", "start_url", "scope")) {
+        if ($manifest.$field -ne "./") { throw "Install manifest $field must be ./" }
+    }
+    foreach ($icon in @("icon-192.png", "icon-512.png", "icon-maskable-512.png")) {
+        if ($manifest.icons.src -notcontains $icon) { throw "Install manifest is missing the relative icon URL $icon" }
+    }
+    foreach ($icon in @("favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png")) {
+        $response = Invoke-WebRequest "http://127.0.0.1:$port/$icon" -TimeoutSec 5
+        $mime = $response.Headers["Content-Type"] -join ","
+        $bytes = $response.RawContentStream.ToArray()
+        if ($response.StatusCode -ne 200 -or $mime -notmatch '^image/png(?:;|$)' -or $bytes.Length -lt 8 -or [BitConverter]::ToString($bytes, 0, 8) -ne "89-50-4E-47-0D-0A-1A-0A") {
+            throw "Install icon $icon was empty, was not PNG data, or returned the wrong content type: $mime"
+        }
+    }
+    $retired = Invoke-WebRequest "http://127.0.0.1:$port/assets/index-retired.js" -TimeoutSec 5 -SkipHttpErrorCheck
+    if ($retired.StatusCode -ne 404) { throw "Retired frontend asset returned $($retired.StatusCode), expected 404" }
+    Write-Host "Verified artifact checksum, startup, database, API, embedded JavaScript/CSS, install manifest, and PNG icons."
 } finally {
     if ($null -ne $server -and -not $server.HasExited) {
         Stop-Process -Id $server.Id -Force

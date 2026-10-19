@@ -2,16 +2,6 @@
   "name": "lific-e2e",
   "private": true,
   "type": "module",
-  "scripts": {
-    "smoke": "bun smoke.ts",
-    "public": "bun public-projects.ts",
-    "archives": "bun project-archives.ts",
-    "mobile-nav": "bun mobile-nav.ts",
-    "context-menu": "bun context-menu.ts",
-    "peek-permissions": "bun peek-permissions.ts",
-    "issue-topbar": "bun issue-topbar.ts",
-    "sidebar": "bun sidebar.ts"
-  },
   "devDependencies": {
     "playwright": "1.61.1"
   }

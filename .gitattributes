@@ -1,0 +1,7 @@
+# Preserve exact upstream font provenance bytes on every checkout platform.
+src/topcoat/assets/fonts/google.css -text
+src/topcoat/assets/fonts/dmsans-OFL.txt -text
+src/topcoat/assets/fonts/spacegrotesk-OFL.txt -text
+# Preserve framework source and the packaged runtime reconstruction bytes.
+src/topcoat/vendor/** -text
+src/topcoat/assets/runtime.js -text

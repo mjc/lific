@@ -1,14 +1,16 @@
 mod activity;
+mod archived_projects;
 /// LIF-418: the MCP attachment tools reuse this module's authorization gates
 /// and filename hygiene verbatim rather than growing a second copy, so the
 /// module is crate-visible even though its handlers stay `pub(super)`.
 pub(crate) mod attachments;
-mod auth;
+pub(crate) mod auth;
 // `pub` only for the three comment paging header names, which the global CORS
 // layer in `server` has to expose by the same names this module sets them by.
 pub mod comments;
 mod export;
 mod git_hook;
+mod home;
 mod insights;
 mod issues;
 mod members;
@@ -48,6 +50,7 @@ const UPLOAD_BODY_LIMIT: usize = 64 * 1024 * 1024;
 use crate::authz::filter_visible;
 use crate::db::{DbPool, models::*, queries};
 use crate::error::LificError;
+use crate::services::issues::retain_visible_relations;
 
 pub use attachments::{AttachmentConfig, AttachmentUploadLimiter};
 
@@ -161,6 +164,8 @@ fn router_impl(
             "/api/issues",
             get(issues::list_issues).post(issues::create_issue),
         )
+        .route("/api/issues/attention", get(issues::my_attention))
+        .route("/api/home/overview", get(home::home_overview))
         .route(
             "/api/issues/{id}",
             get(issues::get_issue)
@@ -228,14 +233,13 @@ fn router_impl(
         // Modules
         .route(
             "/api/modules",
-            get(resources::list_structure::<resources::Modules>)
-                .post(resources::create_structure::<resources::Modules>),
+            get(resources::list_modules).post(resources::create_module),
         )
         .route(
             "/api/modules/{id}",
             get(resources::get_module)
-                .put(resources::update_structure::<resources::Modules>)
-                .delete(resources::delete_structure::<resources::Modules>),
+                .put(resources::update_module)
+                .delete(resources::delete_module),
         )
         // Labels
         .route(
@@ -395,6 +399,20 @@ fn attachment_routes(store: Option<crate::storage::AttachmentStore>) -> Router<D
         .route(
             "/api/project-archives/{identifier}",
             get(project_archives::export_project_archive),
+        )
+        // Archived projects: moved out of the database into one file in the
+        // data dir, and back. See src/api/archived_projects.rs.
+        .route(
+            "/api/projects/{id}/archive",
+            post(archived_projects::archive_project),
+        )
+        .route(
+            "/api/archived-projects",
+            get(archived_projects::list_archived_projects),
+        )
+        .route(
+            "/api/archived-projects/{id}/unarchive",
+            post(archived_projects::unarchive_project),
         )
         // Attachments (LIF-262) — image + file uploads on issues, comments,
         // and pages. The upload route carries its own larger DefaultBodyLimit
@@ -631,20 +649,6 @@ where
     f(&conn)
 }
 
-/// LIF-488: drop relation identifiers into projects the caller cannot view
-/// before issues are returned. See [`queries::retain_visible_relations`].
-fn retain_visible_relations(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    issues: &mut [Issue],
-) -> Result<(), LificError> {
-    let visible = crate::authz::visible_project_ids(db, identity)?;
-    with_read(db, |conn| {
-        queries::retain_visible_relations(conn, issues, visible.as_ref());
-        Ok(())
-    })
-}
-
 /// Execute a write operation against the exclusive write connection.
 fn with_write<F, T>(db: &DbPool, f: F) -> Result<T, LificError>
 where
@@ -689,18 +693,6 @@ fn require_structure_role(
     crate::authz::require_structure_role(db, identity, project_id)
 }
 
-/// LIF-197: thin wrapper over `authz::require_project_delete_role`, used by
-/// `DELETE /api/projects/{id}`. See that function's doc comment for why the
-/// legacy branch reproduces `require_admin` exactly rather than delegating
-/// to `require_role(.., Lead)`.
-fn require_project_delete(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    project_id: i64,
-) -> Result<(), LificError> {
-    crate::authz::require_project_delete_role(db, identity, project_id)
-}
-
 /// Require any authenticated user, and hand back who they are (LIF-233,
 /// LIF-372). The single "is there a caller at all?" gate for the whole API:
 /// used both by low-stakes instance-wide actions like sidebar project
@@ -717,7 +709,7 @@ fn require_project_delete(
 /// resolves a `ResolvedIdentity` (first-admin fallback) even for a
 /// credential-less request, so this passes — fixing the auth-off bug where
 /// `/api/projects/reorder` previously 403'd.
-pub(super) fn require_user(
+pub(crate) fn require_user(
     identity: &Option<crate::resolve_caller::ResolvedIdentity>,
 ) -> Result<AuthUser, LificError> {
     identity
@@ -1524,6 +1516,57 @@ mod tests {
 
         let missing = json_get(&app, &format!("/api/issues/{issue_id}")).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn issue_target_date_can_be_set_preserved_and_cleared_over_http() {
+        let app = test_app();
+        let (project_id, _) = seed_project(&app).await;
+        let created = parse_json(
+            json_post(
+                &app,
+                "/api/issues",
+                serde_json::json!({"project_id": project_id, "title": "Due date"}),
+            )
+            .await,
+        )
+        .await;
+        let issue_id = created["id"].as_i64().unwrap();
+        let path = format!("/api/issues/{issue_id}");
+        let mut seq = created["seq"].as_i64().unwrap();
+
+        for (patch, expected) in [
+            (
+                serde_json::json!({"target_date": "2026-10-15"}),
+                serde_json::json!("2026-10-15"),
+            ),
+            (
+                serde_json::json!({"title": "Keep due date"}),
+                serde_json::json!("2026-10-15"),
+            ),
+            (
+                serde_json::json!({"target_date": null}),
+                serde_json::Value::Null,
+            ),
+            (
+                serde_json::json!({"target_date": "2026-10-20"}),
+                serde_json::json!("2026-10-20"),
+            ),
+        ] {
+            let mut patch = patch;
+            patch["expected_seq"] = serde_json::json!(seq);
+            let response = json_put(&app, &path, patch).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let updated = parse_json(response).await;
+            assert_eq!(updated["target_date"], expected);
+            let next_seq = updated["seq"].as_i64().unwrap();
+            assert!(next_seq > seq);
+            seq = next_seq;
+            assert_eq!(
+                parse_json(json_get(&app, &path).await).await["target_date"],
+                expected
+            );
+        }
     }
 
     #[tokio::test]

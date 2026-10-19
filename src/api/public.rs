@@ -58,7 +58,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::db::models::{
@@ -71,6 +71,7 @@ use crate::error::LificError;
 use crate::ratelimit::{self, IpNetwork, RateLimiter};
 use crate::storage::{self, AttachmentStore};
 
+use super::attachments::{RangeRequest, parse_range};
 use super::comments::{ListCommentsQuery, paging_headers};
 use super::with_read;
 
@@ -345,7 +346,7 @@ async fn unknown() -> LificError {
 // table is touched.
 
 /// Run `f` against the published project named in the path, in one snapshot.
-fn with_public<T>(
+pub(crate) fn with_public<T>(
     db: &DbPool,
     identifier: &str,
     f: impl FnOnce(&rusqlite::Connection, &Project) -> Result<T, LificError>,
@@ -597,6 +598,7 @@ async fn download_attachment(
     State(db): State<DbPool>,
     Extension(store): Extension<AttachmentStore>,
     Extension(download_concurrency): Extension<Arc<PublicDownloadConcurrency>>,
+    headers: HeaderMap,
     Path((project, id)): Path<(String, String)>,
 ) -> Result<Response<Body>, LificError> {
     let blob = public_blob(&db, &project, &id)?;
@@ -607,6 +609,30 @@ async fn download_attachment(
     let (file, len) = store
         .try_with_lock(|store| store.open_blob(&blob.sha256))?
         .ok_or_else(AttachmentStore::busy_error)?;
+
+    let requested = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map_or(RangeRequest::Whole, |value| parse_range(value, len));
+    let (status, start, length, content_range) = match requested {
+        RangeRequest::Whole => (StatusCode::OK, 0, len, None),
+        RangeRequest::Unsatisfiable => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+                .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .body(Body::empty())
+                .map_err(|e| LificError::Internal(format!("build response: {e}")))
+                .map(IntoResponse::into_response);
+        }
+        RangeRequest::Partial { start, end } => (
+            StatusCode::PARTIAL_CONTENT,
+            start,
+            end - start + 1,
+            Some(format!("bytes {start}-{end}/{len}")),
+        ),
+    };
 
     let inline_safe = storage::is_inline_safe_mime(&blob.mime);
     let content_type =
@@ -624,23 +650,31 @@ async fn download_attachment(
     let permit = Arc::clone(&download_concurrency.0)
         .try_acquire_owned()
         .map_err(|_| LificError::Unavailable("public downloads are busy".into()))?;
-    let body = download_body(
+    let body = download_range_body(
         file,
         permit,
+        start,
+        length,
         std::time::Duration::from_secs(15),
         std::time::Duration::from_secs(5 * 60),
     );
 
-    Response::builder()
-        .status(StatusCode::OK)
+    let mut builder = Response::builder()
+        .status(status)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_LENGTH, len)
+        .header(header::CONTENT_LENGTH, length)
+        .header(header::ACCEPT_RANGES, "bytes")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(
             header::CONTENT_SECURITY_POLICY,
             "default-src 'none'; sandbox",
         )
-        .header(header::CONTENT_DISPOSITION, disposition)
+        .header(header::CONTENT_DISPOSITION, disposition);
+    if let Some(range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, range);
+    }
+
+    builder
         .body(body)
         .map_err(|e| LificError::Internal(format!("build response: {e}")))
         .map(IntoResponse::into_response)
@@ -740,9 +774,21 @@ async fn attachment_preview(
     Ok(axum::Json(preview))
 }
 
+#[cfg(test)]
 fn download_body(
     file: std::fs::File,
     permit: OwnedSemaphorePermit,
+    idle_timeout: std::time::Duration,
+    max_duration: std::time::Duration,
+) -> Body {
+    download_range_body(file, permit, 0, u64::MAX, idle_timeout, max_duration)
+}
+
+fn download_range_body(
+    file: std::fs::File,
+    permit: OwnedSemaphorePermit,
+    start: u64,
+    length: u64,
     idle_timeout: std::time::Duration,
     max_duration: std::time::Duration,
 ) -> Body {
@@ -754,11 +800,15 @@ fn download_body(
         let mut file = tokio::fs::File::from_std(file);
         let mut buffer = vec![0; DOWNLOAD_CHUNK_BYTES];
         let result = tokio::time::timeout(max_duration, async {
-            loop {
-                let read = file.read(&mut buffer).await?;
+            file.seek(std::io::SeekFrom::Start(start)).await?;
+            let mut remaining = length;
+            while remaining > 0 {
+                let read_limit = remaining.min(buffer.len() as u64) as usize;
+                let read = file.read(&mut buffer[..read_limit]).await?;
                 if read == 0 {
                     return Ok(());
                 }
+                remaining -= read as u64;
                 let chunk = axum::body::Bytes::copy_from_slice(&buffer[..read]);
                 match tokio::time::timeout(idle_timeout, sender.send(chunk)).await {
                     Ok(Ok(())) => {}
@@ -771,6 +821,7 @@ fn download_body(
                     }
                 }
             }
+            Ok(())
         })
         .await
         .unwrap_or_else(|_| {
@@ -1354,6 +1405,39 @@ mod tests {
             );
             assert!(body_string(response).await.starts_with("bytes for"));
         }
+
+        let ranged = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/public/api/projects/PUB/attachments/{on_issue}"))
+                    .header(header::RANGE, "bytes=6-9")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ranged.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(ranged.headers()[header::ACCEPT_RANGES], "bytes");
+        assert_eq!(ranged.headers()[header::CONTENT_RANGE], "bytes 6-9/19");
+        assert_eq!(ranged.headers()[header::CONTENT_LENGTH], "4");
+        assert_eq!(body_string(ranged).await, "for ");
+
+        let unsatisfiable = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/public/api/projects/PUB/attachments/{on_issue}"))
+                    .header(header::RANGE, "bytes=100-")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unsatisfiable.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        assert_eq!(unsatisfiable.headers()[header::CONTENT_RANGE], "bytes */19");
 
         // The listing route is scrubbed and re-checks the entity.
         let json = body_json(

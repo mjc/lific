@@ -121,6 +121,40 @@ fn project_row_names_leads_and_maintainers_counts_viewers_and_shows_your_role() 
 }
 
 #[test]
+fn a_single_person_instance_hides_the_roster_and_owns_every_project() {
+    let (m, _guard) = super::tests::mcp();
+    super::tests::seed_project(&m, "Solo", "SOL");
+    let pid = super::tests::project_id_for(&m, "SOL");
+    seed_statuses(&m, pid, &["todo"]);
+    let my_issues = || {
+        as_user(None, || {
+            m.list_issues(Parameters(tool_input(json!({"members": ["me"]}))))
+        })
+    };
+
+    let solo = projects(&m, None, json!({}));
+    assert_ends(row(&solo, "SOL"), " ago) | 1 todo");
+    // A project created without a lead still belongs to the only person.
+    assert_ends(
+        row(&projects(&m, None, json!({"show_members": []})), "SOL"),
+        " | 1 lead | you: lead | 1 todo",
+    );
+    let mine = my_issues();
+    assert!(mine.starts_with("Your roles: SOL lead\n"), "got: {mine}");
+    assert_has(&mine, "SOL-1");
+
+    add_member(&m, pid, "partner", models::Role::Viewer);
+    assert_ends(
+        row(&projects(&m, None, json!({})), "SOL"),
+        " | 1 viewer | you: admin | 1 todo",
+    );
+    assert_eq!(
+        my_issues(),
+        "No projects where you have a role (among projects you can see)."
+    );
+}
+
+#[test]
 fn roster_names_five_per_role_and_show_members_lists_chosen_roles_in_full() {
     let (m, _admin, lead, _maintainer, _viewer, _non_member, pid, _guard) = setup_membership_mcp();
     for name in ["m2", "m3", "m4", "m5", "m6", "m7"] {

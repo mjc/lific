@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test a release binary: it starts on its own, serves the API, and
-# actually carries the built web UI inside it.
+# carries the Topcoat runtime and frontend assets inside it.
 #
 # A partial bundle can return index.html while its missing assets also return
 # HTML through the SPA fallback. Check the bundles as well as the document,
@@ -42,7 +42,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Everything below runs here, so a binary that reads web/dist, migrations, or a
+# Everything below runs here, so a binary that reads frontend assets, migrations, or a
 # lific.toml out of the caller's working directory fails instead of passing on
 # borrowed files.
 cd "$scratch"
@@ -50,31 +50,66 @@ cd "$scratch"
 "$binary" --version
 "$binary" --help >/dev/null
 
+startup_timeout="${LIFIC_VERIFY_STARTUP_TIMEOUT:-60}"
+if ! [[ $startup_timeout =~ ^[1-9][0-9]*$ ]]; then
+  echo "LIFIC_VERIFY_STARTUP_TIMEOUT must be a positive integer" >&2
+  exit 1
+fi
+startup_deadline=$((SECONDS + startup_timeout))
+
+# Never pass 0 to curl: it means "no timeout", rather than an expired budget.
+request_budget() {
+  local remaining=$((startup_deadline - SECONDS)) limit="${1:-5}"
+  if ((remaining <= 0)); then
+    return 1
+  fi
+  if ((remaining > limit)); then
+    remaining=$limit
+  fi
+  printf '%s\n' "$remaining"
+}
+
 port="${LIFIC_VERIFY_PORT:-}"
+automatic_port=true
+attempted_ports=()
+
+choose_port() {
+  local candidate budget
+  for _ in {1..20}; do
+    if ! budget="$(request_budget 2)"; then
+      echo "server did not report a healthy start within ${startup_timeout}s" >&2
+      return 1
+    fi
+    candidate="$((34567 + RANDOM % 1000))"
+    case " ${attempted_ports[*]} " in
+      *" $candidate "*) continue ;;
+    esac
+    if ! curl --connect-timeout 1 --max-time "$budget" --silent --output /dev/null "http://127.0.0.1:$candidate/"; then
+      port="$candidate"
+      return
+    fi
+  done
+  echo "could not find an available verification port" >&2
+  return 1
+}
 
 # An override is useful for CI and local debugging. For the automatic case,
 # retry a collision so an unrelated local server does not make this test flaky.
 if [[ -n $port ]]; then
-  if curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$port/"; then
+  automatic_port=false
+  budget="$(request_budget 2)"
+  if curl --connect-timeout 1 --max-time "$budget" --silent --output /dev/null "http://127.0.0.1:$port/"; then
     echo "verification port $port is already serving HTTP" >&2
     exit 1
   fi
 else
-  for _ in {1..20}; do
-    candidate="$((34567 + RANDOM % 1000))"
-    if ! curl --connect-timeout 1 --max-time 2 --silent --output /dev/null "http://127.0.0.1:$candidate/"; then
-      port="$candidate"
-      break
-    fi
-  done
-  if [[ -z $port ]]; then
-    echo "could not find an available verification port" >&2
-    exit 1
-  fi
+  choose_port
 fi
 
 config="$scratch/verify-lific.toml"
-cat >"$config" <<TOML
+start_server() {
+  attempted_ports+=("$port")
+  cat >"$config" <<TOML
 # Written by verify-release-binary.sh. Passed with --config so the run cannot
 # inherit a project-local, user, or system lific.toml.
 [server]
@@ -96,60 +131,61 @@ allow_signup = false
 level = "info"
 TOML
 
-LIFIC_INIT_ADMIN_NAME=Release \
-  LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
-  "$binary" \
-  --config "$config" \
-  start --init-if-missing --host 127.0.0.1 --port "$port" \
-  >"$scratch/server.log" 2>&1 &
-server_pid=$!
-
-startup_timeout="${LIFIC_VERIFY_STARTUP_TIMEOUT:-60}"
-if ! [[ $startup_timeout =~ ^[1-9][0-9]*$ ]]; then
-  echo "LIFIC_VERIFY_STARTUP_TIMEOUT must be a positive integer" >&2
-  exit 1
-fi
-startup_deadline=$((SECONDS + startup_timeout))
-
-# Seconds left before the startup deadline, clamped to a sane per-request
-# budget. Never returns 0: `curl --max-time 0` means "no timeout", so a
-# deadline that rolls over mid-loop used to turn the bounded wait into an
-# unbounded one.
-request_budget() {
-  local remaining=$((startup_deadline - SECONDS))
-  if ((remaining <= 0)); then
-    return 1
-  fi
-  if ((remaining > 5)); then
-    remaining=5
-  fi
-  printf '%s\n' "$remaining"
+  LIFIC_INIT_ADMIN_NAME=Release \
+    LIFIC_INIT_ADMIN_PASSWORD=release-smoke-password-123 \
+    "$binary" \
+    --config "$config" \
+    start --init-if-missing --host 127.0.0.1 --port "$port" \
+    >"$scratch/server.log" 2>&1 &
+  server_pid=$!
 }
 
 started=false
 healthy=false
-while ((SECONDS < startup_deadline)); do
-  if ! kill -0 "$server_pid" 2>/dev/null; then
-    cat "$scratch/server.log" >&2
-    echo "server exited before it served a request" >&2
-    exit 1
-  fi
-
-  # The production server logs this only after TcpListener::bind succeeds.
-  # Waiting for that event ties the HTTP probe to this process rather than
-  # accepting the first response from an unrelated listener.
-  if grep -q 'lific server started' "$scratch/server.log"; then
-    started=true
-    if budget="$(request_budget)"; then
-      if curl --fail --silent --show-error \
-        --connect-timeout 1 --max-time "$budget" \
-        "http://127.0.0.1:$port/api/health" >"$scratch/health.txt"; then
-        healthy=true
+startup_attempt=0
+while ((startup_attempt < 20 && SECONDS < startup_deadline)); do
+  startup_attempt=$((startup_attempt + 1))
+  start_server
+  started=false
+  healthy=false
+  retry=false
+  while ((SECONDS < startup_deadline)); do
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+      if [[ $automatic_port == true ]] &&
+        ! grep -q 'lific server started' "$scratch/server.log" &&
+        grep -Eqi 'EADDRINUSE|address already in use' "$scratch/server.log"; then
+        wait "$server_pid" 2>/dev/null || true
+        server_pid=""
+        echo "verification port $port was claimed before startup; trying another port" >&2
+        retry=true
         break
       fi
+      cat "$scratch/server.log" >&2
+      echo "server exited before it served a request" >&2
+      exit 1
     fi
+
+    # The production server logs this only after TcpListener::bind succeeds.
+    # Waiting for that event ties the HTTP probe to this process rather than
+    # accepting the first response from an unrelated listener.
+    if grep -q 'lific server started' "$scratch/server.log"; then
+      started=true
+      if budget="$(request_budget)"; then
+        if curl --fail --silent --show-error \
+          --connect-timeout 1 --max-time "$budget" \
+          "http://127.0.0.1:$port/api/health" >"$scratch/health.txt"; then
+          healthy=true
+          break
+        fi
+      fi
+    fi
+    sleep 1
+  done
+  if [[ $retry == true ]] && ((startup_attempt < 20 && SECONDS < startup_deadline)); then
+    choose_port
+    continue
   fi
-  sleep 1
+  break
 done
 
 if [[ $started != true || $healthy != true ]] || ! kill -0 "$server_pid" 2>/dev/null; then
@@ -179,17 +215,24 @@ if ! grep -qi '<html' "$scratch/index.html"; then
   exit 1
 fi
 
-# The shell only proves the frontend shipped if the bundles it names are
-# really in the binary, so collect the root-relative asset URLs it points at.
-# Vite writes exactly these: /assets/<name>-<hash>.js and .css.
-assets="$(grep -Eo '/assets/[A-Za-z0-9._~%+-]+\.(js|css)' "$scratch/index.html" | sort -u || true)"
-js_assets="$(printf '%s\n' "$assets" | grep -E '\.js$' | head -n 3 || true)"
-css_assets="$(printf '%s\n' "$assets" | grep -E '\.css$' | head -n 3 || true)"
-
-if [[ -z ${js_assets//[[:space:]]/} || -z ${css_assets//[[:space:]]/} ]]; then
-  echo "the web root names no /assets JavaScript and stylesheet pair, so this" >&2
-  echo "binary was built without the web UI (or with a placeholder shell)" >&2
-  sed -n '1,40p' "$scratch/index.html" >&2
+# Every asset referenced by the Topcoat document must ship in the binary.
+# Legacy Vite bundles must not remain in a production release.
+if grep -Eq '(src|href)="/assets/' "$scratch/index.html"; then
+  echo "the web root still references a retired frontend bundle" >&2
+  exit 1
+fi
+assets="$(grep -Eo '/__topcoat-[A-Za-z0-9._~%+-]+\.(js|css)(\?[^"<>[:space:]]*)?' "$scratch/index.html" | sort -u || true)"
+js_assets="$(printf '%s\n' "$assets" | grep -E '^[^?]+\.js(\?.*)?$' || true)"
+css_assets="$(printf '%s\n' "$assets" | grep -E '^[^?]+\.css(\?.*)?$' || true)"
+if ! printf '%s\n' "$js_assets" | grep -Eq '^/__topcoat-runtime\.js(\?v=[0-9a-f]{64})?$' || [[ -z ${css_assets//[[:space:]]/} ]]; then
+  echo "the web root is missing the Topcoat runtime or stylesheet" >&2
+  exit 1
+fi
+retired_status="$(curl --silent --show-error --connect-timeout 2 --max-time 15 \
+  --output /dev/null --write-out '%{http_code}' \
+  "http://127.0.0.1:$port/assets/index-retired.js")"
+if [[ $retired_status != 404 ]]; then
+  echo "retired frontend assets must return 404, got $retired_status" >&2
   exit 1
 fi
 
@@ -214,6 +257,8 @@ check_asset() {
   case "$kind:$content_type" in
     js:*javascript* | js:*ecmascript*) ;;
     css:*css*) ;;
+    manifest:application/manifest+json | manifest:application/manifest+json\;*) ;;
+    png:image/png | png:image/png\;*) ;;
     *)
       echo "$kind asset $path came back as '$content_type', which means the" >&2
       echo "binary does not contain it and served the SPA fallback instead" >&2
@@ -221,8 +266,15 @@ check_asset() {
       ;;
   esac
 
+  if [[ $kind == png ]]; then
+    if [[ $(od -An -tx1 -N8 "$body" | tr -d '[:space:]') != 89504e470d0a1a0a ]]; then
+      echo "PNG asset $path does not have a PNG signature" >&2
+      return 1
+    fi
+    return
+  fi
   if head -c 200 "$body" | grep -qi '<!doctype html\|<html'; then
-    echo "$kind asset $path is an HTML document, not a bundle" >&2
+    echo "$kind asset $path is an HTML document" >&2
     return 1
   fi
 }
@@ -236,5 +288,23 @@ while read -r asset; do
   [[ -n $asset ]] || continue
   check_asset "$asset" css
 done <<<"$css_assets"
+
+check_asset /manifest.webmanifest manifest
+# These URLs resolve relative to the manifest so installs retain a proxy mount.
+for field in id start_url scope; do
+  if ! grep -Eq "\"$field\"[[:space:]]*:[[:space:]]*\"\./\"" "$scratch/asset-body"; then
+    echo "install manifest $field must be ./" >&2
+    exit 1
+  fi
+done
+for icon in icon-192.png icon-512.png icon-maskable-512.png; do
+  if ! grep -Eq "\"src\"[[:space:]]*:[[:space:]]*\"${icon%.png}\\.png\"" "$scratch/asset-body"; then
+    echo "install manifest is missing the relative icon URL $icon" >&2
+    exit 1
+  fi
+done
+for icon in favicon.png apple-touch-icon.png icon-192.png icon-512.png icon-maskable-512.png; do
+  check_asset "/$icon" png
+done
 
 echo "release binary serves its API and the embedded web UI"

@@ -102,6 +102,9 @@ pub(crate) mod test_alloc {
 /// nothing that enumerates blobs can mistake it for one.
 pub(crate) const STORE_LOCK_FILE: &str = ".lific-attachments.lock";
 
+/// Directory name for archived projects' files, in the data dir.
+pub(crate) const ARCHIVED_PROJECTS_DIR: &str = "archived-projects";
+
 fn lock_is_busy(error: &std::io::Error) -> bool {
     if error.kind() == std::io::ErrorKind::WouldBlock {
         return true;
@@ -124,6 +127,10 @@ struct StorePaths {
     /// Where the cross-process lock lives. Held separately from `dir` because
     /// it must survive `dir` being replaced wholesale by a restore.
     lock_path: PathBuf,
+    /// Archived projects' files (see [`crate::archived_projects`]). Lives
+    /// with the store because it shares the store's lock: a dump scans it
+    /// under that lock, and archiving writes it under that lock.
+    archived_dir: PathBuf,
 }
 
 /// Handle to the on-disk attachments directory. Cheap to clone (just shared
@@ -204,6 +211,7 @@ impl AttachmentStore {
             paths: Arc::new(StorePaths {
                 dir: data_dir.join("attachments"),
                 lock_path: data_dir.join(STORE_LOCK_FILE),
+                archived_dir: data_dir.join(ARCHIVED_PROJECTS_DIR),
             }),
             operation_lock: Arc::new(Mutex::new(())),
         }
@@ -224,6 +232,7 @@ impl AttachmentStore {
         Self {
             paths: Arc::new(StorePaths {
                 lock_path: dir.join(STORE_LOCK_FILE),
+                archived_dir: dir.join(ARCHIVED_PROJECTS_DIR),
                 dir,
             }),
             operation_lock: Arc::new(Mutex::new(())),
@@ -235,6 +244,13 @@ impl AttachmentStore {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn dir(&self) -> &Path {
         &self.paths.dir
+    }
+
+    /// Where archived projects' files live: `<data dir>/archived-projects`
+    /// beside `attachments/`, or inside `dir` for a store built with
+    /// [`Self::new`].
+    pub fn archived_dir(&self) -> &Path {
+        &self.paths.archived_dir
     }
 
     /// Absolute path to the sidecar file for a given content hash. Kept
@@ -863,6 +879,7 @@ pub const ALLOWED_MIMES: &[&str] = &[
     // inline (see `is_inline_safe_mime`) behind the same CSP sandbox as
     // everything else.
     "video/mp4",
+    "audio/mp4",
     "video/webm",
     "audio/webm",
     "audio/ogg",
@@ -914,6 +931,7 @@ pub fn is_inline_safe_mime(mime: &str) -> bool {
             | "image/gif"
             | "image/webp"
             | "video/mp4"
+            | "audio/mp4"
             | "video/webm"
             | "audio/webm"
             | "audio/ogg"
@@ -1002,6 +1020,12 @@ fn classify_prefix(prefix: &[u8], declared: Option<&str>) -> PrefixVerdict {
         // record, and both are inline-safe media, so a lie here buys nothing.
         if mime == "video/webm" && declared.as_deref() == Some("audio/webm") {
             return PrefixVerdict::Decided("audio/webm".to_string());
+        }
+        // MP4 likewise needs a track parse to distinguish audio-only
+        // recordings. The bytes still validate the container; the declaration
+        // only chooses between two allowlisted, inline-safe media labels.
+        if mime == "video/mp4" && declared.as_deref() == Some("audio/mp4") {
+            return PrefixVerdict::Decided("audio/mp4".to_string());
         }
         return PrefixVerdict::Decided(mime.to_string());
     }
@@ -2168,6 +2192,40 @@ mod tests {
             sniff_and_validate(&png_image(2, 2), Some("video/mp4")).unwrap(),
             "image/png"
         );
+    }
+
+    #[test]
+    fn mp4_declared_as_audio_keeps_audio_classification() {
+        let mp4 = mp4_bytes();
+        for declared in [Some("audio/mp4"), Some(" AUDIO/MP4;codecs=mp4a.40.2 ")] {
+            assert_eq!(sniff_and_validate(&mp4, declared).unwrap(), "audio/mp4");
+            assert_eq!(
+                sniff_and_validate_stream(mp4.as_slice(), declared).unwrap(),
+                "audio/mp4"
+            );
+        }
+        for declared in [None, Some("video/mp4"), Some("audio/webm")] {
+            assert_eq!(sniff_and_validate(&mp4, declared).unwrap(), "video/mp4");
+            assert_eq!(
+                sniff_and_validate_stream(mp4.as_slice(), declared).unwrap(),
+                "video/mp4"
+            );
+        }
+        assert_eq!(
+            sniff_and_validate(&png_image(2, 2), Some("audio/mp4")).unwrap(),
+            "image/png"
+        );
+        // A lying audio declaration does not override the safe text fallback.
+        assert_eq!(
+            sniff_and_validate(b"not a media container", Some("audio/mp4")).unwrap(),
+            "text/plain"
+        );
+        let mut quicktime = mp4;
+        quicktime[8..12].copy_from_slice(b"qt  ");
+        quicktime.push(0xFF);
+        assert!(sniff_and_validate(&quicktime, Some("audio/mp4")).is_err());
+        assert!(ALLOWED_MIMES.contains(&"audio/mp4"));
+        assert!(is_inline_safe_mime("audio/mp4"));
     }
 
     /// QuickTime shares the ISO base media container with mp4 but is not on

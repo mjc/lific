@@ -36,45 +36,88 @@ free_port() {
 
 # A stand-in web server. MODE picks which release build it imitates:
 #   full        - carries the web UI, serves the bundles it names
-#   no-assets   - serves a shell that names no bundles (built without web/dist)
+#   no-assets   - serves a shell that names no bundles (built without Topcoat assets)
 #   spa         - names bundles but does not have them, so /assets falls back
-#                 to index.html with 200 text/html
+#                 to HTML with 200 text/html
 fixture_server="$scratch/fixture-server.ts"
 cat >"$fixture_server" <<'TS'
+import {appendFileSync, existsSync} from "node:fs";
+import {createServer} from "node:net";
 const mode = process.env.MODE ?? "full";
+const versioned = mode.startsWith("versioned");
+const fingerprint = "ab".repeat(32);
+const runtimeQuery = versioned ? `?v=${mode === "versioned-runtime-short" ? "ab" : fingerprint}` : "";
+const cssQuery = versioned ? `?v=${fingerprint}` : "";
+const cssPath = versioned ? "/__topcoat-app.css" : "/__topcoat-runtime.css";
+let blocker;
+if (["collision-once", "collision-always", "invalid-startup"].includes(mode)) {
+  const attempts = `${import.meta.dir}/${mode}-ports`;
+  const first = !existsSync(attempts);
+  appendFileSync(attempts, `${process.env.PORT}\n`);
+  if (mode === "invalid-startup") throw new Error("Invalid startup configuration");
+  if (first || mode === "collision-always") {
+    // Claim the port after the verifier's preflight, without serving HTTP.
+    blocker = createServer();
+    await new Promise<void>(resolve => blocker.listen(Number(process.env.PORT), "127.0.0.1", resolve));
+  }
+}
 const shell = (withAssets: boolean) =>
   `<!doctype html><html lang="en"><head><title>Lific</title>` +
   (withAssets
-    ? `<script type="module" crossorigin src="/assets/index-abc123.js"></script>` +
-      `<link rel="stylesheet" crossorigin href="/assets/index-abc123.css">`
+    ? `<script type="module" crossorigin src="/__topcoat-runtime.js${runtimeQuery}"></script>` +
+      `<link rel="stylesheet" crossorigin href="${cssPath}${cssQuery}">`
     : "") +
+  (mode === "legacy" ? `<script src="/assets/index-legacy.js"></script>` : "") +
   `</head><body><div id="app"></div></body></html>`;
 
 const html = (withAssets: boolean) =>
   new Response(shell(withAssets), { headers: { "content-type": "text/html" } });
+const iconPaths = ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png", "icon-maskable-512.png"];
+const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
 
-Bun.serve({
+try { Bun.serve({
   port: Number(process.env.PORT),
   hostname: "127.0.0.1",
   fetch(request) {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
     if (path === "/api/health") {
       return new Response("ok", { headers: { "content-type": "text/plain" } });
     }
-    if (mode === "full" && path === "/assets/index-abc123.js") {
+    if (path === "/manifest.webmanifest") {
+      if (mode === "manifest-html") return html(true);
+      const manifest = {
+        id: "./", start_url: mode === "manifest-root-url" ? "/" : "./", scope: "./",
+        icons: iconPaths.slice(2).map(src => ({src: mode === "manifest-root-icon" ? `/${src}` : src})),
+      };
+      return new Response(mode === "manifest-empty" ? "" : JSON.stringify(manifest), {
+        headers: {"content-type": mode === "manifest-mime" ? "text/plain" : "application/manifest+json"},
+      });
+    }
+    if (iconPaths.includes(path.slice(1))) {
+      if (mode === `missing-${path.slice(1)}`) return new Response("Not found", {status: 404});
+      return new Response(mode === "png-empty" ? null : mode === "png-html" ? shell(true) : png, {
+        headers: {"content-type": mode === "png-mime" ? "text/plain" : "image/png"},
+      });
+    }
+    if (!["no-assets", "spa"].includes(mode) && path === "/__topcoat-runtime.js") {
+      if (url.search !== runtimeQuery) return new Response("Wrong runtime fingerprint", {status: 404});
       return new Response("export const ok = 1;\n", {
         headers: { "content-type": "text/javascript" },
       });
     }
-    if (mode === "full" && path === "/assets/index-abc123.css") {
+    if (!["no-assets", "spa"].includes(mode) && path === cssPath) {
+      if (url.search !== cssQuery) return new Response("Wrong stylesheet fingerprint", {status: 404});
+      if (mode === "versioned-css-fallback") return html(true);
       return new Response(":root{--ok:1}\n", {
         headers: { "content-type": "text/css" },
       });
     }
-    // Everything else, including a missing asset, gets the SPA fallback.
+    if (path.startsWith("/assets/") && mode !== "legacy" && mode !== "legacy-asset") return new Response("Not found", { status: 404 });
+    // Missing current assets imitate an incorrect HTML fallback.
     return html(mode !== "no-assets");
   },
-});
+}); } finally { blocker?.close(); }
 console.error("lific server started");
 TS
 
@@ -124,7 +167,6 @@ if ! grep -q '^\[database\]' "$config"; then
   exit 1
 fi
 
-echo "lific server started" >&2
 exec env PORT="${port:?}" MODE="${FIXTURE_MODE:-full}" bun "$FIXTURE_SERVER"
 SH
 chmod +x "$fixture_binary"
@@ -171,7 +213,100 @@ if ! grep -Fq "release binary serves its API and the embedded web UI" "$scratch/
 fi
 echo "a complete build passes, addressed by a relative path"
 
-# 2. A shell with no bundle references is a binary built without web/dist.
+# Only the document's complete fingerprinted URLs serve bytes. Dropping either
+# query therefore fails instead of silently checking an unversioned asset.
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=versioned)"
+if [[ $status -ne 0 ]]; then
+  fail "verifier discarded a full content fingerprint from a document asset URL"
+fi
+echo "full stylesheet and runtime fingerprints are fetched exactly as documented"
+
+for mode in versioned-runtime-short versioned-css-fallback; do
+  status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE="$mode")"
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    fail "verifier accepted an invalid versioned asset ($mode) or hung while rejecting it"
+  fi
+  echo "invalid versioned assets ($mode) are rejected"
+done
+
+# An automatic port can become occupied between the probe and the real bind.
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=collision-once)"
+if [[ $status -ne 0 ]]; then
+  fail "verifier did not recover from an automatic startup bind collision"
+fi
+mapfile_ports="$(cat "$scratch/collision-once-ports")"
+if [[ $(printf '%s\n' "$mapfile_ports" | wc -l) -ne 2 || $(printf '%s\n' "$mapfile_ports" | sort -u | wc -l) -ne 2 ]]; then
+  fail "bind collision recovery must start exactly twice on different ports"
+fi
+echo "an automatic startup bind collision retries once on a different port"
+
+# Slow HTTP probes after a collision must share the original startup deadline.
+curl_fixture_dir="$scratch/slow-probe-bin"
+mkdir "$curl_fixture_dir"
+ln -s "$(command -v curl)" "$curl_fixture_dir/real-curl"
+cat >"$curl_fixture_dir/curl" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -e $script_dir/../collision-once-ports ]]; then
+  previous="" budget=""
+  for argument in "$@"; do
+    if [[ $previous == --max-time ]]; then budget="$argument"; fi
+    previous="$argument"
+  done
+  # Imitate occupied HTTP listeners answering only at the per-probe limit.
+  sleep "${budget:?}"
+  exit 0
+fi
+exec "$script_dir/real-curl" "$@"
+SH
+chmod +x "$curl_fixture_dir/curl"
+rm "$scratch/collision-once-ports"
+probe_started=$SECONDS
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=collision-once \
+  PATH="$curl_fixture_dir:$PATH" LIFIC_VERIFY_STARTUP_TIMEOUT=4)"
+probe_elapsed=$((SECONDS - probe_started))
+if [[ $status -eq 0 || $status -eq 124 || $probe_elapsed -gt 6 ]] ||
+  ! grep -Fq "within 4s" "$scratch/run.log"; then
+  fail "slow port probes after a bind collision exceeded the shared startup budget"
+fi
+echo "slow port probes after a bind collision remain within the startup budget"
+
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=invalid-startup)"
+if [[ $status -eq 0 || $status -eq 124 || $(wc -l <"$scratch/invalid-startup-ports") -ne 1 ]]; then
+  fail "verifier retried or accepted an invalid binary startup"
+fi
+echo "an invalid binary startup fails without retry"
+
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=collision-always LIFIC_VERIFY_STARTUP_TIMEOUT=4)"
+if [[ $status -eq 0 || $status -eq 124 || $(wc -l <"$scratch/collision-always-ports") -lt 2 ]] ||
+  ! grep -Fq "within 4s" "$scratch/run.log"; then
+  fail "repeated automatic bind collisions did not fail within the shared startup budget"
+fi
+if [[ $(sort -u "$scratch/collision-always-ports" | wc -l) -ne $(wc -l <"$scratch/collision-always-ports") ]]; then
+  fail "automatic bind collisions retried a previously failed port"
+fi
+echo "repeated automatic bind collisions use fresh ports within one startup budget"
+rm "$scratch/collision-always-ports"
+
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=collision-always LIFIC_VERIFY_PORT="$(free_port)")"
+if [[ $status -eq 0 || $status -eq 124 || $(wc -l <"$scratch/collision-always-ports") -ne 1 ]]; then
+  fail "verifier retried or accepted a bind collision on an explicit port"
+fi
+echo "an explicit-port bind collision fails without retry"
+
+# Install metadata and icons must ship alongside the JavaScript and CSS.
+for mode in manifest-html manifest-mime manifest-empty manifest-root-url manifest-root-icon \
+  missing-favicon.png missing-apple-touch-icon.png missing-icon-192.png \
+  missing-icon-512.png missing-icon-maskable-512.png png-mime png-empty png-html; do
+  status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE="$mode")"
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    fail "verifier accepted broken install assets ($mode) or hung while rejecting them"
+  fi
+  echo "broken install assets ($mode) are rejected"
+done
+
+# 2. A shell with no bundle references is a binary built without Topcoat assets.
 status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=no-assets)"
 if [[ $status -eq 0 ]]; then
   fail "verifier accepted a web root that names no JS or CSS bundle"
@@ -190,6 +325,18 @@ if [[ $status -eq 124 ]]; then
   fail "verifier hung on a missing bundle"
 fi
 echo "a missing bundle served as SPA HTML is rejected"
+
+# A partially cut over binary that still serves the retired bundle must fail.
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=legacy)"
+if [[ $status -eq 0 || $status -eq 124 ]]; then
+  fail "verifier accepted a legacy frontend bundle or hung while rejecting it"
+fi
+echo "a release retaining the legacy frontend is rejected"
+status="$(run_verifier "$scratch" "$fixture_binary" FIXTURE_MODE=legacy-asset)"
+if [[ $status -eq 0 || $status -eq 124 ]]; then
+  fail "verifier accepted retired assets that are no longer referenced"
+fi
+echo "retired frontend assets must return 404 even when not referenced"
 
 # 4. A hostile working directory (its own lific.toml, its own files) must not
 #    reach the run: the verifier resolves the binary, moves to a scratch
@@ -213,7 +360,7 @@ printf '%s\n' \
   >"$no_response_server"
 
 status="$(run_verifier "$scratch" "$fixture_binary" \
-  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_STARTUP_TIMEOUT=3)"
+  FIXTURE_SERVER="$no_response_server" LIFIC_VERIFY_STARTUP_TIMEOUT=3 LIFIC_VERIFY_PORT="$(free_port)")"
 if [[ $status -eq 124 ]]; then
   fail "verifier hung on a non-responding server"
 fi

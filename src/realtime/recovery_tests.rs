@@ -41,6 +41,10 @@ const REPLAY_FRAME_BYTES: usize = 128 * 1024;
 /// 32 x 128 KiB = 4 MiB of replay against a quarter megabyte of buffer, so the
 /// server is guaranteed to park inside a `send` long before the last frame.
 const REPLAY_FRAMES: i64 = 32;
+/// A reader's table lock lasts one short statement, so a locked lock-down
+/// clears within a retry or two; this bound only turns a real deadlock into a
+/// failure instead of a hang.
+const LOCK_DOWN_DEADLINE: Duration = Duration::from_secs(5);
 
 // ── harness ──────────────────────────────────────────────────
 
@@ -231,9 +235,41 @@ impl Recovery {
     /// credential of the human and of the bots they own, and tell the hub
     /// nothing. `revoke_user` is deliberately never called, so the only thing
     /// that can close these sockets is the delivery path revalidating.
+    ///
+    /// LIF-496: the test database is shared-cache, where a reader holds a
+    /// table lock for the length of its statement and a writer that meets one
+    /// fails at once with `SQLITE_LOCKED` instead of waiting (`busy_timeout`
+    /// only covers `SQLITE_BUSY`). A socket that is mid-replay revalidates its
+    /// session on every frame, so the server can be reading `sessions` at the
+    /// very moment this deletes from it. `lock_down_account` runs inside a
+    /// savepoint that rolls back on error, so a locked attempt leaves nothing
+    /// behind and is simply retried until the reader lets go. File-backed
+    /// databases use WAL without shared cache and have no such table locks.
     fn lock_down(&self) {
-        let conn = self.db.write().expect("write connection");
-        crate::db::queries::users::lock_down_account(&conn, self.human_id).expect("lock down");
+        let deadline = Instant::now() + LOCK_DOWN_DEADLINE;
+        loop {
+            let conn = self.db.write().expect("write connection");
+            match crate::db::queries::users::lock_down_account(&conn, self.human_id) {
+                Ok(()) => return,
+                Err(crate::error::LificError::Database(rusqlite::Error::SqliteFailure(
+                    error,
+                    _,
+                ))) if error.code == rusqlite::ErrorCode::DatabaseLocked
+                    && Instant::now() < deadline =>
+                {
+                    // The savepoint opened the transaction, so a failure in
+                    // its own release could leave one behind for the retry
+                    // to nest inside.
+                    if !conn.is_autocommit() {
+                        conn.execute_batch("ROLLBACK")
+                            .expect("roll back the locked attempt");
+                    }
+                }
+                Err(error) => panic!("lock down: {error:?}"),
+            }
+            drop(conn);
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Fill one project's ring with frames too large for the pinned socket

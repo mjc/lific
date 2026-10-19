@@ -1,0 +1,308 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "status": "ported_assertions_active; independent_reviews_complete",
+  "originalSources": 19,
+  "ownedCounts": {
+    "tests": 204,
+    "passed": 159,
+    "failed": 45,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0,
+    "leafCases": 197,
+    "failedLeafCases": 41,
+    "aggregateTests": 7,
+    "failedAggregateTests": 4
+  },
+  "commands": [
+    {
+      "command": "node --test --test-concurrency=1 src/topcoat/tests/main/shell/*.test.js src/topcoat/tests/main/shell/*.test.mjs",
+      "environment": "Repository devenv e2e Playwright runtime; LIFIC_BIN defaults to target/debug/lific",
+      "tests": 204,
+      "passed": 159,
+      "failed": 45
+    },
+    {
+      "command": "node --test src/topcoat/tests/main/shell/mermaid.browser.test.js",
+      "environment": "Repository devenv e2e Playwright runtime",
+      "tests": 20,
+      "passed": 14,
+      "failed": 6,
+      "notes": "Recheck after attaching thread fixtures before rendering and awaiting render settlement; same five leaf failures."
+    },
+    {
+      "command": "node --test src/topcoat/tests/main/inventory.test.js",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0
+    }
+  ],
+  "checkpoint": "Current executable fixture plus live production JS/CSS. Subsequent production visual changes require a fresh browser checkpoint.",
+  "unresolvedAdapters": [],
+  "reviewCorrections": [
+    "Generation staleness observes actual palette mount/popstate and searchCurrent, rather than a synthesized route increment.",
+    "Installed project icons require a rendered SVG/img child and reject serialized icon tokens.",
+    "Reference-number adapter extracts the current production match expression.",
+    "Original mobile Shift+Tab, rename keyboard, group movement, and native popup assertions remain active.",
+    "Mermaid thread fixtures attach to the document before invoking actual rendering and wait for asynchronous settlement."
+  ],
+  "failures": [
+    {
+      "case": "project icons / accepts installed icons, emoji sequences, and the logo",
+      "location": "src/topcoat/tests/main/shell/colors-icons.test.js:8:1",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'Installed icon must render its icon, not the serialized token'"
+    },
+    {
+      "case": "project icons / rejects arbitrary text and inherited properties instead of rendering them",
+      "location": "src/topcoat/tests/main/shell/colors-icons.test.js:13:1",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n    Lucide:Terminal must fall back to the project name\n    + actual - expected\n    \n    + 'Lucide:Terminal One'\n    - 'One'"
+    },
+    {
+      "case": "rejects a forged complex placeholder before rendering",
+      "location": "src/topcoat/tests/main/shell/mermaid.browser.test.js:31:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        + actual - expected\n        \n        + undefined\n        - 'error'"
+    },
+    {
+      "case": "a pass cancelled before it starts charges nothing and leaves the node alone",
+      "location": "src/topcoat/tests/main/shell/mermaid.browser.test.js:43:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        + actual - expected\n        \n        + 'Mermaid diagram skipped: source is too complex or contains unsupported media.'\n        - ''"
+    },
+    {
+      "case": "a refreshed thread budget still counts the bodies already on screen",
+      "location": "src/topcoat/tests/main/shell/mermaid.browser.test.js:51:11",
+      "classification": "cross-container renderer contract; separate public render calls do not independently establish private CommentsView thread-budget behavior",
+      "observedAssertion": "|-\n        All comment bodies must share the thread budget\n        \n        3 !== 2"
+    },
+    {
+      "case": "a mention-roster rerender charges one shared budget, not one per body",
+      "location": "src/topcoat/tests/main/shell/mermaid.browser.test.js:57:11",
+      "classification": "cross-container renderer contract; separate public render calls do not independently establish private CommentsView thread-budget behavior",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        3 !== 2"
+    },
+    {
+      "case": "reports success and failure while active",
+      "location": "src/topcoat/tests/main/shell/mermaid.browser.test.js:60:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        The input did not match the regular expression /invalid diagram/. Input:\n        \n        'Diagram could not be rendered.'"
+    },
+    {
+      "case": "root/project focus trap, inert background, and trigger focus restoration",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:14:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        The input did not match the regular expression /Choose theme/. Input:\n        \n        'Settings'"
+    },
+    {
+      "case": "project context menu supports Inspect, disabled first Move up and Move down",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:25:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 3000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for getByRole('button', { name: 'Actions for One', exact: true })\u001b[22m"
+    },
+    {
+      "case": "group rename preserves failed draft, Cancel/Escape focus, retries and Move down",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:29:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 3000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for getByRole('button', { name: 'Actions for Work', exact: true })\u001b[22m"
+    },
+    {
+      "case": "mobile theme chooser exposes current theme and menu semantics",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:34:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.getAttribute: Timeout 3000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for getByRole('button', { name: 'Choose theme, current: system', exact: true })\u001b[22m"
+    },
+    {
+      "case": "project order failure is announced in the open root pane",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:35:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 3000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for getByRole('button', { name: 'Actions for One', exact: true })\u001b[22m"
+    },
+    {
+      "case": "new project command unwinds drawer history without stale Forward reopen",
+      "location": "src/topcoat/tests/main/shell/mobile-nav.browser.test.js:36:11",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 3000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('[data-mobile-root]').getByRole('button', { name: 'New project or group', exact: true })\u001b[22m"
+    },
+    {
+      "case": "no match is zero, and empty inputs are zero",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        0.6 !== 0"
+    },
+    {
+      "case": "honours the limit and returns nothing for an empty query",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        8 !== 30"
+    },
+    {
+      "case": "the mapping is monotonic and clamped",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        + actual - expected\n        \n        + -0.10000000000000009\n        - 1.2"
+    },
+    {
+      "case": "public list (desktop)",
+      "location": "src/topcoat/tests/main/shell/public-projects.browser.test.js:131:13",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly deep-equal:\n        + actual - expected\n        \n        + [\n        +   'public list (desktop): expected visible text \"Sign in\" not found'\n        + ]\n        - []"
+    },
+    {
+      "case": "private project stays private",
+      "location": "src/topcoat/tests/main/shell/public-projects.browser.test.js:533:13",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly deep-equal:\n        + actual - expected\n        \n        + [\n        +   `private project stays private: expected the \"isn't public\" message, got: Skip to content\\n` +\n        +     'Lific\\n' +\n        +     'Public project \u00b7 Read only\\n' +\n        +     'Collapse sidebar\\n' +\n        +     'PRIV\\n' +\n        +     'Issues\\n' +\n        +     'Pages\\n' +\n        +     'PRIV\\n' +\n        +     'Copy\\n' +\n        +     'PRIV\\n' +\n        +     'Issues\\n' +\n        +     'Public \u00b7 read only\\n' +\n        +     '\\n' +\n        +     'not found\\n' +\n        +     '\\n' +\n        +     'Try again'\n        + ]\n        - []"
+    },
+    {
+      "case": "unpublish closes the view",
+      "location": "src/topcoat/tests/main/shell/public-projects.browser.test.js:569:13",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly deep-equal:\n        + actual - expected\n        \n        + [\n        +   `unpublish closes the view: expected the \"isn't public\" message, got: Skip to content\\n` +\n        +     'Lific\\n' +\n        +     'Public project \u00b7 Read only\\n' +\n        +     'Collapse sidebar\\n' +\n        +     'DEMO\\n' +\n        +     'Issues\\n' +\n        +     'Pages\\n' +\n        +     'DEMO\\n' +\n        +     'Copy\\n' +\n        +     'DEMO\\n' +\n        +     'Issues\\n' +\n        +     'Public \u00b7 read only\\n' +\n        +     '\\n' +\n        +     'not found\\n' +\n        +     '\\n' +\n        +     'Try again'\n        + ]\n        - []"
+    },
+    {
+      "case": "a wrong password leaves the existing session in place",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        + actual - expected\n        \n        + null\n        - 'lific_sess_stale'"
+    },
+    {
+      "case": "refuses a session belonging to a different admin",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "defensive frontend contract; backend same-user refresh guard prevents fixture account substitution",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        true !== false"
+    },
+    {
+      "case": "the same identity check applies to the password path",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "defensive frontend contract; backend same-user refresh guard prevents fixture account substitution",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        true !== false"
+    },
+    {
+      "case": "a refresh naming another account is recoverable, and the token is untouched",
+      "location": "src/topcoat/tests/main/shell/assertions.js:18:28",
+      "classification": "defensive frontend contract; backend same-user refresh guard prevents fixture account substitution",
+      "observedAssertion": "|-\n        Expected values to be strictly equal:\n        \n        true !== false"
+    },
+    {
+      "case": "separate disclosure and Overview links",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 5000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('aside.tc-shell__desktop').getByRole('button', { name: 'Expand One', exact: true })\u001b[22m"
+    },
+    {
+      "case": "sidebar selection and readable accents in both themes",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.evaluate: Error: strict mode violation: locator('aside [data-project-id=\"1\"]') resolved to 2 elements:\n            1) <a draggable=\"true\" data-project-id=\"1\" aria-current=\"page\" aria-label=\"Open One\" href=\"/app/ONE/overview\" class=\"tc-projects__project\">One</a> aka getByRole('link', { name: 'Open One' })\n            2) <section data-blocks=\"\" data-waits=\"[]\" class=\"tc-collab\" data-issue-id=\"10\" data-blocked-by=\"\" data-relates-to=\"\" data-duplicates=\"\" data-project-id=\"1\" data-duplicated-by=\"\" data-identifier=\"ONE-1\" data-edit-enabled=\"true\" data-public-scope=\"false\" data-comment-enabled=\"true\" data-topcoat-collaboration=\"\" data-project-identifier=\"ONE\" data-route=\"{\"issue_id\":10,\"generation\":1}\">\u2026</section> aka locator('section').filter({ hasText: 'Comments0No comments yetLoad' }).nth(1)\n        \n        Call log:\n        \u001b[2m  - waiting for locator('aside [data-project-id=\"1\"]')\u001b[22m"
+    },
+    {
+      "case": "desktop visual matrix",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'Sidebar must not scroll horizontally'"
+    },
+    {
+      "case": "mobile visual grammar contrast and touch targets",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        Every mobile control retains a non-overlapping, in-bounds 44px touch target\n        + actual - expected\n        \n        + [\n        +   {\n        +     height: 41.25,\n        +     label: 'Close navigation',\n        +     width: 54.21875,\n        +     x: 320.78125\n        +   },\n        +   {\n        +     height: 41.25,\n        +     label: 'Settings',\n        +     width: 360,\n        +     x: 15\n        +   }\n        + ]\n        - []"
+    },
+    {
+      "case": "direct link reveal and deliberate collapse survives revalidation",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.evaluate: Error: hidden: expected , got null\n            at check (eval at evaluate (:303:30), <anonymous>:7:20)"
+    },
+    {
+      "case": "failed initial groups recover and reveal the active project exactly once",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'Projects loaded despite failed groups'"
+    },
+    {
+      "case": "later failed group snapshot defers newly visible project reveal until recovery",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'New project arrived in the successful project response'"
+    },
+    {
+      "case": "long sidebar reveals nearest once and respects subsequent user scrolling",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'Route entry scrolls target into view'"
+    },
+    {
+      "case": "stable destinations and cached recents across slow failed refreshes",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        The expression evaluated to a falsy value:\n        \n          assert.ok((await toggle.boundingBox()).y > (await nav.getByRole(\"link\", { name: \"Insights\", exact: true }).boundingBox()).y)"
+    },
+    {
+      "case": "long titles focus hover and 230 190 pixel widths",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "'Focus title wraps without clipping'"
+    },
+    {
+      "case": "text-scaled default preserves pixel preference and resize semantics",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.evaluate: Error: aria-valuenow: expected 249.5, got 212.5\n            at check (eval at evaluate (:303:30), <anonymous>:7:20)"
+    },
+    {
+      "case": "group create rename failure retry Cancel Escape",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.focus: Timeout 5000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('aside.tc-shell__desktop').getByRole('button', { name: 'New project or group', exact: true })\u001b[22m"
+    },
+    {
+      "case": "personal group and grouped project order payloads rollback",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 5000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('aside.tc-shell__desktop').getByRole('button', { name: 'Actions for group Work', exact: true })\u001b[22m"
+    },
+    {
+      "case": "Settings identity and theme share live shell state",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.waitFor: Timeout 5000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('aside.tc-shell__desktop').locator('a[href$=\"/settings\"]').filter({ hasText: 'Updated Operator' }) to be visible\u001b[22m"
+    },
+    {
+      "case": "real Layout mobile menus history and palette suppression",
+      "location": "src/topcoat/tests/main/shell/sidebar.browser.test.js:169:15",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n        locator.click: Timeout 5000ms exceeded.\n        Call log:\n        \u001b[2m  - waiting for locator('[data-mobile-project]').getByRole('link', { name: 'Board', exact: true })\u001b[22m"
+    },
+    {
+      "case": "successful profile publication reaches all subscribers immediately",
+      "location": "src/topcoat/tests/main/shell/userState.test.js:6:1",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n    Expected values to be strictly deep-equal:\n    + actual - expected\n    \n      [\n        '',\n        'Before',\n    -   'After'\n      ]"
+    },
+    {
+      "case": "late me response cannot replace a newer profile",
+      "location": "src/topcoat/tests/main/shell/userState.test.js:11:1",
+      "classification": "behavioral difference requiring review",
+      "observedAssertion": "|-\n    Expected values to be strictly equal:\n    \n    'Before' !== 'Saved'"
+    },
+    {
+      "case": "direct store updates also invalidate stale loads",
+      "location": "src/topcoat/tests/main/shell/userState.test.js:20:1",
+      "classification": "internal mutable-store contract; no public producer established",
+      "observedAssertion": "|-\n    Expected values to be strictly equal:\n    + actual - expected\n    \n    + 'Before'\n    - 'Updated'"
+    }
+  ],
+  "independentReview": {
+    "reviewers": [
+      "gpt-6.1-sol shell review",
+      "cutover cross-review"
+    ],
+    "remainingFindings": [],
+    "coverageCaveats": [
+      "Two cross-container public Mermaid renderer contracts do not independently prove private CommentsView thread-budget behavior."
+    ],
+    "correctionsVerified": true
+  }
+}

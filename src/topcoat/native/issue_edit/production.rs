@@ -1,0 +1,2516 @@
+//! Integrate as native/issue_edit/production.rs with #[cfg(test)] mod production.
+//! No test-only route: all requests reach the real build_app_with_store factory.
+//!
+//! Existing references:
+//! - native/home_fixture.rs::fixture: real DB, cookie, shared hub and production app.
+//! - native/home_production.rs::get: verified peer and trusted mount request setup.
+//! - services/issues.rs::resolve_issue: Viewer authorization and relation filtering.
+//! - native/issue_edit/view.rs: existing native control and mount assertions.
+//! - pinned master 9683 IssueDetail.svelte: Viewer read-only, Maintainer editing.
+//!
+//! This module adds production-boundary coverage; existing field action/browser
+//! assertions remain in place.
+
+use std::net::SocketAddr;
+
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
+use scraper::{Html, Selector};
+use tower::ServiceExt;
+
+use super::super::home_fixture::{self, Fixture};
+use crate::db::{
+    models::{CreateLabel, CreateModule, Issue, Priority, Role, UpdateIssue},
+    queries,
+};
+use topcoat::runtime::{Surrogate, Surrogated};
+
+const TITLE: &str = "Production issue initial title";
+const DESCRIPTION: &str = "# Production markdown\n\nExact initial description.";
+const MOUNTS: [&str; 3] = ["", "/app", "/ACC"];
+
+fn named_section<'a>(document: &'a Html, title: &str) -> scraper::ElementRef<'a> {
+    document
+        .select(&Selector::parse("section").unwrap())
+        .find(|section| {
+            section.children().any(|child| {
+                scraper::ElementRef::wrap(child).is_some_and(|heading| {
+                    heading.value().name() == "h2" && heading.text().collect::<String>() == title
+                })
+            })
+        })
+        .unwrap_or_else(|| panic!("IssueDetail renders the {title} metadata section"))
+}
+
+fn chip_label_text(chip: scraper::ElementRef<'_>) -> String {
+    chip.children()
+        .filter_map(|child| match child.value() {
+            scraper::Node::Text(text) => Some(text.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn fixture() -> Fixture {
+    let fixture = home_fixture::fixture();
+    {
+        let conn = fixture.db.write().unwrap();
+        let issue = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        queries::update_issue(
+            &conn,
+            issue,
+            &UpdateIssue {
+                title: Some(TITLE.into()),
+                description: Some(DESCRIPTION.into()),
+                priority: Some(Priority::Medium),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for related in ["ACC-2", "HIDE-1"] {
+            let related = queries::resolve_identifier(&conn, related).unwrap();
+            queries::link_issues(&conn, issue, related, "relates_to").unwrap();
+        }
+        assert_eq!(
+            queries::get_issue(&conn, issue).unwrap().relates_to.len(),
+            2
+        );
+    }
+    fixture
+}
+
+async fn get(
+    fixture: &Fixture,
+    logical_path: &str,
+    cookie: Option<&str>,
+    prefix: &str,
+) -> axum::response::Response {
+    // The explicit mount is chosen per request, avoiding inference from the
+    // project identifier: /ACC/ACC/issues/ACC-1 strips exactly one /ACC mount.
+    let app = if prefix.is_empty() {
+        fixture.app.clone()
+    } else {
+        Router::new().nest(prefix, fixture.app.clone())
+    };
+    let mut request = Request::builder().uri(format!("{prefix}{logical_path}"));
+    if let Some(cookie) = cookie {
+        request = request.header("cookie", cookie);
+    }
+    if !prefix.is_empty() {
+        request = request.header("x-forwarded-prefix", prefix);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+    ));
+    app.oneshot(request).await.unwrap()
+}
+
+async fn html(response: axum::response::Response) -> String {
+    String::from_utf8(
+        to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap()
+}
+
+fn assert_native_initial_html(html: &str, prefix: &str, issue: &Issue) -> Html {
+    let document = Html::parse_document(html);
+    assert!(
+        document
+            .select(&Selector::parse("[data-native-issue-editor='ACC-1']").unwrap())
+            .next()
+            .is_some(),
+        "{html}"
+    );
+    assert!(
+        document
+            .select(&Selector::parse("button, h1").unwrap())
+            .any(|element| element.text().collect::<String>() == TITLE),
+        "the authorized title must be actual rendered content"
+    );
+    // Master EditableMarkdown's read surface composes Markdown, including for
+    // Viewers. A plain <pre>, a signal declaration or textarea value cannot pass.
+    assert!(
+        document
+            .select(&Selector::parse("h1").unwrap())
+            .any(|element| element.text().collect::<String>() == "Production markdown"),
+        "missing rendered Markdown heading"
+    );
+    assert!(
+        document
+            .select(&Selector::parse("p").unwrap())
+            .any(|element| element.text().collect::<String>() == "Exact initial description."),
+        "missing rendered Markdown paragraph"
+    );
+    let text = |selector: &str| {
+        document
+            .select(&Selector::parse(selector).unwrap())
+            .next()
+            .unwrap_or_else(|| panic!("missing {selector}"))
+            .text()
+            .collect::<String>()
+    };
+    assert_eq!(
+        text("output[data-native-issue-seq='']")
+            .trim()
+            .parse::<i64>()
+            .unwrap(),
+        issue.seq
+    );
+    assert_eq!(
+        text("span[data-native-issue-status='']").trim(),
+        issue.status.as_str()
+    );
+    assert_eq!(
+        text("span[data-native-issue-priority='']").trim(),
+        match issue.priority {
+            Priority::Urgent => "Urgent",
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+            Priority::None => "No priority",
+        }
+    );
+    let relation_href = format!("{prefix}/ACC/issues/ACC-2");
+    assert!(
+        document
+            .select(&Selector::parse("a[href]").unwrap())
+            .any(|element| element.attr("href") == Some(relation_href.as_str()))
+    );
+    let runtime_src = format!("{prefix}{}", super::super::super::assets::runtime_url());
+    assert!(
+        document
+            .select(&Selector::parse("script[src]").unwrap())
+            .any(|element| element.attr("src") == Some(runtime_src.as_str()))
+    );
+    assert!(
+        !html.contains("HIDE-1"),
+        "a hidden relation must not enter HTML or signals"
+    );
+    assert!(!html.contains("Private hidden"));
+    for legacy in [
+        "Loading issue…",
+        "data-topcoat-issue-detail=",
+        "data-topcoat-issue-editor=",
+        "data-lific-session-state=\"loading\"",
+        "type=\"application/json\"",
+    ] {
+        assert!(!html.contains(legacy), "legacy issue hydration: {legacy}");
+    }
+    for script in document.select(&Selector::parse("script[src]").unwrap()) {
+        let source = script.attr("src").unwrap();
+        assert!(
+            source.contains("/__topcoat-runtime.js"),
+            "production issue loaded a legacy controller: {source}"
+        );
+    }
+    document
+}
+
+#[tokio::test]
+async fn native_issue_breadcrumbs_preserve_scope_navigation_and_identifier_copy() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = html(response).await;
+        let document = Html::parse_document(&html);
+        let breadcrumb = document
+            .select(&Selector::parse("nav[aria-label='Breadcrumb']").unwrap())
+            .next()
+            .expect("IssueDetail renders its existing breadcrumb trail");
+        let labels = breadcrumb
+            .select(&Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
+            .map(|item| item.text().collect::<String>().trim().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["ACC", "Issues", "ACC-1"]);
+        let items = breadcrumb
+            .select(&Selector::parse("ol > li:not([aria-hidden='true'])").unwrap())
+            .collect::<Vec<_>>();
+        for item in &items[..2] {
+            let classes = item.attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:flex"));
+        }
+        let separators = breadcrumb
+            .select(&Selector::parse("ol > li[aria-hidden='true']").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(separators.len(), 2);
+        for separator in separators {
+            let classes = separator.attr("class").unwrap_or_default();
+            assert!(classes.split_whitespace().any(|class| class == "hidden"));
+            assert!(classes.split_whitespace().any(|class| class == "sm:flex"));
+        }
+        let project = breadcrumb
+            .select(&Selector::parse("a[title='ACC']").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(
+            project.attr("href"),
+            Some(format!("{mount}/ACC/overview").as_str())
+        );
+        let list = breadcrumb
+            .select(&Selector::parse("#native-issue-list-return-ACC-1").unwrap())
+            .next()
+            .expect("Escape retains the real list-return anchor");
+        assert!(list.attr("data-topcoat-link").is_some());
+        assert_eq!(
+            list.attr("href"),
+            Some(format!("{mount}/ACC/issues").as_str())
+        );
+        let current = breadcrumb
+            .select(&Selector::parse("[aria-current='page']").unwrap())
+            .next()
+            .unwrap();
+        assert_eq!(current.text().collect::<String>().trim(), "ACC-1");
+        assert!(
+            !current
+                .ancestors()
+                .filter_map(scraper::ElementRef::wrap)
+                .any(|ancestor| ancestor.value().name() == "a"),
+            "the current identifier is never linked"
+        );
+        let copy = breadcrumb_copy_input(&html, &document, "baseline");
+        let copied = home_fixture::evaluate_handler(
+            "src/topcoat/native/breadcrumbs_handler.test.cjs",
+            &copy,
+        );
+        assert_eq!(copied["copied"], serde_json::json!(["ACC", "ACC-1"]));
+        let destination = home_fixture::evaluate_handler(
+            "src/topcoat/native/breadcrumbs_handler.test.cjs",
+            &serde_json::json!({
+                "phase":"issue_list_return",
+                "signals":home_fixture::page_signals(&html),
+                "return_mount":list.attr("data-topcoat-on:mount").unwrap(),
+                "return_href_binding":list.attr("data-topcoat-bind:href").unwrap(),
+                "return_title_binding":list.attr("data-topcoat-bind:title").unwrap(),
+                "list_href":format!("{mount}/ACC/issues"),
+                "board_href":format!("{mount}/ACC/board"),
+            }),
+        );
+        assert_eq!(destination["passed"], true);
+    }
+}
+
+fn breadcrumb_copy_input(html: &str, document: &Html, phase: &str) -> serde_json::Value {
+    let button = |label: &str| {
+        document
+            .select(&Selector::parse(&format!("button[aria-label='Copy {label}']")).unwrap())
+            .next()
+            .expect("the breadcrumb exposes its emitted identifier copy handler")
+    };
+    let project = button("ACC");
+    let identifier = button("ACC-1");
+    let bindings = |button: scraper::ElementRef<'_>| {
+        button
+            .children()
+            .filter_map(scraper::ElementRef::wrap)
+            .filter(|child| child.value().name() == "span")
+            .map(|child| child.attr("data-topcoat-bind:hidden").map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let icon_bindings = bindings(identifier);
+    let project_bindings = bindings(project);
+    serde_json::json!({
+        "phase":phase,
+        "signals":home_fixture::page_signals(html),
+        "project_handler":project.attr("data-topcoat-on:click").unwrap(),
+        "identifier_handler":identifier.attr("data-topcoat-on:click").unwrap(),
+        "project_id":"ACC",
+        "identifier":"ACC-1",
+        "copy_hidden_binding":icon_bindings.first().cloned().flatten(),
+        "check_hidden_binding":icon_bindings.get(1).cloned().flatten(),
+        "project_copy_hidden_binding":project_bindings.first().cloned().flatten(),
+        "project_check_hidden_binding":project_bindings.get(1).cloned().flatten(),
+    })
+}
+
+#[tokio::test]
+async fn native_issue_breadcrumb_copy_matches_main_feedback_and_lifecycle() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "/app").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = html(response).await;
+    let document = Html::parse_document(&html);
+    let mut input = breadcrumb_copy_input(&html, &document, "main_parity");
+    input["account_id"] = serde_json::json!(
+        queries::users::validate_session(&fixture.db.read().unwrap(), &fixture.token)
+            .unwrap()
+            .id
+    );
+    let output =
+        home_fixture::evaluate_handler("src/topcoat/native/breadcrumbs_handler.test.cjs", &input);
+    assert_eq!(output["passed"], true);
+}
+
+#[tokio::test]
+async fn native_issue_production_maintainer_get_renders_initial_controls_at_every_mount() {
+    // Missing boundary: the normal issue route must resolve data and role in
+    // Rust, then compose the native editor and Markdown document on initial GET.
+    let fixture = fixture();
+    let issue = {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Maintainer)
+            .unwrap();
+        issue
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    for prefix in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), prefix).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = html(response).await;
+        let document = assert_native_initial_html(&html, prefix, &issue);
+        assert!(html.contains("id=\"native-issue-title-ACC-1\""));
+        assert!(html.contains("aria-label=\"Issue title\""));
+        assert!(html.contains("aria-label=\"Issue description\""));
+        let textarea = document
+            .select(&Selector::parse("textarea[aria-label='Issue description']").unwrap())
+            .next()
+            .expect("actual description textarea in the initial document");
+        let source: String = textarea.text().collect();
+        assert_eq!(
+            source, DESCRIPTION,
+            "the Maintainer's initial textarea must retain the exact decoded Markdown source"
+        );
+        assert!(html.contains("Add a description... (markdown supported)"));
+        assert!(html.contains("/__native_issue_edit/save/title"));
+        assert!(html.contains("/__native_issue_edit/save/description"));
+        for choice in ["backlog", "todo", "active", "done", "cancelled"] {
+            assert!(html.contains(&format!("data-native-issue-status-option=\"{choice}\"")));
+        }
+        for choice in ["urgent", "high", "medium", "low", "none"] {
+            assert!(html.contains(&format!("data-native-issue-priority-option=\"{choice}\"")));
+        }
+    }
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        issue.seq
+    );
+}
+
+#[tokio::test]
+async fn native_issue_production_viewer_get_renders_scoped_content_without_edit_controls() {
+    // Missing boundary: the production read document must use the caller's
+    // current Viewer role and scoped relations while still rendering Markdown.
+    let fixture = fixture();
+    let issue = {
+        let conn = fixture.db.read().unwrap();
+        queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap()).unwrap()
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    for prefix in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), prefix).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = html(response).await;
+        assert_native_initial_html(&html, prefix, &issue);
+        let document = Html::parse_document(&html);
+        let priority = document
+            .select(&Selector::parse("span[data-native-issue-priority='']").unwrap())
+            .next()
+            .unwrap()
+            .text()
+            .collect::<String>();
+        assert_eq!(priority, "Medium", "Viewer priority uses display text");
+        for editable in [
+            "id=\"native-issue-title-ACC-1\"",
+            "aria-label=\"Issue title\"",
+            "aria-label=\"Issue description\"",
+            "data-native-issue-body-save=",
+            "data-native-issue-status-option=",
+            "data-native-issue-priority-option=",
+            "/__native_issue_edit/save/",
+        ] {
+            assert!(
+                !html.contains(editable),
+                "Viewer received edit control: {editable}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_detail_module_assignment_picker_matches_main_for_both_roles() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    let (issue, assigned, inactive) = {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Maintainer)
+            .unwrap();
+        let assigned = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Assigned module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let inactive = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Inactive module".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                module_id: Some(Some(assigned.id)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (
+            queries::get_issue(&conn, issue.id).unwrap(),
+            assigned,
+            inactive,
+        )
+    };
+
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let maintainer = Html::parse_document(&html(response).await);
+        let module_section = named_section(&maintainer, "Module");
+        assert!(
+            module_section
+                .select(&Selector::parse("button").unwrap())
+                .any(|button| button
+                    .text()
+                    .collect::<String>()
+                    .contains("Assigned module")),
+            "Maintainers get an assignment control showing the current module"
+        );
+        let expected_href = format!("{mount}/ACC/modules/{}", assigned.id);
+        assert!(
+            maintainer
+                .select(&Selector::parse("a[title='Open module'][data-topcoat-link]").unwrap())
+                .any(|link| link.attr("href") == Some(expected_href.as_str())),
+            "the separate Open module link is a native route at mount {mount}"
+        );
+        assert!(
+            module_section
+                .select(&Selector::parse("[data-native-issue-module-option='none']").unwrap())
+                .next()
+                .is_some(),
+            "Maintainers can clear the current module"
+        );
+        assert!(
+            module_section
+                .select(
+                    &Selector::parse(&format!(
+                        "[data-native-issue-module-option='{}']",
+                        inactive.id
+                    ))
+                    .unwrap()
+                )
+                .next()
+                .is_some(),
+            "inactive modules remain assignable"
+        );
+    }
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        issue.seq,
+        "rendering the assignment picker does not mutate the issue"
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Viewer).unwrap();
+    }
+    for mount in MOUNTS {
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), mount).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let viewer = Html::parse_document(&html(response).await);
+        let module_section = named_section(&viewer, "Module");
+        assert_eq!(
+            module_section
+                .select(&Selector::parse("button").unwrap())
+                .count(),
+            0,
+            "Viewers see the assigned module without an assignment control"
+        );
+        let expected_href = format!("{mount}/ACC/modules/{}", assigned.id);
+        assert!(
+            viewer
+                .select(&Selector::parse("a[title='Open module'][data-topcoat-link]").unwrap())
+                .any(|link| link.attr("href") == Some(expected_href.as_str())),
+            "Viewers retain the native Open module link at mount {mount}"
+        );
+    }
+    assert_eq!(inactive.project_id, issue.project_id);
+}
+
+#[tokio::test]
+async fn native_issue_assignees_render_project_scoped_human_choices_and_viewer_readonly_value() {
+    let fixture = fixture();
+    let (issue_id, peer, outsider, inactive, bot, global_admin, member_admin) = {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Maintainer)
+            .unwrap();
+        let create = |username: &str, is_bot: bool| {
+            queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: username.into(),
+                    email: format!("{username}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(username.into()),
+                    is_admin: false,
+                    is_bot,
+                },
+            )
+            .unwrap()
+        };
+        let peer = create("assignee-peer", false);
+        queries::members::upsert_member(&conn, issue.project_id, peer.id, Role::Viewer).unwrap();
+        let outsider = create("assignee-outsider", false);
+        let inactive = create("assignee-inactive", false);
+        conn.execute(
+            "UPDATE users SET is_active = 0 WHERE id = ?1",
+            [inactive.id],
+        )
+        .unwrap();
+        let bot = create("assignee-bot", true);
+        let global_admin = create("assignee-global-admin", false);
+        conn.execute(
+            "UPDATE users SET is_admin = 1 WHERE id = ?1",
+            [global_admin.id],
+        )
+        .unwrap();
+        let member_admin = create("assignee-member-admin", false);
+        conn.execute(
+            "UPDATE users SET is_admin = 1 WHERE id = ?1",
+            [member_admin.id],
+        )
+        .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, member_admin.id, Role::Viewer)
+            .unwrap();
+        (
+            issue.id,
+            peer,
+            outsider,
+            inactive,
+            bot,
+            global_admin,
+            member_admin,
+        )
+    };
+
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let maintainer = Html::parse_document(&source);
+    let section = named_section(&maintainer, "Assignees");
+    assert!(
+        section
+            .select(&Selector::parse("button[aria-haspopup='dialog']").unwrap())
+            .next()
+            .is_some(),
+        "Maintainers can open the assignment picker"
+    );
+    let values = section
+        .select(&Selector::parse("[data-native-issue-assignee-option]").unwrap())
+        .map(|option| option.attr("data-native-issue-assignee-option").unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        values.first().copied(),
+        Some(""),
+        "Any agent clears assignment"
+    );
+    assert!(values.contains(&"human"), "Any person assigns human work");
+    assert!(values.contains(&peer.username.as_str()));
+    assert!(values.contains(&member_admin.username.as_str()));
+    assert!(!values.contains(&outsider.username.as_str()));
+    assert!(
+        values.contains(&global_admin.username.as_str()),
+        "administrators need no project membership"
+    );
+    assert!(!values.contains(&inactive.username.as_str()));
+    assert!(!values.contains(&bot.username.as_str()));
+    assert!(values.contains(&"human"));
+
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=1 WHERE id=?1", [actor.id])
+            .unwrap();
+    }
+    let (status, admin_source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let admin_document = Html::parse_document(&admin_source);
+    let admin_section = named_section(&admin_document, "Assignees");
+    assert!(
+        !admin_section
+            .select(&Selector::parse("[data-native-issue-assignee-option]").unwrap())
+            .any(|option| option.attr("data-native-issue-assignee-option")
+                == Some(outsider.username.as_str())),
+        "an administrator caller cannot assign people who lack project access"
+    );
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        conn.execute("UPDATE users SET is_admin=0 WHERE id=?1", [actor.id])
+            .unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, actor.id, Role::Viewer).unwrap();
+    }
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let viewer = Html::parse_document(&source);
+    let section = named_section(&viewer, "Assignees");
+    assert_eq!(
+        section.select(&Selector::parse("button").unwrap()).count(),
+        0,
+        "Viewers see assignment state without write controls"
+    );
+    assert_eq!(
+        queries::assignees::assignment(&fixture.db.read().unwrap(), issue_id).unwrap(),
+        crate::db::queries::assignees::Assignment::default(),
+        "rendering the picker does not mutate assignment"
+    );
+}
+
+#[tokio::test]
+async fn assignee_search_shard_rechecks_current_role_before_returning_project_people() {
+    let fixture = fixture();
+    let (account, issue_id) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        for index in 0..7 {
+            let person = queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: format!("assignee-shard-{index}"),
+                    email: format!("assignee-shard-{index}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(format!("Assignee Shard {index}")),
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, person.id, Role::Viewer)
+                .unwrap();
+        }
+        (account, issue_id)
+    };
+
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let shard_marker = document
+        .tree
+        .nodes()
+        .find_map(|node| {
+            let scraper::Node::Comment(comment) = node.value() else {
+                return None;
+            };
+            let marker = home_fixture::parse_shard_marker(comment)?;
+            (marker.path == "/__native_issue_edit/assignee_options").then(|| comment.to_string())
+        })
+        .expect("search options are rendered through a native Topcoat shard");
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/assignee_shard_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&source),
+            "shard_marker": shard_marker,
+        }),
+    );
+    assert_eq!(emitted["path"], "/__native_issue_edit/assignee_options");
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(
+            &conn,
+            queries::get_issue(&conn, issue_id).unwrap().project_id,
+            account,
+            Role::Viewer,
+        )
+        .unwrap();
+    }
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(emitted["path"].as_str().unwrap())
+        .header("host", "localhost")
+        .header("origin", "http://localhost")
+        .header("content-type", "application/json")
+        .header("cookie", format!("lific_token={}", fixture.token))
+        .header(
+            topcoat::router::request::IDENTITY_HEADER,
+            emitted["identity"].as_str().unwrap(),
+        )
+        .body(Body::from(
+            serde_json::json!({
+                "args": emitted["args"],
+                "signals": home_fixture::page_signals(&source),
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        "127.0.0.1:3000".parse::<SocketAddr>().unwrap(),
+    ));
+    let response = fixture.app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a revoked editor receives a safe empty shard"
+    );
+    assert!(
+        !body.contains("assignee-shard-"),
+        "the stale picker cannot reveal roster entries"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_assignee_procedure_rechecks_role_and_expected_sequence() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, peer) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let peer = queries::users::create_user(
+            &conn,
+            &crate::db::models::CreateUser {
+                username: "assignee-procedure-peer".into(),
+                email: "assignee-procedure-peer@example.test".into(),
+                password: "test-password".into(),
+                display_name: Some("Procedure Peer".into()),
+                is_admin: false,
+                is_bot: false,
+            },
+        )
+        .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, peer.id, Role::Viewer).unwrap();
+        (account, issue, peer)
+    };
+    let request = super::assignees::AssignmentRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        expected_seq: issue.seq,
+        names: vec![peer.username.clone()],
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "typed assignment response: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    let assignment = queries::assignees::assignment(&fixture.db.read().unwrap(), issue.id).unwrap();
+    let expected = super::assignees::AssignmentReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        needs_human: assignment.needs_human,
+        people: assignment
+            .assignees
+            .into_iter()
+            .map(|person| super::assignees::AssignmentPerson {
+                user_id: person.user_id,
+                username: person.username,
+                display_name: person.display_name,
+            })
+            .collect(),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied = super::assignees::AssignmentRequest {
+        expected_seq: saved.seq,
+        names: vec![],
+        ..request.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((denied,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reply["v"]["status"]["err"].is_string());
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        saved.seq,
+        "a Viewer cannot replace the assignment"
+    );
+
+    let stale = super::assignees::AssignmentRequest {
+        expected_seq: issue.seq,
+        ..request
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+    }
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign",
+        serde_json::to_value((stale,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(reply["v"]["status"]["err"].is_string());
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .seq,
+        saved.seq,
+        "stale assignment requests do not write"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_assignee_picker_emits_replacement_requests_from_rust_handlers() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, first, second) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let create = |username: &str| {
+            queries::users::create_user(
+                &conn,
+                &crate::db::models::CreateUser {
+                    username: username.into(),
+                    email: format!("{username}@example.test"),
+                    password: "test-password".into(),
+                    display_name: Some(username.into()),
+                    is_admin: false,
+                    is_bot: false,
+                },
+            )
+            .unwrap()
+        };
+        let first = create("assignee-alpha");
+        let second = create("assignee-beta");
+        queries::members::upsert_member(&conn, issue.project_id, first.id, Role::Viewer).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, second.id, Role::Viewer).unwrap();
+        for index in 0..5 {
+            let person = create(&format!("assignee-extra-{index}"));
+            queries::members::upsert_member(&conn, issue.project_id, person.id, Role::Viewer)
+                .unwrap();
+        }
+        (account, issue, first, second)
+    };
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let handler = |selector: &str, event: &str| {
+        document
+            .select(&Selector::parse(selector).unwrap())
+            .next()
+            .unwrap_or_else(|| panic!("missing assignee handler: {selector}"))
+            .value()
+            .attr(&format!("data-topcoat-on:{event}"))
+            .unwrap()
+            .to_owned()
+    };
+    let request = |names: Vec<String>| super::assignees::AssignmentRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        expected_seq: issue.seq,
+        names,
+    };
+    let clear_request = request(Vec::new());
+    let human_request = request(vec!["human".into()]);
+    let named_request = request(vec![first.username.clone(), second.username.clone()]);
+    let emitted = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/assignee_handler.test.cjs",
+        &serde_json::json!({
+            "signals":home_fixture::page_signals(&source),
+            "clear_handler":handler("[data-native-issue-assignee-option='']", "click"),
+            "human_handler":handler("[data-native-issue-assignee-option='human']", "click"),
+            "toggle_handler":handler("button[aria-haspopup='dialog']", "click"),
+            "first_person_handler":handler("[data-native-issue-assignee-option='assignee-alpha']", "click"),
+            "second_person_handler":handler("[data-native-issue-assignee-option='assignee-beta']", "click"),
+            "cancel_handler":handler("[data-native-issue-assignee-cancel]", "click"),
+            "search_handler":handler("input[aria-label='Filter people']", "input"),
+            "apply_handler":handler("[data-native-issue-assignee-apply]", "click"),
+            "first_person":"assignee-alpha",
+            "second_person":"assignee-beta",
+            "clear_request":serde_json::to_value(clear_request.into_surrogate()).unwrap(),
+            "human_request":serde_json::to_value(human_request.into_surrogate()).unwrap(),
+            "named_request":serde_json::to_value(named_request.clone().into_surrogate()).unwrap(),
+        }),
+    );
+    assert_eq!(
+        emitted["request"],
+        serde_json::to_value(named_request.into_surrogate()).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn native_issue_module_choice_emits_typed_request_and_same_choice_is_a_noop() {
+    let fixture = fixture();
+    let (issue, account, current, next) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let current = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Current module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let next = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Next module".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                module_id: Some(Some(current.id)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (
+            queries::get_issue(&conn, issue.id).unwrap(),
+            account,
+            current,
+            next,
+        )
+    };
+    let (status, source) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&source);
+    let trigger = document
+        .select(&Selector::parse("[aria-haspopup='listbox']").unwrap())
+        .next()
+        .expect("emitted module picker trigger")
+        .value()
+        .attr("data-topcoat-on:click")
+        .unwrap();
+    let option = |id: &str| {
+        document
+            .select(&Selector::parse("[data-native-issue-module-option]").unwrap())
+            .find(|node| node.value().attr("data-native-issue-module-option") == Some(id))
+            .unwrap_or_else(|| panic!("missing emitted module option {id}"))
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap()
+            .to_owned()
+    };
+    let same_handler = option(&current.id.to_string());
+    let next_handler = option(&next.id.to_string());
+    let request = super::module_assignment::ModuleRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        previous_module_id: Some(current.id),
+        next_module_id: Some(next.id),
+    };
+    let result = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/module_assignment_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&source),
+            "trigger_handler": trigger,
+            "same_handler": same_handler,
+            "option_handler": next_handler,
+            "request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+        }),
+    );
+    assert_eq!(
+        result["request"],
+        serde_json::to_value(request.into_surrogate()).unwrap(),
+        "the packaged runtime forwards the actual emitted typed request"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_module_procedure_returns_coherent_snapshot_and_rechecks_scope() {
+    use topcoat::runtime::Surrogated;
+
+    let fixture = fixture();
+    let (account, issue, assigned, outside) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let assigned = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: issue.project_id,
+                name: "Paused destination".into(),
+                description: String::new(),
+                status: "paused".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        let hidden_project = queries::resolve_project_identifier(&conn, "HIDE").unwrap();
+        let outside = queries::create_module(
+            &conn,
+            &CreateModule {
+                project_id: hidden_project,
+                name: "Other project module".into(),
+                description: String::new(),
+                status: "active".into(),
+                emoji: None,
+            },
+        )
+        .unwrap();
+        (account, issue, assigned, outside)
+    };
+    let (initial_status, initial_html) =
+        home_fixture::document(&fixture, "/app", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(initial_status, StatusCode::OK);
+    let initial_document = Html::parse_document(&initial_html);
+    let editor = initial_document
+        .select(&Selector::parse("section[data-native-issue-editor='ACC-1']").unwrap())
+        .next()
+        .expect("the production issue editor owns canonical and draft signals");
+    let mount_handler = editor
+        .value()
+        .attr("data-topcoat-on:mount")
+        .expect("the durable issue owner emits its mount handler");
+    let title_binding = initial_document
+        .select(&Selector::parse("input[aria-label='Issue title']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:value")
+        .unwrap();
+    let description_binding = initial_document
+        .select(&Selector::parse("textarea[aria-label='Issue description']").unwrap())
+        .next()
+        .unwrap()
+        .value()
+        .attr("data-topcoat-bind:value")
+        .unwrap();
+
+    // A different writer changes every editable field after this browser has
+    // rendered. The assignment has no expected_seq and must return one fresh,
+    // coherent canonical snapshot with its new sequence.
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::update_issue(
+            &conn,
+            issue.id,
+            &UpdateIssue {
+                title: Some("Changed before module assignment".into()),
+                description: Some("Fresh canonical body".into()),
+                status: Some(crate::db::models::Status::Active),
+                priority: Some(Priority::High),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let request = super::module_assignment::ModuleRequest {
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        previous_module_id: issue.module_id,
+        next_module_id: Some(assigned.id),
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign_module",
+        serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "typed assignment response: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.module_id, Some(assigned.id));
+    assert_eq!(saved.title, "Changed before module assignment");
+    assert_eq!(saved.description, "Fresh canonical body");
+    let expected = super::module_assignment::ModuleAssignmentReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        module_id: Some(assigned.id),
+        module_label: "Paused destination".into(),
+        canonical: Some(super::module_assignment::ModuleAssignmentSnapshot {
+            title: saved.title.clone(),
+            description: saved.description.clone(),
+            status: saved.status.as_str().into(),
+            priority: saved.priority.as_str().into(),
+            blocks: saved.blocks.clone(),
+            blocked_by: saved.blocked_by.clone(),
+            // The service reply retains only relations visible to this
+            // caller, even though the stored issue still includes HIDE-1.
+            relates_to: vec!["ACC-2".to_owned()],
+            duplicates: saved.duplicates.clone(),
+            duplicated_by: saved.duplicated_by.clone(),
+            labels: saved.labels.clone(),
+        }),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap(),
+        "the assignment reply's canonical fields and sequence come from the same service commit"
+    );
+    let refreshed = home_fixture::evaluate_handler(
+        "src/topcoat/native/issue_edit/module_applied_handler.test.cjs",
+        &serde_json::json!({
+            "signals": home_fixture::page_signals(&initial_html),
+            "mount_handler": mount_handler,
+            "title_binding": title_binding,
+            "description_binding": description_binding,
+            "initial_title": issue.title,
+            "initial_description": issue.description,
+            "initial_seq": issue.seq.to_string(),
+            "reply": reply,
+        }),
+    );
+    assert_eq!(refreshed["canonical_title"], saved.title);
+    assert_eq!(refreshed["canonical_description"], saved.description);
+    assert_eq!(
+        refreshed["canonical_seq"]
+            .as_str()
+            .and_then(|seq| seq.parse::<i64>().ok()),
+        Some(saved.seq),
+        "the runtime preserves the canonical sequence as a decimal string"
+    );
+    assert_eq!(refreshed["dirty_title"], "Dirty title draft");
+    assert_eq!(refreshed["dirty_description"], "Dirty description draft");
+
+    for (mut denied, message) in [
+        (
+            super::module_assignment::ModuleRequest {
+                account_id: account + 1000,
+                ..request.clone()
+            },
+            "insufficient project permissions",
+        ),
+        (
+            super::module_assignment::ModuleRequest {
+                next_module_id: Some(outside.id),
+                ..request.clone()
+            },
+            "module does not belong to this project",
+        ),
+    ] {
+        denied.previous_module_id = Some(assigned.id);
+        let (status, outcome) = home_fixture::procedure(
+            &fixture,
+            "/__native_issue_edit/assign_module",
+            serde_json::to_value((denied,).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(outcome["v"]["status"]["err"], message);
+        let unchanged = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        assert_eq!(unchanged.module_id, Some(assigned.id));
+        assert_eq!(unchanged.seq, saved.seq);
+    }
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied = super::module_assignment::ModuleRequest {
+        previous_module_id: Some(assigned.id),
+        next_module_id: None,
+        ..request
+    };
+    let (status, outcome) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/assign_module",
+        serde_json::to_value((denied,).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        outcome["v"]["status"]["err"],
+        "insufficient project permissions"
+    );
+    let unchanged = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(unchanged.module_id, Some(assigned.id));
+    assert_eq!(unchanged.seq, saved.seq);
+}
+
+#[tokio::test]
+async fn native_issue_production_priority_labels_match_main_for_both_roles() {
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for (role, can_edit) in [(Role::Viewer, false), (Role::Maintainer, true)] {
+        for priority in [
+            Priority::Urgent,
+            Priority::High,
+            Priority::Medium,
+            Priority::Low,
+            Priority::None,
+        ] {
+            let issue = {
+                let conn = fixture.db.write().unwrap();
+                let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+                let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+                queries::members::upsert_member(
+                    &conn,
+                    queries::get_issue(&conn, issue_id).unwrap().project_id,
+                    actor.id,
+                    role,
+                )
+                .unwrap();
+                queries::update_issue(
+                    &conn,
+                    issue_id,
+                    &UpdateIssue {
+                        priority: Some(priority),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                queries::get_issue(&conn, issue_id).unwrap()
+            };
+            let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let rendered = html(response).await;
+            assert_native_initial_html(&rendered, "", &issue);
+            assert_eq!(
+                rendered.contains("data-native-issue-priority-option="),
+                can_edit,
+                "edit controls follow {role:?} role"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_label_picker_matches_main_for_both_roles() {
+    let fixture = fixture();
+    let (issue, attached) = {
+        let conn = fixture.db.write().unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        let attached = queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Attached label".into(),
+                color: "#2563EB".into(),
+            },
+        )
+        .unwrap();
+        queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Available label".into(),
+                color: "#16A34A".into(),
+            },
+        )
+        .unwrap();
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(vec![attached.name.clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        (queries::get_issue(&conn, issue_id).unwrap(), attached)
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    let add_label = Selector::parse("button[title='Add label']").unwrap();
+    let remove_label = Selector::parse("button[title='Remove label']").unwrap();
+    let chips = Selector::parse("span.native-label-chip").unwrap();
+
+    for (role, editable) in [(Role::Viewer, false), (Role::Maintainer, true)] {
+        {
+            let conn = fixture.db.write().unwrap();
+            let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, actor.id, role).unwrap();
+        }
+        for prefix in MOUNTS {
+            let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), prefix).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let document = Html::parse_document(&html(response).await);
+            let section = named_section(&document, "Labels");
+            assert_eq!(
+                section.select(&add_label).count(),
+                if editable { 1 } else { 0 },
+                "Add label follows {role:?} authorization at mount {prefix}"
+            );
+            assert_eq!(
+                section.select(&remove_label).count(),
+                if editable { 1 } else { 0 },
+                "attached-label removal follows {role:?} authorization at mount {prefix}"
+            );
+            assert!(
+                section.text().collect::<String>().contains(&attached.name),
+                "the current label remains visible to {role:?}"
+            );
+            let chip = section
+                .select(&chips)
+                .find(|chip| chip_label_text(*chip) == attached.name)
+                .unwrap_or_else(|| panic!("the current label renders as a chip for {role:?}"));
+            assert_eq!(
+                chip_label_text(chip),
+                attached.name,
+                "chip label text remains distinct"
+            );
+            if editable {
+                assert!(
+                    chip.select(&remove_label).next().is_some(),
+                    "Maintainers get the separate Remove label control"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_label_handlers_emit_sparse_attach_and_remove_requests_at_every_mount() {
+    let fixture = fixture();
+    let (account, issue, label) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        let label = queries::create_label(
+            &conn,
+            &CreateLabel {
+                project_id: issue.project_id,
+                name: "Available label".into(),
+                color: "#16A34A".into(),
+            },
+        )
+        .unwrap();
+        (account, issue, label)
+    };
+    for (index, mount) in MOUNTS.into_iter().enumerate() {
+        let (status, source) =
+            home_fixture::document(&fixture, mount, "/ACC/issues/ACC-1", true, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let document = Html::parse_document(&source);
+        let section = named_section(&document, "Labels");
+        let open_handler = section
+            .select(&Selector::parse("button[title='Add label']").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap();
+        let query_input = section
+            .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
+            .next()
+            .unwrap();
+        let query_handler = query_input.value().attr("data-topcoat-on:input").unwrap();
+        let query_binding = query_input.value().attr("data-topcoat-bind:value").unwrap();
+        let filter_keydown_handler = query_input.value().attr("data-topcoat-on:keydown").unwrap();
+        let open_binding = section
+            .select(&Selector::parse("[data-native-issue-label-picker]").unwrap())
+            .next()
+            .unwrap()
+            .value()
+            .attr("data-topcoat-bind:hidden")
+            .unwrap();
+        let option = section
+            .select(
+                &Selector::parse("button[role='option'][data-label-name='Available label']")
+                    .unwrap(),
+            )
+            .next()
+            .expect("catalog labels render in the picker");
+        let option_handler = option.value().attr("data-topcoat-on:click").unwrap();
+        let enter_action = section
+            .select(&Selector::parse("[data-native-label-enter='true']").unwrap())
+            .next()
+            .expect("the sole filtered label is the Enter action");
+        assert_eq!(
+            enter_action.value().attr("data-label-name"),
+            Some("Available label")
+        );
+        let input_id = query_input.value().attr("id").unwrap();
+        let before = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        let next_labels = if before.labels.iter().any(|name| name == &label.name) {
+            Vec::new()
+        } else {
+            vec![label.name.clone()]
+        };
+        let request = super::labels::LabelRequest {
+            mode: if before.labels.iter().any(|name| name == &label.name) {
+                "remove".into()
+            } else {
+                "attach".into()
+            },
+            account_id: account,
+            issue_id: issue.id,
+            identifier: issue.identifier.clone(),
+            name: label.name.clone(),
+            color: String::new(),
+        };
+        let output = home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+            &serde_json::json!({
+                "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                "phases": [{
+                    "name": "toggle",
+                    "signals": home_fixture::page_signals(&source),
+                    "open_binding": open_binding,
+                    "query_binding": query_binding,
+                    "open_handler": open_handler,
+                    "query_handler": query_handler,
+                }, {
+                    "name": "filter_enter",
+                    "signals": home_fixture::page_signals(&source),
+                    "filter_keydown_handler": filter_keydown_handler,
+                    "enter_action_handler": enter_action.value().attr("data-topcoat-on:click").unwrap(),
+                    "has_enter_action": true,
+                    "query_binding": query_binding,
+                    "query": "",
+                    "expected_request": serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+                }, {
+                    "name": "stale_query_enter",
+                    "signals": home_fixture::page_signals(&source),
+                    "query_handler": query_handler,
+                    "filter_keydown_handler": filter_keydown_handler,
+                    "old_enter_action_handler": enter_action.value().attr("data-topcoat-on:click").unwrap(),
+                    "query_binding": query_binding,
+                    "next_query": "new query before rerender",
+                }, {
+                    "name": "focus",
+                    "signals": home_fixture::page_signals(&source),
+                    "open_handler": open_handler,
+                    "open_binding": open_binding,
+                    "input_id": input_id,
+                }, {
+                    "name": "disposed_callbacks",
+                    "signals": home_fixture::page_signals(&source),
+                    "stale_value": "must not filter a disposed picker",
+                    "callbacks": [
+                        {"source": open_handler, "event_type": "click"},
+                        {"source": query_handler, "event_type": "input"},
+                        {"source": option_handler, "event_type": "click"},
+                    ],
+                }],
+            }),
+        );
+        assert!(output["query_id"].as_str().is_some());
+        assert_eq!(output["query_value"], "New runtime label");
+        assert_eq!(
+            output["enter_request"],
+            serde_json::to_value(request.clone().into_surrogate()).unwrap(),
+            "Enter invokes the real currently projected label action"
+        );
+
+        if index == 0 {
+            let query_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(output["query_signals"].clone()).unwrap();
+            let (status, filtered_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(query_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let filtered = Html::parse_document(&filtered_html);
+            let filtered_section = named_section(&filtered, "Labels");
+            let filtered_query = filtered_section
+                .select(&Selector::parse("input[placeholder='Filter or create…']").unwrap())
+                .next()
+                .unwrap();
+            assert_eq!(
+                filtered_query.value().attr("value"),
+                Some("New runtime label"),
+                "the authenticated SSR replay receives the real query signal value"
+            );
+            let create_button = filtered_section
+                .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
+                .next()
+                .expect("the authenticated query rerun renders Main's create action");
+            assert_eq!(
+                create_button.text().collect::<String>(),
+                "Create “New runtime label”"
+            );
+            let open_binding = filtered_section
+                .select(&Selector::parse("[data-native-issue-label-picker]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let color_area = filtered_section
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .expect("the fresh Create projection renders Main's color picker");
+            let color_trigger = color_area
+                .select(&Selector::parse("button[aria-label^='Color: ']").unwrap())
+                .next()
+                .unwrap();
+            let color_trigger_handler =
+                color_trigger.value().attr("data-topcoat-on:click").unwrap();
+            let color_open_binding = color_area
+                .select(&Selector::parse("[data-topcoat-bind\\:hidden]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let palette_handler = color_area
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let hex_input = color_area
+                .select(&Selector::parse("input[placeholder='hex']").unwrap())
+                .next()
+                .unwrap();
+            let hex_input_handler = hex_input.value().attr("data-topcoat-on:input").unwrap();
+            let hex_binding = hex_input.value().attr("data-topcoat-bind:value").unwrap();
+            let palette_and_hex = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "palette",
+                        "signals": home_fixture::page_signals(&filtered_html),
+                        "open_binding": open_binding,
+                        "color_open_binding": color_open_binding,
+                        "color_trigger_handler": color_trigger_handler,
+                        "palette_handler": palette_handler,
+                        "palette_color": "#EF4444",
+                    }, {
+                        "name": "hex_input",
+                        "signals": home_fixture::page_signals(&filtered_html),
+                        "color_trigger_handler": color_trigger_handler,
+                        "hex_input_handler": hex_input_handler,
+                        "hex_binding": hex_binding,
+                    }],
+                }),
+            );
+
+            let hex_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(palette_and_hex["hex_signals"].clone()).unwrap();
+            let (status, hex_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(hex_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let hex_document = Html::parse_document(&hex_html);
+            let hex_area = named_section(&hex_document, "Labels")
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .unwrap();
+            let set_handler = hex_area
+                .select(&Selector::parse("button[data-native-label-hex-set]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let hex_palette_handler = hex_area
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let color_open_binding = hex_area
+                .select(&Selector::parse("[data-topcoat-bind\\:hidden]").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-bind:hidden")
+                .unwrap();
+            let set_result = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "hex_set",
+                        "signals": home_fixture::page_signals(&hex_html),
+                        "hex_set_handler": set_handler,
+                        "palette_handler": hex_palette_handler,
+                        "color_open_binding": color_open_binding,
+                    }],
+                }),
+            );
+
+            let create_signals: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_value(set_result["hex_set_signals"].clone()).unwrap();
+            let (status, create_html) = home_fixture::document(
+                &fixture,
+                mount,
+                "/ACC/issues/ACC-1",
+                true,
+                Some(create_signals),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            let create_document = Html::parse_document(&create_html);
+            let create_section = named_section(&create_document, "Labels");
+            let create_button = create_section
+                .select(&Selector::parse("button[data-native-label-enter='true']").unwrap())
+                .next()
+                .unwrap();
+            let create_palette_handler = create_section
+                .select(&Selector::parse("[data-native-label-color-area]").unwrap())
+                .next()
+                .unwrap()
+                .select(&Selector::parse("button[aria-label='Red']").unwrap())
+                .next()
+                .unwrap()
+                .value()
+                .attr("data-topcoat-on:click")
+                .unwrap();
+            let creating_binding = create_button
+                .value()
+                .attr("data-topcoat-bind:disabled")
+                .unwrap();
+            let create_request = super::labels::LabelRequest {
+                mode: "create".into(),
+                account_id: account,
+                issue_id: issue.id,
+                identifier: issue.identifier.clone(),
+                name: "New runtime label".into(),
+                color: "#aabbcc".into(),
+            };
+            let create_result = home_fixture::evaluate_handler(
+                "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+                &serde_json::json!({
+                    "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                    "phases": [{
+                        "name": "create",
+                        "signals": home_fixture::page_signals(&create_html),
+                        "create_handler": create_button.value().attr("data-topcoat-on:click").unwrap(),
+                        "create_request": serde_json::to_value(create_request.clone().into_surrogate()).unwrap(),
+                        "creating_binding": creating_binding,
+                        "open_binding": create_section.select(&Selector::parse("[data-native-issue-label-picker]").unwrap()).next().unwrap().value().attr("data-topcoat-bind:hidden").unwrap(),
+                        "query_binding": create_section.select(&Selector::parse("input[placeholder='Filter or create…']").unwrap()).next().unwrap().value().attr("data-topcoat-bind:value").unwrap(),
+                        "query": "New runtime label",
+                    }, {
+                        "name": "stale_color_create",
+                        "signals": home_fixture::page_signals(&create_html),
+                        "palette_handler": create_palette_handler,
+                        "palette_color": "#EF4444",
+                        "create_handler": create_button.value().attr("data-topcoat-on:click").unwrap(),
+                    }],
+                }),
+            );
+            assert_eq!(
+                create_result["create_request"],
+                serde_json::to_value(create_request.into_surrogate()).unwrap(),
+                "the fresh handler submits the typed query and normalized custom color"
+            );
+        }
+
+        // A concurrent title write must not conflict with a sparse label-only
+        // commit or get overwritten by that commit.
+        if index == 0 {
+            let conn = fixture.db.write().unwrap();
+            queries::update_issue(
+                &conn,
+                issue.id,
+                &UpdateIssue {
+                    title: Some("Concurrent title survives label update".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+        let (write_status, reply) = home_fixture::procedure(
+            &fixture,
+            "/__native_issue_edit/update_labels",
+            serde_json::to_value((request.clone(),).into_surrogate()).unwrap(),
+        )
+        .await;
+        assert_eq!(write_status, StatusCode::OK, "label reply: {reply}");
+        let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+        assert_eq!(
+            saved.labels, next_labels,
+            "mount {mount} label toggle persists"
+        );
+        if index == 0 {
+            assert_eq!(saved.title, "Concurrent title survives label update");
+        }
+        let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
+        canonical.relates_to = vec!["ACC-2".into()];
+        assert!(
+            saved.relates_to.contains(&"HIDE-1".to_owned()),
+            "the database retains the hidden relation while the reply filters it"
+        );
+        let expected = super::labels::LabelReply {
+            status: Ok("saved".into()),
+            account_id: account,
+            issue_id: saved.id,
+            seq: saved.seq,
+            labels: saved.labels.clone(),
+            canonical: Some(canonical),
+            catalog_item: None,
+        };
+        assert_eq!(
+            reply,
+            serde_json::to_value(expected.into_surrogate()).unwrap(),
+            "the real procedure returns the complete typed canonical reply"
+        );
+    }
+    assert!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .labels
+            .contains(&label.name)
+    );
+}
+
+#[tokio::test]
+async fn native_issue_label_old_option_after_success_attaches_without_overwriting_prior_label() {
+    let fixture = fixture();
+    let issue = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        for name in ["First stale option", "Second stale option"] {
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id: issue.project_id,
+                    name: name.into(),
+                    color: "#16A34A".into(),
+                },
+            )
+            .unwrap();
+        }
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(Vec::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        queries::get_issue(&conn, issue_id).unwrap()
+    };
+    let (status, stale_html) =
+        home_fixture::document(&fixture, "", "/ACC/issues/ACC-1", true, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let document = Html::parse_document(&stale_html);
+    let labels = named_section(&document, "Labels");
+    let option_handler = |name: &str| {
+        labels
+            .select(&Selector::parse("button[role='option']").unwrap())
+            .find(|option| option.value().attr("data-label-name") == Some(name))
+            .unwrap()
+            .value()
+            .attr("data-topcoat-on:click")
+            .unwrap()
+    };
+    let emit_old_option = |handler: &str| {
+        home_fixture::evaluate_handler(
+            "src/topcoat/native/issue_edit/labels_handler.test.cjs",
+            &serde_json::json!({
+                "browser_source": super::super::shell_handlers::source_named("browser", super::super::browser::factory()),
+                "phases": [{
+                    "name": "emit_option",
+                    "signals": home_fixture::page_signals(&stale_html),
+                    "option_handler": handler,
+                }],
+            })
+        )["request"]
+            .clone()
+    };
+
+    let first_request = emit_old_option(option_handler("First stale option"));
+    let (first_status, first_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::json!([first_request]),
+    )
+    .await;
+    assert_eq!(
+        first_status,
+        StatusCode::OK,
+        "first label action: {first_reply}"
+    );
+    assert_eq!(
+        queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+            .unwrap()
+            .labels,
+        ["First stale option"]
+    );
+
+    // The second callback comes from the same SSR document after the first real
+    // write has succeeded; no metadata projection refreshes its captured state.
+    let second_request = emit_old_option(option_handler("Second stale option"));
+    let (second_status, second_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::json!([second_request]),
+    )
+    .await;
+    assert_eq!(
+        second_status,
+        StatusCode::OK,
+        "second stale action: {second_reply}"
+    );
+    let mut saved_labels = queries::get_issue(&fixture.db.read().unwrap(), issue.id)
+        .unwrap()
+        .labels;
+    saved_labels.sort();
+    assert_eq!(
+        saved_labels,
+        ["First stale option", "Second stale option"],
+        "the old option callback attaches its target against current labels instead of replacing the first successful write"
+    );
+}
+
+#[tokio::test]
+async fn native_issue_production_label_chips_preserve_case_and_safe_colors_for_both_roles() {
+    let fixture = fixture();
+    let labels = [
+        ("MiXeD API", "#aBc123"),
+        ("Malformed color", "red;position:fixed"),
+        ("Detached label", "#2563EB"),
+    ];
+    let issue = {
+        let conn = fixture.db.write().unwrap();
+        let issue_id = queries::resolve_identifier(&conn, "ACC-1").unwrap();
+        let issue = queries::get_issue(&conn, issue_id).unwrap();
+        for (name, color) in labels {
+            queries::create_label(
+                &conn,
+                &CreateLabel {
+                    project_id: issue.project_id,
+                    name: name.into(),
+                    color: color.into(),
+                },
+            )
+            .unwrap();
+        }
+        queries::update_issue(
+            &conn,
+            issue_id,
+            &UpdateIssue {
+                labels: Some(labels.iter().map(|(name, _)| (*name).into()).collect()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Keep an attached label whose row is outside this project's label
+        // catalog, exercising the same fallback as a legacy/orphaned label.
+        let detached_id: i64 = conn
+            .query_row(
+                "SELECT id FROM labels WHERE project_id = ?1 AND name = 'Detached label'",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let other_project: i64 = conn
+            .query_row(
+                "SELECT id FROM projects WHERE id != ?1 LIMIT 1",
+                [issue.project_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE labels SET project_id = ?1 WHERE id = ?2",
+            rusqlite::params![other_project, detached_id],
+        )
+        .unwrap();
+        queries::get_issue(&conn, issue_id).unwrap()
+    };
+    let cookie = format!("lific_token={}", fixture.token);
+    let label_heading_selector = Selector::parse("section > h2").unwrap();
+    let spans_selector = Selector::parse("span").unwrap();
+
+    for role in [Role::Viewer, Role::Maintainer] {
+        {
+            let conn = fixture.db.write().unwrap();
+            let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+            queries::members::upsert_member(&conn, issue.project_id, actor.id, role).unwrap();
+        }
+        let response = get(&fixture, "/ACC/issues/ACC-1", Some(&cookie), "").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = Html::parse_document(&html(response).await);
+        let labels_heading = document
+            .select(&label_heading_selector)
+            .find(|heading| heading.text().collect::<String>() == "Labels")
+            .expect("rendered Labels heading");
+        let labels_section = labels_heading
+            .parent()
+            .and_then(scraper::ElementRef::wrap)
+            .expect("Labels heading parent");
+
+        for (name, expected_color) in [("MiXeD API", "#aBc123"), ("Malformed color", "#6B7280")] {
+            let chip = labels_section
+                .select(&spans_selector)
+                .find(|span| chip_label_text(*span) == name)
+                .unwrap_or_else(|| panic!("rendered chip for {name}"));
+            let classes = chip.value().attr("class").unwrap_or_default();
+            for class in [
+                "native-label-chip",
+                "normal-case",
+                "rounded-full",
+                "border",
+                "px-2",
+                "py-0.5",
+            ] {
+                assert!(
+                    classes.split_whitespace().any(|value| value == class),
+                    "{role:?} missing {class}: {classes}"
+                );
+            }
+            let style = chip.value().attr("style").unwrap_or_default();
+            assert!(
+                style.contains(&format!("color:{expected_color}")),
+                "{style}"
+            );
+            assert!(
+                style.contains(&format!("border-color:{expected_color}40")),
+                "{style}"
+            );
+            assert!(
+                style.contains(&format!("background:{expected_color}10")),
+                "{style}"
+            );
+            assert_eq!(
+                chip.select(&Selector::parse("button[title='Remove label']").unwrap())
+                    .count(),
+                usize::from(role == Role::Maintainer),
+                "the chip's destructive control follows {role:?} authorization"
+            );
+        }
+
+        let detached = labels_section
+            .select(&spans_selector)
+            .find(|span| chip_label_text(*span) == "Detached label")
+            .expect("rendered chip for label outside the project catalog");
+        let classes = detached.value().attr("class").unwrap_or_default();
+        assert!(
+            classes
+                .split_whitespace()
+                .any(|value| value == "normal-case"),
+            "{classes}"
+        );
+        assert!(
+            classes
+                .split_whitespace()
+                .any(|value| value == "rounded-full"),
+            "{classes}"
+        );
+        let style = detached.value().attr("style").unwrap_or_default();
+        let declarations = style.split(';').map(str::trim).collect::<Vec<_>>();
+        assert!(
+            declarations
+                .iter()
+                .any(|declaration| declaration.starts_with("border-color:")),
+            "{style}"
+        );
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| !declaration.starts_with("color:")),
+            "unknown label uses neutral text: {style}"
+        );
+        assert!(
+            declarations
+                .iter()
+                .all(|declaration| !declaration.starts_with("background:")),
+            "unknown label uses no fill: {style}"
+        );
+
+        assert!(issue.labels.iter().any(|name| name == "MiXeD API"));
+    }
+}
+
+#[tokio::test]
+async fn native_issue_label_procedures_create_attach_and_recheck_current_authority() {
+    let fixture = fixture();
+    let (account, issue) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        (account, issue)
+    };
+    let create = super::labels::LabelRequest {
+        mode: "create".into(),
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        name: "Picker-created label".into(),
+        color: "#aabbcc".into(),
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((create.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create reply: {reply}");
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.labels, ["Picker-created label"]);
+    let created = queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+        .unwrap()
+        .into_iter()
+        .find(|label| label.name == "Picker-created label")
+        .unwrap();
+    let mut canonical = super::module_assignment::ModuleAssignmentSnapshot::from_issue(&saved);
+    canonical.relates_to = vec!["ACC-2".into()];
+    let expected = super::labels::LabelReply {
+        status: Ok("saved".into()),
+        account_id: account,
+        issue_id: saved.id,
+        seq: saved.seq,
+        labels: saved.labels.clone(),
+        canonical: Some(canonical),
+        catalog_item: Some(super::labels::LabelCatalogItem {
+            name: created.name.clone(),
+            color: created.color.clone(),
+        }),
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap(),
+        "successful create returns the canonical attached issue and catalog item"
+    );
+
+    let wrong_account = super::labels::LabelRequest {
+        account_id: account + 1000,
+        name: "Must not create".into(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((wrong_account.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "scope denial is a typed reply: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("Your account changed. Reload this page.".into()),
+        account_id: wrong_account.account_id,
+        issue_id: wrong_account.issue_id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+    assert!(
+        queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .all(|label| label.name != "Must not create")
+    );
+
+    {
+        let conn = fixture.db.write().unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Viewer).unwrap();
+    }
+    let denied_update = super::labels::LabelRequest {
+        mode: "attach".into(),
+        name: "Denied label".into(),
+        color: String::new(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::to_value((denied_update.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "role denial is a typed reply: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        // Match the normal API's safe authorization copy from client_message.
+        status: Err("requires at least 'maintainer' access to this project".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    let denied_create = super::labels::LabelRequest {
+        mode: "create".into(),
+        name: "Viewer create must not appear".into(),
+        color: "#112233".into(),
+        ..create.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((denied_create.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "viewer create denial is typed: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("requires at least 'maintainer' access to this project".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+
+    let mismatched_identity = super::labels::LabelRequest {
+        identifier: "ACC-2".into(),
+        ..denied_update.clone()
+    };
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/update_labels",
+        serde_json::to_value((mismatched_identity.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "stale route identity is typed: {reply}"
+    );
+    let expected = super::labels::LabelReply {
+        status: Err("not found".into()),
+        account_id: account,
+        issue_id: issue.id,
+        seq: 0,
+        labels: Vec::new(),
+        canonical: None,
+        catalog_item: None,
+    };
+    assert_eq!(
+        reply,
+        serde_json::to_value(expected.into_surrogate()).unwrap()
+    );
+    let (status, reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((wrong_account.clone(),).into_surrogate()).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the switched account remains denied: {reply}"
+    );
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert_eq!(saved.labels, ["Picker-created label"]);
+    assert!(
+        !queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .any(|label| {
+                label.name == "Must not create" || label.name == "Viewer create must not appear"
+            })
+    );
+}
+
+#[tokio::test]
+async fn native_issue_label_create_keeps_catalog_entry_when_attachment_fails() {
+    let fixture = fixture();
+    let (account, issue) = {
+        let conn = fixture.db.write().unwrap();
+        let account = queries::users::validate_session(&conn, &fixture.token)
+            .unwrap()
+            .id;
+        let issue = queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap())
+            .unwrap();
+        queries::members::upsert_member(&conn, issue.project_id, account, Role::Maintainer)
+            .unwrap();
+        (account, issue)
+    };
+    let request = super::labels::LabelRequest {
+        mode: "create".into(),
+        account_id: account,
+        issue_id: issue.id,
+        identifier: issue.identifier.clone(),
+        name: "Catalog survives attach failure".into(),
+        color: "#123abc".into(),
+    };
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_native_label_attach BEFORE INSERT ON issue_labels
+             WHEN NEW.issue_id = {}
+             BEGIN SELECT RAISE(ABORT, 'label attach forced to fail'); END;",
+            issue.id
+        ))
+        .unwrap();
+    }
+    let (status, wire_reply) = home_fixture::procedure(
+        &fixture,
+        "/__native_issue_edit/create_label",
+        serde_json::to_value((request,).into_surrogate()).unwrap(),
+    )
+    .await;
+    {
+        let conn = fixture.db.write().unwrap();
+        conn.execute_batch("DROP TRIGGER fail_native_label_attach")
+            .unwrap();
+    }
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "partial create is a typed result: {wire_reply}"
+    );
+    let reply: super::labels::LabelReply =
+        serde_json::from_value::<super::labels::LabelReplyValue>(wire_reply)
+            .unwrap()
+            .into_real();
+    let saved = queries::get_issue(&fixture.db.read().unwrap(), issue.id).unwrap();
+    assert!(
+        reply.status.as_ref().is_err(),
+        "the failed attachment reports an error"
+    );
+    assert_eq!(
+        reply.status.as_ref().unwrap_err(),
+        "internal server error",
+        "the native reply uses the same masked database error copy as the API"
+    );
+    assert_eq!(reply.account_id, account);
+    assert_eq!(reply.issue_id, issue.id);
+    assert_eq!(reply.seq, issue.seq);
+    assert_eq!(reply.labels, issue.labels);
+    assert!(reply.canonical.is_none());
+    assert_eq!(
+        reply.catalog_item.map(|item| (item.name, item.color)),
+        Some(("Catalog survives attach failure".into(), "#123abc".into())),
+        "the independently committed catalog entry remains available for retry"
+    );
+    assert_eq!(
+        saved.labels, issue.labels,
+        "attachment failure rolls back the issue write"
+    );
+    assert_eq!(saved.title, issue.title);
+    assert_eq!(saved.seq, issue.seq);
+    assert!(
+        queries::list_labels(&fixture.db.read().unwrap(), issue.project_id)
+            .unwrap()
+            .iter()
+            .any(|label| label.name == "Catalog survives attach failure")
+    );
+}
+
+#[tokio::test]
+async fn native_issue_production_guest_invalid_and_expired_sessions_redirect_without_data() {
+    // Missing boundary: the issue document must reject cookie authority during
+    // its initial server request, before sending private content or hydration.
+    let fixture = fixture();
+    {
+        let conn = fixture.db.write().unwrap();
+        let actor = queries::users::validate_session(&conn, &fixture.token).unwrap();
+        assert_eq!(
+            conn.execute(
+                "UPDATE sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE user_id = ?1",
+                [actor.id],
+            )
+            .unwrap(),
+            1
+        );
+        assert!(queries::users::validate_session(&conn, &fixture.token).is_err());
+    }
+    for prefix in MOUNTS {
+        for cookie in [
+            None,
+            Some("lific_token=invalid".to_owned()),
+            Some(format!("lific_token={}", fixture.token)),
+        ] {
+            let response = get(&fixture, "/ACC/issues/ACC-1", cookie.as_deref(), prefix).await;
+            assert!(
+                response.status().is_redirection(),
+                "expected login redirect, got {}",
+                response.status()
+            );
+            assert_eq!(response.headers()["location"], format!("{prefix}/login"));
+            let html = html(response).await;
+            assert!(!html.contains(TITLE));
+            assert!(!html.contains(DESCRIPTION));
+            assert!(!html.contains("Production markdown"));
+            assert!(!html.contains("Exact initial description."));
+            assert!(!html.contains("data-native-issue-editor="));
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_production_hidden_issue_and_missing_identifier_fail_before_render() {
+    // Missing boundary: production route dispatch must propagate shared-service
+    // access and identifier failures before creating a native issue document.
+    let fixture = fixture();
+    let cookie = format!("lific_token={}", fixture.token);
+    for prefix in MOUNTS {
+        for (path, expected) in [
+            ("/HIDE/issues/HIDE-1", StatusCode::FORBIDDEN),
+            ("/ACC/issues/ACC-99999", StatusCode::NOT_FOUND),
+        ] {
+            let response = get(&fixture, path, Some(&cookie), prefix).await;
+            assert_eq!(response.status(), expected, "denial at {prefix}{path}");
+            let html = html(response).await;
+            assert!(!html.contains(TITLE));
+            assert!(!html.contains("Private hidden initial work"));
+            assert!(!html.contains("data-native-issue-editor="));
+        }
+    }
+}
+
+#[tokio::test]
+async fn native_issue_production_dom_checks_ignore_comments_and_quoted_delimiters() {
+    let fixture = fixture();
+    let issue = {
+        let conn = fixture.db.read().unwrap();
+        queries::get_issue(&conn, queries::resolve_identifier(&conn, "ACC-1").unwrap()).unwrap()
+    };
+    let html = format!(
+        r#"<!doctype html>
+<html><head>
+<!-- <script src="/inert-controller.js"></script> -->
+</head><body>
+<div data-native-issue-editor="ACC-1">
+<h1>{TITLE}</h1>
+<h1>Production markdown</h1><p>Exact initial description.</p>
+<output data-native-issue-seq="" data-note="quoted > delimiter">{}</output>
+<span data-native-issue-status="">{}</span>
+<span data-native-issue-priority="">{}</span>
+<a href="/ACC/issues/ACC-2">ACC-2</a>
+</div>
+<script src="{}"></script>
+</body></html>"#,
+        issue.seq,
+        issue.status.as_str(),
+        match issue.priority {
+            Priority::Urgent => "Urgent",
+            Priority::High => "High",
+            Priority::Medium => "Medium",
+            Priority::Low => "Low",
+            Priority::None => "No priority",
+        },
+        super::super::super::assets::runtime_url(),
+    );
+    assert_native_initial_html(&html, "", &issue);
+}

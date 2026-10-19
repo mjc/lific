@@ -1,5 +1,89 @@
 # Changelog
 
+## v3.0.0 (unreleased)
+
+The browser application now uses Topcoat and ships from the Lific executable. The Svelte/Vite workspace and its separate asset build have been removed. REST, MCP, OAuth, WebSocket, and public API routes keep their existing server contracts.
+
+Topcoat is pinned to version 0.9.0. Updating it requires an explicit dependency change and review of route parity, browser behavior, and release artifact checks.
+
+The Rust crate and MCP Registry package metadata now identify this release as 3.0.0.
+
+## v2.11.1 (2026-10-13)
+
+A web UI fix for issue previews.
+
+### Web UI
+
+- Issue hover cards opened from links inside a page or issue body now show in full, instead of being clipped or pushed off the edge of the surrounding panel. Those links also stop showing a native browser tooltip on top of the card (PR #99 by [@zorro432](https://github.com/zorro432)).
+
+## v2.11.0 (2026-10-13)
+
+This release does three things. `cargo install lific` builds again, after an upstream MCP library change broke it for 2.10.0. Agents get tools for working through a large tracker without rereading it. And issues can now say who has to do them, which Home is rebuilt around. Projects can be archived to a file and brought back. Seven migrations run on first start, and API keys move to a new verifier format, so read the upgrade notes before upgrading a shared database.
+
+### Installing
+
+- `cargo install lific` builds again. 2.10.0 allowed any 1.x version of `rmcp`, and `cargo install` ignores `Cargo.lock`, so a fresh install picked up rmcp 1.8, whose API change broke the build on every platform ([#92](https://github.com/VoidNullable/lific/issues/92)). Lific now holds rmcp at 1.4, and CI checks every push and a weekly schedule against a fresh dependency resolution. Release binaries and `--locked` installs were never affected.
+- The macOS release binary no longer refers to a Nix store copy of libiconv, so it starts on Macs without Nix (PR #84 by [@mjc](https://github.com/mjc)).
+- Debug builds on Windows no longer overflow the stack before printing `--version`.
+
+### Who does an issue
+
+- An issue is unassigned (any agent may pick it up), marked for any person, or assigned to named people. Bots cannot be named, since unassigned already means any agent. Assignments are available in the web UI (issue view, list and board markers, a filter, the bulk bar), REST, MCP (`assignees` on `create_issue` and `update_issue`, `set_assignees` on `bulk_update`, an `assignee` filter on `list_issues`) and the CLI (`--assign`, `--unassign`, `--assignee`).
+- An issue can wait on a person until they clear it, or on a window of days ("three days, maybe four"), alongside blocking issues. A date wait holds before its first day, is due during the window and overdue after it. Waits count toward the workable and blocked filters. Set them with `link_issues` over MCP, the REST waits endpoints, or the issue view.
+- Home is rebuilt. It opens with what agents opened and closed since your last visit and a **Needs you** box: issues assigned to you, issues for any person, and waits on you, across every project you can see. Below that are open work by age, an agent queue ranked by importance, an Only you lane, recent activity and a done heatmap.
+
+### MCP
+
+- `get_briefing` resumes work on a project in one call: what changed since a cursor, active plans with their next step, blockers and due waits. That brings the server to 31 tools.
+- Pages over 30,000 characters come back as an outline with section sizes. `section` reads one section, `offset` continues a cut read, and `since_seq` returns only what changed since an earlier read. Page writes say when content has grown past that budget.
+- `create_issue` takes an `issues` array to file up to 50 issues in one transaction, and lists up to three similar open issues after filing.
+- `update_issue` accepts `evidence` when closing an issue, stored as a verification comment. Issues with task lists show checklist progress, and closing one with unchecked items warns.
+- `list_issues` with `members: ["me"]` lists your issues across every project where you hold a role, and `statuses` takes several statuses at once. `list_resources` shows each project's roles, members and per-status counts (PR #91 by [@magnusfjeldolsen](https://github.com/magnusfjeldolsen)).
+- `get_activity` reads forward from a `since` cursor. A project `export` returns the documents themselves, paged, instead of server file paths.
+- Search falls back to ranked any-word matches, marked as partial, when no result contains every word.
+- Every tool rejects unknown parameters with a did-you-mean error. The edit tools also accept camelCase `oldString`/`newString`, names given with quotes or HTML entities (`&amp;`) resolve, and `manage_resource` accepts single- or double-quoted names (PR #88 by [@mjc](https://github.com/mjc)).
+- `update_plan_step` without a `step_id` now adds a top-level step, instead of reporting success and doing nothing. Fields sent to the wrong target are refused.
+- Attachments arrive over stdio, including the remote and multi-instance proxies, as embedded MCP resources. HTTP MCP returns absolute download links (PRs #81 and #82 by [@mjc](https://github.com/mjc)).
+- Published tool schemas and descriptions are about 30 percent shorter. All 31 tools now cost an agent 5,781 tokens of context.
+- HTTP MCP no longer serializes requests behind one lock, so many agents at once no longer stall each other or the web UI (PR #83 by [@mjc](https://github.com/mjc)).
+
+### Projects and pages
+
+- Archive a project from its danger zone. Its data is written to one compressed file beside the database and the project is removed. An instance admin can restore it from Settings, Instance, with members and authorship intact. Dumps, backups and restores carry archived projects.
+- Tick task-list checkboxes in a rendered issue or page without opening the editor.
+- Add and remove issue relations from the issue view, and link or unlink issues from the CLI (PR #96 by [@lardissone](https://github.com/lardissone)). The relation picker also finds issues in other projects you can see.
+- Legacy Hangul Word Processor (`.hwp`) files can be attached. They are checked against the file format and always downloaded, never rendered (PR #65 by [@teracokr](https://github.com/teracokr)).
+- In the command palette, a bare number like `34` opens that issue in the current project first.
+
+### Backups
+
+- Automatic backups now also run from `lific mcp` over stdio and from local CLI commands, not only under `lific start`. An instance used only by agents was never backed up before. Processes share one schedule, read from the backup directory, so ten agent sessions do not write ten archives.
+- Restarting the server no longer forces a backup. It takes one only if one is due.
+
+### Security
+
+- API keys are checked with a SHA-256 verifier instead of Argon2. Existing keys are converted on their next successful use (PR #67 by [@mjc](https://github.com/mjc)).
+- A key bound to a user that no longer resolves is refused instead of falling back to operator access. Rotating a key keeps its owner and expiry, an expired key cannot be renewed by rotating it, and `lific connect` will not write an expired credential into a client's configuration (PR #66 by [@mjc](https://github.com/mjc)).
+- Issue reads, boards and exports leave out relations to issues in projects the caller cannot view. Previously they named those issues and, in `get_issue`, their status.
+
+### Fixes
+
+- A status change from the list or the board stays put. Previously, the card could snap back to its old column until the page was refreshed, permanently so when the browser had no realtime connection, such as behind a proxy that does not forward WebSocket upgrades ([#98](https://github.com/VoidNullable/lific/issues/98), reported by [@rokups](https://github.com/rokups)).
+- `lific init --here` creates its database instead of failing after writing the config, and its closing message describes the account it actually created.
+- The server starts one async worker per CPU, capped at 8, so large machines no longer spend startup on idle workers. `TOKIO_WORKER_THREADS` overrides the cap.
+
+### Windows
+
+- `lific init` and `lific service install|status|stop|restart|uninstall` work on Windows. The service starts at sign-in from the user's Run key, with no administrator rights, and a supervisor restarts the server if it fails, then gives up after five failures in a minute. Output goes to `lific.log` in the instance directory.
+
+### Upgrading
+
+- Seven migrations run on first start: waits, page revisions, comment kinds, the HWP attachment type (which rebuilds the attachments table), assignees, archived projects, and a cleanup of API keys. Take a backup first. A 2.10 binary refuses the upgraded database, so going back means restoring that backup.
+- Stop every Lific process that opens the database before upgrading, including `lific mcp` sessions started by agents, and upgrade the server and CLI together. Keys created, rotated or used under 2.11 switch to the new verifier format, which older binaries cannot check.
+- API keys created before Lific 1.0 that have not been used since are revoked by the upgrade. Every other key keeps working. Run `lific key list` afterwards and replace any key you still need.
+- MCP tools now reject unknown parameters instead of ignoring them. Automation that sent extra fields must drop them.
+- An instance that enables `[backup]` and is used only over stdio or the CLI starts writing backups to its backup directory.
+
 ## v2.10.0 (2026-09-23)
 
 A hardening release. Public projects get firmer limits and a spoof-resistant way for a reverse proxy to identify clients, `edit_comment` stops overwriting comments when an agent asks for a small edit, and newer MCP clients can talk to the stdio server again. There are no database migrations.

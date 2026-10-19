@@ -4,51 +4,12 @@ use axum::{
 };
 
 use crate::authz;
-use crate::db::queries::plans::{self, StepDoneEffect};
+use crate::db::queries::plans;
 use crate::db::{DbPool, models::*};
 use crate::error::LificError;
-use crate::realtime::{RealtimeEvent, RealtimeHub};
+use crate::realtime::RealtimeHub;
 
-use super::{filter_visible, with_read, with_write};
-
-/// LIF-407: a step's (or plan's) linked issue can live in a *different*
-/// project than the plan that references it. Authorizing only the plan's
-/// project would let a Maintainer on plan-project A attach and close an issue
-/// in project B they have no rights to. MCP already applies this both-sides
-/// check (`require_issue_ident_role_mcp` / `require_step_issue_role_mcp`,
-/// mirroring `link_issues`); this is the REST half of the same gate.
-fn require_issue_project_role(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    issue_id: i64,
-) -> Result<(), LificError> {
-    let project_id =
-        with_read(db, |conn| crate::db::queries::get_issue(conn, issue_id))?.project_id;
-    authz::require_role(db, identity, project_id, Role::Maintainer)
-}
-
-/// LIF-407: the same gate for every issue a `CreatePlan` payload references,
-/// anchor and (nested) steps alike — attaching an issue to a brand-new plan
-/// is still an attach.
-fn require_create_plan_issue_roles(
-    db: &DbPool,
-    identity: &Option<crate::resolve_caller::ResolvedIdentity>,
-    input: &CreatePlan,
-) -> Result<(), LificError> {
-    fn collect(steps: &[CreatePlanStep], out: &mut Vec<i64>) {
-        for step in steps {
-            out.extend(step.issue_id);
-            collect(&step.steps, out);
-        }
-    }
-    let mut issue_ids: Vec<i64> = input.issue_id.into_iter().collect();
-    collect(&input.steps, &mut issue_ids);
-    issue_ids.sort_unstable();
-    issue_ids.dedup();
-    issue_ids
-        .into_iter()
-        .try_for_each(|issue_id| require_issue_project_role(db, identity, issue_id))
-}
+use super::{filter_visible, with_read};
 
 pub(super) async fn list_plans(
     State(db): State<DbPool>,
@@ -70,9 +31,7 @@ pub(super) async fn get_plan(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Plan>, LificError> {
-    let plan = with_read(&db, |conn| plans::get_plan(conn, id))?;
-    authz::require_role(&db, &identity, plan.project_id, Role::Viewer)?;
-    Ok(Json(plan))
+    crate::services::plans::get(&db, &identity, id).map(Json)
 }
 
 pub(super) async fn resolve_plan(
@@ -94,13 +53,7 @@ pub(super) async fn create_plan(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Json(input): Json<CreatePlan>,
 ) -> Result<Json<Plan>, LificError> {
-    authz::require_role(&db, &identity, input.project_id, Role::Maintainer)?;
-    require_create_plan_issue_roles(&db, &identity, &input)?;
-    let plan = with_write(&db, |conn| plans::create_plan(conn, &input))?;
-    realtime.send(RealtimeEvent::ProjectUpdated {
-        project_id: plan.project_id,
-    });
-    Ok(Json(plan))
+    crate::services::plans::create(&db, &realtime, &identity, &input).map(Json)
 }
 
 pub(super) async fn update_plan(
@@ -110,16 +63,7 @@ pub(super) async fn update_plan(
     Path(id): Path<i64>,
     Json(input): Json<UpdatePlan>,
 ) -> Result<Json<Plan>, LificError> {
-    let project_id = with_read(&db, |conn| plans::get_plan(conn, id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    // LIF-407: re-anchoring to an issue in another project needs Maintainer
-    // on that project too.
-    if let Some(Some(issue_id)) = input.issue_id {
-        require_issue_project_role(&db, &identity, issue_id)?;
-    }
-    let plan = with_write(&db, |conn| plans::update_plan(conn, id, &input))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(plan))
+    crate::services::plans::update(&db, &realtime, &identity, id, &input).map(Json)
 }
 
 pub(super) async fn delete_plan_handler(
@@ -128,20 +72,8 @@ pub(super) async fn delete_plan_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, LificError> {
-    let project_id = with_read(&db, |conn| plans::get_plan(conn, id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    with_write(&db, |conn| plans::delete_plan(conn, id))?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
+    crate::services::plans::delete(&db, &realtime, &identity, id)?;
     Ok(Json(serde_json::json!({"deleted": true})))
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct AddStepRequest {
-    pub parent_step_id: Option<i64>,
-    pub title: String,
-    #[serde(default)]
-    pub description: String,
-    pub issue_id: Option<i64>,
 }
 
 pub(super) async fn add_step(
@@ -149,51 +81,9 @@ pub(super) async fn add_step(
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(plan_id): Path<i64>,
-    Json(input): Json<AddStepRequest>,
+    Json(input): Json<crate::services::plans::AddStep>,
 ) -> Result<Json<Plan>, LificError> {
-    let project_id = with_read(&db, |conn| plans::get_plan(conn, plan_id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    if let Some(issue_id) = input.issue_id {
-        require_issue_project_role(&db, &identity, issue_id)?;
-    }
-    let plan = with_write(&db, |conn| {
-        // LIF-407: `plans::add_step` rejects a `parent_step_id` belonging to
-        // another plan; without it a step could be grafted under a foreign
-        // (possibly invisible) plan's subtree.
-        plans::add_step(
-            conn,
-            plan_id,
-            input.parent_step_id,
-            &input.title,
-            &input.description,
-            input.issue_id,
-        )?;
-        plans::get_plan(conn, plan_id)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(plan))
-}
-
-#[derive(serde::Deserialize)]
-pub(super) struct UpdateStepRequest {
-    pub title: Option<String>,
-    pub description: Option<String>,
-    pub done: Option<bool>,
-    /// Tristate issue link: absent = no change, null = detach, id = attach.
-    #[serde(default, deserialize_with = "crate::db::models::deserialize_nullable")]
-    pub issue_id: Option<Option<i64>>,
-    pub move_parent_step_id: Option<i64>,
-    pub move_to_root: Option<bool>,
-    pub move_position: Option<i64>,
-}
-
-#[derive(serde::Serialize)]
-pub(super) struct StepUpdateResponse {
-    pub plan: Plan,
-    /// Set when the request toggled `done`, so the UI can surface the
-    /// issue side effect (e.g. "LIF-42 marked done").
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effect: Option<StepDoneEffect>,
+    crate::services::plans::add_step(&db, &realtime, &identity, plan_id, &input).map(Json)
 }
 
 pub(super) async fn update_step(
@@ -201,78 +91,10 @@ pub(super) async fn update_step(
     Extension(realtime): Extension<RealtimeHub>,
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path((plan_id, step_id)): Path<(i64, i64)>,
-    Json(input): Json<UpdateStepRequest>,
-) -> Result<Json<StepUpdateResponse>, LificError> {
-    let project_id = with_read(&db, |conn| plans::get_plan(conn, plan_id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    // LIF-407: both sides of a cross-project step↔issue edge are gated,
-    // matching MCP's `update_plan_step`. Attaching an issue needs Maintainer
-    // on the issue's project, and so does completing a step that already
-    // references one — `set_step_done` closes that issue.
-    if let Some(Some(issue_id)) = input.issue_id {
-        require_issue_project_role(&db, &identity, issue_id)?;
-    }
-    if input.done == Some(true) {
-        let linked = with_read(&db, |conn| {
-            plans::assert_step_in_plan(conn, plan_id, step_id)?;
-            plans::step_issue_id(conn, step_id)
-        })?;
-        if let Some(issue_id) = linked {
-            require_issue_project_role(&db, &identity, issue_id)?;
-        }
-    }
-    let (resp, issue_event) = with_write(&db, |conn| {
-        plans::assert_step_in_plan(conn, plan_id, step_id)?;
-        if let Some(ref t) = input.title {
-            plans::set_step_title(conn, step_id, t)?;
-        }
-        if let Some(ref d) = input.description {
-            plans::set_step_description(conn, step_id, d)?;
-        }
-        if let Some(issue) = input.issue_id {
-            plans::set_step_issue(conn, step_id, issue)?;
-        }
-        let effect = input
-            .done
-            .map(|done| plans::set_step_done(conn, step_id, done))
-            .transpose()?;
-        if input.move_to_root.unwrap_or(false)
-            || input.move_parent_step_id.is_some()
-            || input.move_position.is_some()
-        {
-            let new_parent = if input.move_to_root.unwrap_or(false) {
-                None
-            } else if let Some(p) = input.move_parent_step_id {
-                Some(p)
-            } else {
-                plans::step_parent(conn, step_id)?
-            };
-            plans::move_step(conn, step_id, new_parent, input.move_position)?;
-        }
-        let plan = plans::get_plan(conn, plan_id)?;
-        let issue_event = if effect
-            .as_ref()
-            .is_some_and(|effect| effect.issue_status_changed)
-        {
-            plans::step_issue_id(conn, step_id)?
-                .map(|issue_id| {
-                    crate::db::queries::get_issue(conn, issue_id)
-                        .map(|issue| (issue.project_id, issue.id))
-                })
-                .transpose()?
-        } else {
-            None
-        };
-        Ok((StepUpdateResponse { plan, effect }, issue_event))
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    if let Some((issue_project_id, issue_id)) = issue_event {
-        realtime.send(RealtimeEvent::IssueUpdated {
-            project_id: issue_project_id,
-            issue_id,
-        });
-    }
-    Ok(Json(resp))
+    Json(input): Json<crate::services::plans::UpdateStep>,
+) -> Result<Json<crate::services::plans::StepUpdate>, LificError> {
+    crate::services::plans::update_step(&db, &realtime, &identity, plan_id, step_id, &input)
+        .map(Json)
 }
 
 pub(super) async fn delete_step_handler(
@@ -281,15 +103,7 @@ pub(super) async fn delete_step_handler(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path((plan_id, step_id)): Path<(i64, i64)>,
 ) -> Result<Json<Plan>, LificError> {
-    let project_id = with_read(&db, |conn| plans::get_plan(conn, plan_id))?.project_id;
-    authz::require_role(&db, &identity, project_id, Role::Maintainer)?;
-    let plan = with_write(&db, |conn| {
-        plans::assert_step_in_plan(conn, plan_id, step_id)?;
-        plans::delete_step(conn, step_id)?;
-        plans::get_plan(conn, plan_id)
-    })?;
-    realtime.send(RealtimeEvent::ProjectUpdated { project_id });
-    Ok(Json(plan))
+    crate::services::plans::delete_step(&db, &realtime, &identity, plan_id, step_id).map(Json)
 }
 
 #[cfg(test)]

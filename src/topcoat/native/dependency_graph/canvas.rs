@@ -1,0 +1,1191 @@
+//! Rust-rendered relation canvas and its native graph controls.
+use std::collections::BTreeMap;
+
+use super::actions::{
+    link as link_relation, reverse as reverse_relation, unlink as unlink_relation,
+};
+use super::model::{self, Point, RelationEdge, RelationKind};
+use super::viewport;
+use crate::{
+    db::models::{Issue, ProjectRelation},
+    services::dependency_graph::DependencyGraphData,
+};
+use topcoat::{
+    context::Cx,
+    runtime::{Event, Signal, expr, signal},
+    view::{Attributes, BoxView, View, ViewExt, component, view},
+};
+
+pub(super) fn content<'a>(
+    cx: &'a Cx,
+    account: i64,
+    project: &str,
+    data: DependencyGraphData,
+    authority: crate::services::project_authority::Snapshot,
+) -> BoxView<'a> {
+    let project_id = data.project.id;
+    let issues = data.issues;
+    let relations = data.relations;
+    let owner = cx.keyed(format!("native-dependency-graph-{account}-{project_id}"));
+    let canvas = signal(&owner, || "linked".to_owned());
+    let closed = signal(&owner, || false);
+    let issue_revision = signal(&owner, || 0_usize);
+    let busy = signal(&owner, || false);
+    let error = signal(&owner, String::new);
+    let menu_kind = signal(&owner, String::new);
+    let menu_source = signal(&owner, String::new);
+    let menu_target = signal(&owner, String::new);
+    let viewport = viewport::state(&owner);
+    let project = project.to_owned();
+    view! {
+        cx =>
+        graph_content(
+            account: account,
+            project: project,
+            project_id: project_id,
+            issues: issues,
+            relations: relations,
+            authority: authority,
+            canvas: canvas,
+            closed: closed,
+            revision: issue_revision,
+            busy: busy,
+            error: error,
+            menu_kind: menu_kind,
+            menu_source: menu_source,
+            menu_target: menu_target,
+            viewport_state: viewport
+        )
+    }
+    .boxed()
+}
+
+#[component]
+async fn graph_content(
+    cx: &Cx,
+    account: i64,
+    project: String,
+    project_id: i64,
+    issues: Vec<Issue>,
+    relations: Vec<ProjectRelation>,
+    authority: crate::services::project_authority::Snapshot,
+    canvas: Signal<String>,
+    closed: Signal<bool>,
+    revision: Signal<usize>,
+    busy: Signal<bool>,
+    error: Signal<String>,
+    menu_kind: Signal<String>,
+    menu_source: Signal<String>,
+    menu_target: Signal<String>,
+    viewport_state: viewport::State,
+) -> topcoat::Result<impl View> {
+    let editable = authority.can_edit_content;
+    let linked_selected = canvas.clone();
+    let linked_activate = canvas.clone();
+    let unlinked_selected = canvas.clone();
+    let unlinked_activate = canvas.clone();
+    let closed_toggle = closed.clone();
+    let closed_text = closed.clone();
+    let close_filter = closed.clone();
+    let linked_label = format!("Linked {}", linked_count(&issues, &relations, closed.get()));
+    let unlinked_label = format!(
+        "Unlinked {}",
+        unlinked_count(&issues, &relations, closed.get())
+    );
+    let linked_view = view! {
+        cx =>
+        <button
+            type="button"
+            data-native-graph-view="linked"
+            aria-label="Show linked issues"
+            :aria-pressed=$(if linked_selected.get() == "linked" {
+                "true"
+            } else {
+                "false"
+            })
+            class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]"
+            @click=$(|_event: Event| linked_activate.set("linked".to_owned()))
+        >
+            (linked_label)
+        </button>
+    }
+    .boxed();
+    let unlinked_view = view! {
+        cx =>
+        <button
+            type="button"
+            data-native-graph-view="unlinked"
+            aria-label="Show unlinked issues"
+            :aria-pressed=$(if unlinked_selected.get() == "unlinked" {
+                "true"
+            } else {
+                "false"
+            })
+            class="rounded-md px-3 py-1.5 text-body-sm font-medium border border-[var(--border)]"
+            @click=$(|_event: Event| unlinked_activate.set("unlinked".to_owned()))
+        >
+            (unlinked_label)
+        </button>
+    }
+    .boxed();
+    let close_button = view! {
+        cx =>
+        <button
+            type="button"
+            data-native-graph-closed=""
+            :aria-pressed=$(if closed_toggle.get() { "true" } else { "false" })
+            class="inline-flex items-center gap-2 text-body-sm text-[var(--text-muted)]"
+            @click=$(|_event: Event| close_filter.set(!close_filter.get()))
+        >
+            <span
+                class="inline-flex size-4 items-center justify-center rounded border border-[var(--border)]"
+            >
+                $(if closed_text.get() { "✓" } else { "" })
+            </span>
+            "Show closed"
+        </button>
+    }.boxed();
+    let projection = model::project(&issues, &relations, closed.get());
+    let (chosen, layout) = if canvas.get() == "unlinked" {
+        let layout = model::layout_unlinked(
+            &projection
+                .unlinked
+                .issues
+                .iter()
+                .map(|issue| issue.id)
+                .collect::<Vec<_>>(),
+        );
+        (projection.unlinked, layout)
+    } else {
+        let blocking = edges(&projection.linked.relations)
+            .into_iter()
+            .filter(|edge| edge.kind == RelationKind::Blocks)
+            .collect::<Vec<_>>();
+        let cluster = edges(&projection.linked.relations);
+        let layout = model::layout_linked(
+            &projection
+                .linked
+                .issues
+                .iter()
+                .map(|issue| issue.id)
+                .collect::<Vec<_>>(),
+            &blocking,
+            &cluster,
+        );
+        (projection.linked, layout)
+    };
+    let issue_index: BTreeMap<_, _> = chosen
+        .issues
+        .iter()
+        .map(|issue| (issue.id, issue))
+        .collect();
+    let layout_scope = format!("{}-{}-{}", canvas.get(), closed.get(), revision.get());
+    let positions: BTreeMap<_, _> = chosen
+        .issues
+        .iter()
+        .map(|issue| {
+            let issue_cx = cx.keyed(format!(
+                "native-dependency-graph-position-{layout_scope}-{}",
+                issue.id
+            ));
+            let point = layout
+                .positions
+                .get(&issue.id)
+                .copied()
+                .unwrap_or(Point { x: 0.0, y: 0.0 });
+            (
+                issue.id,
+                (signal(&issue_cx, || point.x), signal(&issue_cx, || point.y)),
+            )
+        })
+        .collect();
+    let nodes = chosen
+        .issues
+        .iter()
+        .map(|issue| {
+            let drag_cx = cx.keyed(format!(
+                "native-dependency-graph-node-{layout_scope}-{}",
+                issue.id
+            ));
+            let (x, y) = positions.get(&issue.id).expect("issue position");
+            let point = Point {
+                x: x.get_untracked(),
+                y: y.get_untracked(),
+            };
+            let drag = NodeDragState {
+                active: signal(&drag_cx, || false),
+                pointer: signal(&drag_cx, || 0.0_f64),
+                start_x: signal(&drag_cx, || 0.0_f64),
+                start_y: signal(&drag_cx, || 0.0_f64),
+                origin_x: signal(&drag_cx, || point.x),
+                origin_y: signal(&drag_cx, || point.y),
+                dragged: signal(&drag_cx, || false),
+                position_x: x.clone(),
+                position_y: y.clone(),
+                zoom: viewport_state.zoom.clone(),
+            };
+            node(
+                cx,
+                issue,
+                drag,
+                editable,
+                &menu_kind,
+                &menu_source,
+                &menu_target,
+            )
+        })
+        .collect::<Vec<_>>();
+    let edges = chosen
+        .relations
+        .iter()
+        .filter_map(|relation| {
+            let (source_x, source_y) = positions.get(&relation.source_id)?;
+            let (target_x, target_y) = positions.get(&relation.target_id)?;
+            let source_issue = issue_index.get(&relation.source_id)?;
+            let target_issue = issue_index.get(&relation.target_id)?;
+            Some(edge(
+                cx,
+                relation,
+                source_issue,
+                target_issue,
+                source_x.clone(),
+                source_y.clone(),
+                target_x.clone(),
+                target_y.clone(),
+                editable,
+                &menu_kind,
+                &menu_source,
+                &menu_target,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let graph_width = layout.width.max(1.0);
+    let graph_height = layout.height.max(1.0);
+    let empty = chosen.issues.is_empty();
+    let empty_title = if issues.is_empty() {
+        "No issues"
+    } else if closed.get() {
+        "No issues in this view"
+    } else if canvas.get() == "linked" {
+        "No linked issues"
+    } else {
+        "No unlinked issues"
+    };
+    let canvas_name = canvas.get();
+    let error_message = error.clone();
+    let retry_revision = revision.clone();
+    let retry = view! {
+        cx =>
+        <button
+            type="button"
+            class="text-body-sm text-[var(--accent)]"
+            @click=$(|_event: Event| {
+                error_message.set("".to_owned());
+                retry_revision.increment();
+            })
+        >
+            "Try again"
+        </button>
+    }
+    .boxed();
+    let description = if editable {
+        "Drag an issue to move it. Drag a connector to create a relation."
+    } else {
+        "Read-only graph. You can still pan, zoom and move issues."
+    };
+    let target_values = chosen
+        .issues
+        .iter()
+        .map(|issue| {
+            (
+                issue.identifier.clone(),
+                format!("{} — {}", issue.identifier, issue.title),
+            )
+        })
+        .collect::<Vec<_>>();
+    let target_options = target_values
+        .iter()
+        .map(|(identifier, label)| {
+            let value = identifier.clone();
+            let label = label.clone();
+            view! { cx => <option value=(value)>(label)</option> }.boxed()
+        })
+        .collect::<Vec<_>>();
+    let connect_target = menu_target.clone();
+    let menu_open = menu_kind.clone();
+    let pan_surface = viewport::pan_surface_attrs(cx, &viewport_state);
+    let viewport_controls = viewport::controls(cx, &viewport_state);
+    let _graph_width = graph_width + 8.0;
+    let _graph_height = graph_height + 8.0;
+    let _zoom_style = viewport_state.zoom.clone();
+    let _pan_x_style = viewport_state.pan_x.clone();
+    let _pan_y_style = viewport_state.pan_y.clone();
+    let _transition_style = viewport_state.transition_ms.clone();
+    let _initial_x = viewport_state.pan_x.get_untracked();
+    let _initial_y = viewport_state.pan_y.get_untracked();
+    let _initial_transition = viewport_state.transition_ms.get_untracked();
+    let transform_initial = format!(
+        "width:{_graph_width}px;height:{_graph_height}px;transform-origin:0 0;translate:{_initial_x}px {_initial_y}px;scale:{};transition:translate 0ms,scale {_initial_transition}ms ease-out",
+        _zoom_style.get_untracked()
+    );
+    let menu_header = if menu_kind.get() == "edge" {
+        "Manage relation"
+    } else {
+        "Create relation"
+    };
+    let target_selection = view! {
+        cx =>
+        <select
+            aria-label="Target issue"
+            class="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1 text-body-sm"
+            :value=$(connect_target.get())
+            @change=$(|event: Event| connect_target.set(event.target.value.to_owned()))
+        >
+            <option value="">"Choose an issue…"</option>
+            for option in target_options {
+                (option)
+            }
+        </select>
+    }.boxed();
+    let create_blocks = action_button(
+        cx,
+        "Create blocks relation",
+        "Blocks",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "blocks",
+        busy.clone(),
+        error.clone(),
+        revision.clone(),
+        menu_kind.clone(),
+    );
+    let create_reverse_blocks = action_button(
+        cx,
+        "Create reverse blocks relation",
+        "Blocked by",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "blocks_reverse",
+        busy.clone(),
+        error.clone(),
+        revision.clone(),
+        menu_kind.clone(),
+    );
+    let create_relates = action_button(
+        cx,
+        "Create relates to relation",
+        "Relates to",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "relates_to",
+        busy.clone(),
+        error.clone(),
+        revision.clone(),
+        menu_kind.clone(),
+    );
+    let create_duplicate = action_button(
+        cx,
+        "Create duplicate relation",
+        "Duplicate",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "duplicate",
+        busy.clone(),
+        error.clone(),
+        revision.clone(),
+        menu_kind.clone(),
+    );
+    let reverse_edge = action_button(
+        cx,
+        "Reverse relation",
+        "Reverse",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "reverse",
+        busy.clone(),
+        error.clone(),
+        revision.clone(),
+        menu_kind.clone(),
+    );
+    let remove_edge = action_button(
+        cx,
+        "Remove relation",
+        "Remove",
+        account,
+        project_id,
+        menu_source.clone(),
+        menu_target.clone(),
+        "remove",
+        busy,
+        error.clone(),
+        revision,
+        menu_kind.clone(),
+    );
+    Ok(view! {
+        cx =>
+        <main
+            class="native-dependency-graph flex h-full min-h-0 flex-col text-[var(--text)]"
+            data-native-dependency-graph=(project.clone())
+            data-project-id=(project_id.to_string())
+            data-editable=(editable.to_string())
+            data-native-project-authority=(authority.encoded())
+        >
+            <header
+                class="flex flex-wrap items-center gap-3 border-b border-[var(--border)] px-6 py-3"
+            >
+                <div
+                    role="tablist"
+                    aria-label="Graph views"
+                    class="inline-flex gap-1 rounded-lg bg-[var(--bg-subtle)] p-1"
+                >
+                    (linked_view)
+                    (unlinked_view)
+                </div>
+                <span class="ml-auto"></span>
+                (close_button)
+            </header>
+            <div
+                role="alert"
+                class="flex items-center gap-2 px-6 py-2 text-body-sm text-[var(--error)]"
+                :hidden=$(error.get().is_empty())
+            >
+                $(error.get())
+                (retry)
+            </div>
+            <p class="sr-only">(description)</p>
+            <section
+                class="mx-6 mt-2 flex flex-wrap items-center gap-2"
+                role="group"
+                aria-label="Relation actions"
+                :hidden=$(menu_kind.get().is_empty())
+            >
+                <strong class="text-body-sm">(menu_header)</strong>
+                if menu_kind.get() == "connect" {
+                    (target_selection)
+                    (create_blocks)
+                    (create_reverse_blocks)
+                    (create_relates)
+                    (create_duplicate)
+                }
+                if menu_kind.get() == "edge" {
+                    (reverse_edge)
+                    (remove_edge)
+                }
+                <button
+                    type="button"
+                    class="text-body-sm text-[var(--text-muted)]"
+                    aria-label="Close relation menu"
+                    @click=$(|_event: Event| menu_open.set("".to_owned()))
+                >
+                    "Close"
+                </button>
+            </section>
+            if empty {
+                <section
+                    class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-center"
+                    data-native-graph-empty=(canvas_name.clone())
+                >
+                    <h2 class="text-heading font-medium">(empty_title)</h2>
+                    <p class="max-w-md text-body-sm text-[var(--text-muted)]">
+                        if canvas_name == "linked" {
+                            "Create a relation between issues to see them here."
+                        } else {
+                            "Every visible issue is linked. Choose Show closed to include completed work."
+                        }
+                    </p>
+                </section>
+            } else {
+                <section
+                    class="native-dependency-graph__viewport relative min-h-0 flex-1 overflow-hidden"
+                    data-native-graph-viewport=""
+                    data-canvas=(canvas_name)
+                >
+                    (viewport_controls)
+                    <div
+                        class="absolute inset-0 overflow-hidden"
+                        data-native-graph-pan-surface=""
+                        (pan_surface)
+                        style="background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 24px 24px;"
+                    >
+                        <div
+                            class="relative mx-auto"
+                            data-native-graph-surface=""
+                            style=(format!(
+                                "width:{}px;height:{}px;min-width:100%;min-height:100%",
+                                graph_width + 8.0,
+                                graph_height + 8.0,
+                            ))
+                        >
+                            <div
+                                class="absolute left-0 top-0"
+                                data-native-graph-transform=""
+                                :style=$({
+                                    let _current_zoom = _zoom_style.get();
+                                    let _current_x = _pan_x_style.get();
+                                    let _current_y = _pan_y_style.get();
+                                    let _transition_ms = _transition_style.get();
+                                    raw!(
+                                        "cx.hydrate('width:'+${_graph_width}.toString()+'px;height:'+${_graph_height}.toString()+'px;transform-origin:0 0;translate:'+${_current_x}.toString()+'px '+${_current_y}.toString()+'px;scale:'+${_current_zoom}.toString()+';transition:translate 0ms,scale '+${_transition_ms}.toString()+'ms ease-out')",
+                                        transform_initial.clone(),
+                                    )
+                                })
+                            >
+                                <svg
+                                    class="pointer-events-none absolute inset-0 overflow-visible"
+                                    width=(graph_width + 8.0)
+                                    height=(graph_height + 8.0)
+                                    viewBox=(format!(
+                                        "0 0 {} {}",
+                                        graph_width + 8.0,
+                                        graph_height + 8.0,
+                                    ))
+                                    aria-hidden="true"
+                                >
+                                    <defs>
+                                        <marker
+                                            id="native-graph-arrow"
+                                            viewBox="0 0 10 10"
+                                            refX="9"
+                                            refY="5"
+                                            markerWidth="6"
+                                            markerHeight="6"
+                                            orient="auto-start-reverse"
+                                        >
+                                            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-faint)"></path>
+                                        </marker>
+                                    </defs>
+                                    for item in edges {
+                                        (item)
+                                    }
+                                </svg>
+                                for item in nodes {
+                                    (item)
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            }
+            <footer
+                class="border-t border-[var(--border)] px-6 py-2 text-caption text-[var(--text-faint)]"
+            >
+                (description)
+            </footer>
+        </main>
+    })
+}
+
+struct NodeDragState {
+    active: Signal<bool>,
+    pointer: Signal<f64>,
+    start_x: Signal<f64>,
+    start_y: Signal<f64>,
+    origin_x: Signal<f64>,
+    origin_y: Signal<f64>,
+    dragged: Signal<bool>,
+    position_x: Signal<f64>,
+    position_y: Signal<f64>,
+    zoom: Signal<f64>,
+}
+
+fn node_drag_attrs(cx: &Cx, state: NodeDragState) -> Attributes {
+    let NodeDragState {
+        active,
+        pointer,
+        start_x,
+        start_y,
+        origin_x,
+        origin_y,
+        dragged,
+        position_x,
+        position_y,
+        zoom,
+    } = state;
+    let down_active = active.clone();
+    let down_pointer = pointer.clone();
+    let down_start_x = start_x.clone();
+    let down_start_y = start_y.clone();
+    let down_origin_x = origin_x.clone();
+    let down_origin_y = origin_y.clone();
+    let down_dragged = dragged.clone();
+    let down_x = position_x.clone();
+    let down_y = position_y.clone();
+    let move_active = active.clone();
+    let move_pointer = pointer.clone();
+    let move_start_x = start_x;
+    let move_start_y = start_y;
+    let move_origin_x = origin_x;
+    let move_origin_y = origin_y;
+    let move_dragged = dragged.clone();
+    let move_x = position_x;
+    let move_y = position_y;
+    let move_zoom = zoom;
+    let up_active = active.clone();
+    let up_pointer = pointer.clone();
+    let cancel_active = active;
+    let cancel_pointer = pointer;
+    let cancel_dragged = dragged.clone();
+    let click_dragged = dragged;
+    let down = expr!(|event: Event| {
+        let button = raw!("cx.hydrate(${event}.inner.button)", 0.0);
+        let primary = raw!("cx.hydrate(${event}.inner.isPrimary)", false);
+        if button == 0.0 {
+            if primary {
+                event.stop_propagation();
+                down_active.set(true);
+                down_pointer.set(raw!("cx.hydrate(${event}.inner.pointerId)", 0.0));
+                down_start_x.set(raw!("cx.hydrate(${event}.inner.clientX)", 0.0));
+                down_start_y.set(raw!("cx.hydrate(${event}.inner.clientY)", 0.0));
+                down_origin_x.set(down_x.get());
+                down_origin_y.set(down_y.get());
+                down_dragged.set(false);
+                raw!(
+                    "${event}.inner.currentTarget.setPointerCapture?.(${event}.inner.pointerId)",
+                    ()
+                );
+            }
+        }
+    });
+    let movement = expr!(|_event: Event| {
+        if move_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == move_pointer.get() {
+                let x = raw!("cx.hydrate(${_event}.inner.clientX)", 0.0);
+                let y = raw!("cx.hydrate(${_event}.inner.clientY)", 0.0);
+                let dx = x - move_start_x.get();
+                let dy = y - move_start_y.get();
+                if dx * dx + dy * dy >= 9.0 {
+                    move_dragged.set(true);
+                    move_x.set(move_origin_x.get() + dx / move_zoom.get());
+                    move_y.set(move_origin_y.get() + dy / move_zoom.get());
+                }
+            }
+        }
+    });
+    let up = expr!(|_event: Event| {
+        if up_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == up_pointer.get() {
+                up_active.set(false);
+                raw!(
+                    "const node=${_event}.inner.currentTarget;if(node.hasPointerCapture?.(${_event}.inner.pointerId)){try{node.releasePointerCapture(${_event}.inner.pointerId)}catch(error){if(error?.name!=='NotFoundError')throw error}}",
+                    ()
+                );
+            }
+        }
+    });
+    let cancel = expr!(|_event: Event| {
+        if cancel_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == cancel_pointer.get() {
+                cancel_active.set(false);
+                cancel_dragged.set(false);
+            }
+        }
+    });
+    let lost = expr!(|_event: Event| {
+        if cancel_active.get() {
+            let pointer_id = raw!("cx.hydrate(${_event}.inner.pointerId)", 0.0);
+            if pointer_id == cancel_pointer.get() {
+                cancel_active.set(false);
+            }
+        }
+    });
+    let click = expr!(|event: Event| {
+        if click_dragged.get() {
+            event.prevent_default();
+            click_dragged.set(false);
+        }
+    });
+    let mut attrs = Attributes::with_capacity(6);
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointerdown",
+        down.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointermove",
+        movement.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointerup",
+        up.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:pointercancel",
+        cancel.into_evaluated_and_js().1,
+    );
+    attrs.insert(
+        cx,
+        "data-topcoat-on:lostpointercapture",
+        lost.into_evaluated_and_js().1,
+    );
+    attrs.insert(cx, "data-topcoat-on:click", click.into_evaluated_and_js().1);
+    attrs
+}
+
+fn node<'a>(
+    cx: &'a Cx,
+    issue: &Issue,
+    drag: NodeDragState,
+    editable: bool,
+    menu_kind: &Signal<String>,
+    menu_source: &Signal<String>,
+    menu_target: &Signal<String>,
+) -> BoxView<'a> {
+    let position_x = drag.position_x.clone();
+    let position_y = drag.position_y.clone();
+    let point = Point {
+        x: position_x.get_untracked(),
+        y: position_y.get_untracked(),
+    };
+    let href = super::super::navigation::attrs(
+        cx,
+        &format!(
+            "/{}/issues/{}",
+            issue
+                .identifier
+                .split_once('-')
+                .map_or("", |(project, _)| project),
+            issue.identifier
+        ),
+    );
+    let drag_marker = drag.dragged.clone();
+    let drag_attrs = node_drag_attrs(cx, drag);
+    let identifier = issue.identifier.clone();
+    let issue_id = issue.id.to_string();
+    let issue_title = issue.title.clone();
+    let status = issue.status;
+    let priority = issue.priority;
+    let status_view = super::super::icons::status_icon(cx, status, 12);
+    let priority_view = super::super::icons::priority_icon(cx, priority, 12);
+    let issue_label = format!("{}: {}", identifier, issue_title);
+    let start_connect = menu_kind.clone();
+    let source_issue = menu_source.clone();
+    let clear_target = menu_target.clone();
+    let closed = matches!(
+        issue.status,
+        crate::db::models::Status::Done | crate::db::models::Status::Cancelled
+    );
+    let node_class = if closed {
+        "native-dependency-graph__node group flex flex-col justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 shadow-sm no-underline opacity-50 hover:border-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+    } else {
+        "native-dependency-graph__node group flex flex-col justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 shadow-sm no-underline hover:border-[var(--accent)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+    };
+    let stop_node_drag = expr!(|event: Event| event.stop_propagation());
+    let mut handle_attrs = Attributes::with_capacity(1);
+    handle_attrs.insert(
+        cx,
+        "data-topcoat-on:pointerdown",
+        stop_node_drag.into_evaluated_and_js().1,
+    );
+    view! {
+        cx =>
+        <a
+            class=(format!(
+                "{node_class} touch-none cursor-grab select-none data-[dragging=true]:!border-[var(--border)]",
+            ))
+            draggable="false"
+            data-native-graph-node=(issue_id)
+            data-issue-id=(identifier.clone())
+            data-x=(point.x.to_string())
+            data-y=(point.y.to_string())
+            data-width="200"
+            data-height="58"
+            aria-label=(issue_label)
+            aria-disabled="false"
+            :data-dragging=$({
+                let _moving = drag_marker.get();
+                raw!("cx.hydrate(${_moving}.toString())", "false")
+            })
+            :style=$({
+                let _x = position_x.get();
+                let _y = position_y.get();
+                raw!(
+                    "cx.hydrate('position:absolute;left:'+${_x}.toString()+'px;top:'+${_y}.toString()+'px;width:200px;height:58px')",
+                    "",
+                )
+            })
+            (drag_attrs)
+            (href)
+        >
+            <span class="flex items-center gap-1.5">
+                <span class="shrink-0">(status_view)</span>
+                <span class="truncate font-mono text-caption text-[var(--text-faint)]">
+                    (identifier.clone())
+                </span>
+                <span class="ml-auto">(priority_view)</span>
+            </span>
+            <span class="mt-0.5 block truncate text-caption leading-snug">
+                (issue_title)
+            </span>
+            if editable {
+                <button
+                    type="button"
+                    aria-label=(format!("Create relation from {}", identifier))
+                    class="native-graph-handle absolute -right-2 top-1/2 size-2.5 -translate-y-1/2 rounded-full border-2 border-[var(--surface)] bg-[var(--accent)]"
+                    data-native-graph-connect=(identifier.clone())
+                    (handle_attrs)
+                    @click=$(|event: Event| {
+                        event.prevent_default();
+                        event.stop_propagation();
+                        start_connect.set("connect".to_owned());
+                        source_issue.set(identifier.clone());
+                        clear_target.set("".to_owned());
+                    })
+                ></button>
+            }
+        </a>
+    }.boxed()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edge<'a>(
+    cx: &'a Cx,
+    relation: &ProjectRelation,
+    source_issue: &Issue,
+    target_issue: &Issue,
+    source_x: Signal<f64>,
+    source_y: Signal<f64>,
+    target_x: Signal<f64>,
+    target_y: Signal<f64>,
+    editable: bool,
+    menu_kind: &Signal<String>,
+    menu_source: &Signal<String>,
+    menu_target: &Signal<String>,
+) -> BoxView<'a> {
+    let initial_x1 = source_x.get_untracked() + 200.0;
+    let initial_y1 = source_y.get_untracked() + 29.0;
+    let initial_x2 = target_x.get_untracked();
+    let initial_y2 = target_y.get_untracked() + 29.0;
+    let middle = (initial_x1 + initial_x2) / 2.0;
+    let path = format!(
+        "M {initial_x1} {initial_y1} C {middle} {initial_y1}, {middle} {initial_y2}, {initial_x2} {initial_y2}"
+    );
+    let edge_source_x = source_x;
+    let edge_source_y = source_y;
+    let edge_target_x = target_x;
+    let edge_target_y = target_y;
+    let kind = relation.relation_type.clone();
+    let stroke = "var(--text-faint)";
+    let dash = match kind.as_str() {
+        "blocks" => "",
+        "duplicate" => "2 3",
+        _ => "5 4",
+    };
+    let opacity = match kind.as_str() {
+        "blocks" => "0.55",
+        _ => "0.4",
+    };
+    let marker = if kind == "relates_to" {
+        ""
+    } else {
+        "url(#native-graph-arrow)"
+    };
+    let source = source_issue.identifier.clone();
+    let target = target_issue.identifier.clone();
+    let open_manage = menu_kind.clone();
+    let manage_source = menu_source.clone();
+    let manage_target = menu_target.clone();
+    view! {
+        cx =>
+        <g
+            data-native-graph-edge=(format!("{}:{}:{}", source, target, kind))
+            data-relation-type=(kind)
+        >
+            <path
+                d=(path)
+                :d=$({
+                    let _x1 = edge_source_x.get() + 200.0;
+                    let _y1 = edge_source_y.get() + 29.0;
+                    let _x2 = edge_target_x.get();
+                    let _y2 = edge_target_y.get() + 29.0;
+                    let _middle = (_x1 + _x2) / 2.0;
+                    raw!(
+                        "cx.hydrate('M '+${_x1}.toString()+' '+${_y1}.toString()+' C '+${_middle}.toString()+' '+${_y1}.toString()+', '+${_middle}.toString()+' '+${_y2}.toString()+', '+${_x2}.toString()+' '+${_y2}.toString())",
+                        "",
+                    )
+                })
+                fill="none"
+                stroke=(stroke)
+                stroke-opacity=(opacity)
+                stroke-width="1.5"
+                stroke-dasharray=(dash)
+                marker-end=(marker)
+            ></path>
+        </g>
+        if editable {
+            <button
+                type="button"
+                class="absolute z-10 size-7 opacity-0 focus:opacity-100 hover:opacity-100"
+                :style=$({
+                    let _x1 = edge_source_x.get() + 200.0;
+                    let _y1 = edge_source_y.get() + 29.0;
+                    let _x2 = edge_target_x.get();
+                    let _y2 = edge_target_y.get() + 29.0;
+                    let _left = (_x1 + _x2) / 2.0 - 14.0;
+                    let _top = (_y1 + _y2) / 2.0 - 14.0;
+                    raw!(
+                        "cx.hydrate('left:'+${_left}.toString()+'px;top:'+${_top}.toString()+'px')",
+                        "",
+                    )
+                })
+                aria-label=(format!("Manage relation from {} to {}", source, target))
+                data-native-graph-manage=(format!("{}:{}", source, target))
+                @click=$(|event: Event| {
+                    event.prevent_default();
+                    open_manage.set("edge".to_owned());
+                    manage_source.set(source.clone());
+                    manage_target.set(target.clone());
+                })
+            ></button>
+        }
+    }
+    .boxed()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn action_button<'a>(
+    cx: &'a Cx,
+    aria: &'static str,
+    label: &'static str,
+    account: i64,
+    project_id: i64,
+    source: Signal<String>,
+    target: Signal<String>,
+    action: &'static str,
+    busy: Signal<bool>,
+    error: Signal<String>,
+    revision: Signal<usize>,
+    menu: Signal<String>,
+) -> BoxView<'a> {
+    let busy_disabled = busy.clone();
+    let source_disabled = source.clone();
+    let target_disabled = target.clone();
+    let busy_action = busy.clone();
+    let busy_success = busy.clone();
+    let busy_failure = busy;
+    let error_action = error.clone();
+    let error_failure = error;
+    let revision_action = revision;
+    let menu_action = menu;
+    let source_action = source;
+    let target_action = target;
+    view! {
+        cx =>
+        <button
+            type="button"
+            aria-label=(aria)
+            class="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-body-sm disabled:opacity-50"
+            :disabled=$(if busy_disabled.get() {
+                true
+            } else {
+                if source_disabled.get().is_empty() {
+                    true
+                } else {
+                    target_disabled.get().is_empty()
+                }
+            })
+            @click=$(async |_event: Event| {
+                busy_action.set(true);
+                error_action.set("".to_owned());
+                let _success = |_message: String| {
+                    busy_success.set(false);
+                    menu_action.set("".to_owned());
+                    revision_action.increment();
+                };
+                let _failure = || {
+                    busy_failure.set(false);
+                    error_failure.set(
+                        "Couldn't update the relation. Check your access and try again.".to_owned(
+
+                        ),
+                    );
+                };
+                let source_value = source_action.get();
+                let target_value = target_action.get();
+                let _run = async || {
+                    if action == "reverse" {
+                        reverse_relation(
+                            account,
+                            project_id,
+                            source_value.clone(),
+                            target_value.clone(),
+                        ).await
+                    } else if action == "remove" {
+                        unlink_relation(
+                            account,
+                            project_id,
+                            source_value.clone(),
+                            target_value.clone(),
+                        ).await
+                    } else if action == "blocks_reverse" {
+                        link_relation(
+                            account,
+                            project_id,
+                            target_value.clone(),
+                            source_value.clone(),
+                            "blocks".to_owned(),
+                        ).await
+                    } else {
+                        let kind = if action == "blocks" {
+                            "blocks"
+                        } else if action == "duplicate" {
+                            "duplicate"
+                        } else {
+                            "relates_to"
+                        };
+                        link_relation(
+                            account,
+                            project_id,
+                            source_value.clone(),
+                            target_value.clone(),
+                            kind.to_owned(),
+                        ).await
+                    }
+                };
+                raw!(
+                    "Promise.resolve().then(() => ${_run}()).then(value => ${_success}(value)).catch(() => ${_failure}());",
+                    (),
+                );
+            })
+        >
+            (label)
+        </button>
+    }.boxed()
+}
+
+fn edges(relations: &[ProjectRelation]) -> Vec<RelationEdge> {
+    relations
+        .iter()
+        .map(|relation| RelationEdge {
+            source: relation.source_id,
+            target: relation.target_id,
+            kind: match relation.relation_type.as_str() {
+                "blocks" => RelationKind::Blocks,
+                "duplicate" => RelationKind::Duplicate,
+                _ => RelationKind::RelatesTo,
+            },
+        })
+        .collect()
+}
+fn linked_count(issues: &[Issue], relations: &[ProjectRelation], closed: bool) -> usize {
+    model::project(issues, relations, closed).counts.linked
+}
+fn unlinked_count(issues: &[Issue], relations: &[ProjectRelation], closed: bool) -> usize {
+    model::project(issues, relations, closed).counts.unlinked
+}
+
+#[cfg(test)]
+mod action_button_tests {
+    use std::{io::Write, process::Stdio};
+
+    use super::*;
+    use serde_json::json;
+    use topcoat::context::CxTestBuilder;
+    use topcoat::runtime::Surrogated;
+
+    fn test_signal_id(value: impl serde::Serialize) -> String {
+        serde_json::to_value(value).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[component]
+    async fn remove_button_fixture(cx: &Cx) -> topcoat::Result<impl View> {
+        let busy = signal(cx, || false);
+        let error = signal(cx, String::new);
+        let revision = signal(cx, || 0_usize);
+        let menu = signal(cx, || "edge".to_owned());
+        let source = signal(cx, || "ACC-1".to_owned());
+        let target = signal(cx, || "ACC-2".to_owned());
+        let busy_id = test_signal_id((&busy).into_surrogate());
+        let error_id = test_signal_id((&error).into_surrogate());
+        let revision_id = test_signal_id((&revision).into_surrogate());
+        let menu_id = test_signal_id((&menu).into_surrogate());
+        let button = action_button(
+            cx,
+            "Remove relation",
+            "Remove",
+            9,
+            11,
+            source,
+            target,
+            "remove",
+            busy,
+            error,
+            revision,
+            menu,
+        );
+        Ok(view! {
+            cx =>
+            (button)
+            <span
+                data-test-busy-id=(busy_id)
+                data-test-error-id=(error_id)
+                data-test-revision-id=(revision_id)
+                data-test-menu-id=(menu_id)
+            ></span>
+        })
+    }
+
+    #[tokio::test]
+    async fn successful_relation_procedure_clears_busy_and_menu_and_advances_revision() {
+        let cx = CxTestBuilder::new().build();
+        let cx = &cx;
+        let html = view! { cx => remove_button_fixture() }
+            .single()
+            .await
+            .unwrap()
+            .render(cx);
+        let document = scraper::Html::parse_document(&html);
+        let button = scraper::Selector::parse("[aria-label='Remove relation']").unwrap();
+        let button = document.select(&button).next().unwrap();
+        let state = scraper::Selector::parse("[data-test-busy-id]").unwrap();
+        let state = document.select(&state).next().unwrap();
+        let signals = super::super::super::home_fixture::page_signals(&html);
+        let input = json!({
+            "handler": button.value().attr("data-topcoat-on:click").unwrap(),
+            "signals": signals,
+            "busy": state.value().attr("data-test-busy-id").unwrap(),
+            "error": state.value().attr("data-test-error-id").unwrap(),
+            "revision": state.value().attr("data-test-revision-id").unwrap(),
+            "menu": state.value().attr("data-test-menu-id").unwrap(),
+        });
+        let mut child = std::process::Command::new("node")
+            .arg("src/topcoat/native/dependency_graph/action_button.test.cjs")
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "successful native relation handler:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

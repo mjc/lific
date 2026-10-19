@@ -1,0 +1,671 @@
+{
+  "baseline": "9683d38af8e1e6f9b076439fe90d9519109b2218",
+  "status": "ported_assertions_active; independent_review_complete",
+  "checkpoint": "Current debug executable and shared real-prefix acceptance fixture; source/CSS edits by other owners may change later checkpoint results.",
+  "originalSources": 13,
+  "originalNamedCases": 107,
+  "ownedCounts": {
+    "tests": 157,
+    "passed": 85,
+    "failed": 72,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "referenceEvidence": {
+    "target": "src/topcoat/tests/main/issues/references.test.js",
+    "owner": "root",
+    "tests": 21,
+    "passed": 10,
+    "failed": 11,
+    "classification": "internal reference contract failures; independently do not prove UI staleness/cache/concurrency regressions because current parent owns refresh and one binder serves a whole container"
+  },
+  "commands": [
+    {
+      "command": "node --test --test-concurrency=1 src/topcoat/tests/main/issues/commentLinks.browser.test.js src/topcoat/tests/main/issues/comments.browser.test.js src/topcoat/tests/main/issues/comments.test.js src/topcoat/tests/main/issues/context-menu.browser.test.js src/topcoat/tests/main/issues/insertSnippet.test.js src/topcoat/tests/main/issues/issue-topbar.browser.test.js src/topcoat/tests/main/issues/peek-permissions.browser.test.js src/topcoat/tests/main/issues/pendingPatch.test.js src/topcoat/tests/main/issues/real.browser.test.js src/topcoat/tests/main/issues/saveQueue.test.js src/topcoat/tests/main/issues/waits.browser.test.js",
+      "files": [
+        "src/topcoat/tests/main/issues/commentLinks.browser.test.js",
+        "src/topcoat/tests/main/issues/comments.browser.test.js",
+        "src/topcoat/tests/main/issues/comments.test.js",
+        "src/topcoat/tests/main/issues/context-menu.browser.test.js",
+        "src/topcoat/tests/main/issues/insertSnippet.test.js",
+        "src/topcoat/tests/main/issues/issue-topbar.browser.test.js",
+        "src/topcoat/tests/main/issues/peek-permissions.browser.test.js",
+        "src/topcoat/tests/main/issues/pendingPatch.test.js",
+        "src/topcoat/tests/main/issues/real.browser.test.js",
+        "src/topcoat/tests/main/issues/saveQueue.test.js",
+        "src/topcoat/tests/main/issues/waits.browser.test.js"
+      ],
+      "tests": 150,
+      "passed": 82,
+      "failed": 68,
+      "notes": "Initial checkpoint, superseded for six rechecked files; two harness issues corrected."
+    },
+    {
+      "command": "node --test --test-concurrency=1 src/topcoat/tests/main/issues/commentLinks.browser.test.js src/topcoat/tests/main/issues/comments.browser.test.js src/topcoat/tests/main/issues/comments.test.js src/topcoat/tests/main/issues/context-menu.browser.test.js src/topcoat/tests/main/issues/issue-topbar.browser.test.js src/topcoat/tests/main/issues/real.browser.test.js",
+      "files": [
+        "src/topcoat/tests/main/issues/commentLinks.browser.test.js",
+        "src/topcoat/tests/main/issues/comments.browser.test.js",
+        "src/topcoat/tests/main/issues/comments.test.js",
+        "src/topcoat/tests/main/issues/context-menu.browser.test.js",
+        "src/topcoat/tests/main/issues/issue-topbar.browser.test.js",
+        "src/topcoat/tests/main/issues/real.browser.test.js"
+      ],
+      "tests": 110,
+      "passed": 61,
+      "failed": 49
+    },
+    {
+      "command": "node --test --test-name-pattern='theme follows' src/topcoat/tests/main/issues/context-menu.browser.test.js",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "command": "node --test src/topcoat/tests/main/inventory.test.js",
+      "tests": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "command": "node --test --test-concurrency=1 src/topcoat/tests/main/issues/context-menu.browser.test.js src/topcoat/tests/main/issues/waits.browser.test.js",
+      "tests": 32,
+      "passed": 20,
+      "failed": 12
+    }
+  ],
+  "files": [
+    {
+      "path": "src/topcoat/tests/main/issues/commentLinks.browser.test.js",
+      "counts": {
+        "tests": 5,
+        "failed": 0,
+        "passed": 5,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 5,
+        "suites": 0
+      },
+      "failures": []
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/comments.browser.test.js",
+      "counts": {
+        "tests": 14,
+        "failed": 8,
+        "passed": 6,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 9,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "the thread revision changes for every way the rendered thread can change",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 2\nReceived: 4] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 2\n  Received: 4\n    matcherResult: {\n      actual: 4,\n      expected: 2,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 2\\n' +\n        'Received: 4',\n      name: 'toBe',\n   "
+        },
+        {
+          "case": "the thread revision tracks the mention roster the bodies render with",
+          "line": 11,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toContainText(expected) failed\n\nLocator: locator('#comment-1 .tc-comment__mention').first()\nExpected substring: \"@Acceptance Admin\"\nReceived string:    \"@acceptance-admin\"\nTimeout: 5000ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 5000ms\n  - waiting for locator('#comment-1 .tc-comment__mention').first()\n    14 × locator resolved to <span class=\"tc-comment__mention\">@acceptance-admin</span>\n       - unexpected value \"@acceptance-admin\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toContainText(expected) failed\n  \n  Locator: locator('#comment-1 .tc-comment__mention').first()\n  Expected substring: \"@Acceptance Admin\"\n  Received string:    \"@acceptance-admin\"\n  Timeout: 5000ms\n  \n  Call log:\n    - Expect \"to.have.text\" with timeout 5000ms\n    - waiting for locator('#comment-1 .tc-comment__mention').first()\n      14 × locator resolved to <span class=\"tc-comment__mention\">@acceptance-admin<"
+        },
+        {
+          "case": "every comment body renders its diagrams inside the thread",
+          "line": 22,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toHaveCount(expected) failed\n\nLocator:  locator('[data-mermaid],.tc-public__diagram,svg')\nExpected: 2\nReceived: 0\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.have.count\" with timeout 5000ms\n  - waiting for locator('[data-mermaid],.tc-public__diagram,svg')\n    14 × locator resolved to 0 elements\n       - unexpected value \"0\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toHaveCount(expected) failed\n  \n  Locator:  locator('[data-mermaid],.tc-public__diagram,svg')\n  Expected: 2\n  Received: 0\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.have.count\" with timeout 5000ms\n    - waiting for locator('[data-mermaid],.tc-public__diagram,svg')\n      14 × locator resolved to 0 elements\n         - unexpected value \"0\""
+        },
+        {
+          "case": "renders the original time and exact edited timestamp",
+          "line": 23,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toContainText(expected) failed\n\nLocator: locator('[data-comment-id=\"42\"]')\nExpected substring: \"edited\"\nReceived string:    \"Owner8/13/2026, 10:00:00 AM#OriginalEditDelete\"\nTimeout: 5000ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 5000ms\n  - waiting for locator('[data-comment-id=\"42\"]')\n    14 × locator resolved to <li id=\"comment-42\" class=\"tc-comment\" data-comment-id=\"42\">…</li>\n       - unexpected value \"Owner8/13/2026, 10:00:00 AM#OriginalEditDelete\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toContainText(expected) failed\n  \n  Locator: locator('[data-comment-id=\"42\"]')\n  Expected substring: \"edited\"\n  Received string:    \"Owner8/13/2026, 10:00:00 AM#OriginalEditDelete\"\n  Timeout: 5000ms\n  \n  Call log:\n    - Expect \"to.have.text\" with timeout 5000ms\n    - waiting for locator('[data-comment-id=\"42\"]')\n      14 × locator resolved to <li id=\"comment-42\" class=\"tc-comment\" data-com"
+        },
+        {
+          "case": "submit",
+          "line": 24,
+          "category": "observable_browser_behavior",
+          "evidence": "Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: true\nReceived: false\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: true\n  Received: false"
+        },
+        {
+          "case": "save",
+          "line": 24,
+          "category": "observable_browser_behavior",
+          "evidence": "Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: \"Keyboard edited\"\nReceived: \"Original\"\n\nCall Log:\n- Timeout 5000ms exceeded while waiting on the predicate\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: \"Keyboard edited\"\n  Received: \"Original\"\n  \n  Call Log:\n  - Timeout 5000ms exceeded while waiting on the predicate"
+        },
+        {
+          "case": "cancel",
+          "line": 24,
+          "category": "observable_browser_behavior",
+          "evidence": "Error [ERR_TEST_FAILURE]: expect(locator).toHaveCount(expected) failed\n\nLocator:  locator('[data-comment-edit-draft=\"4\"]')\nExpected: 0\nReceived: 1\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.have.count\" with timeout 5000ms\n  - waiting for locator('[data-comment-edit-draft=\"4\"]')\n    14 × locator resolved to 1 element\n       - unexpected value \"1\"\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toHaveCount(expected) failed\n  \n  Locator:  locator('[data-comment-edit-draft=\"4\"]')\n  Expected: 0\n  Received: 1\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.have.count\" with timeout 5000ms\n    - waiting for locator('[data-comment-edit-draft=\"4\"]')\n      14 × locator resolved to 1 element\n         - unexpected value \"1\""
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/comments.test.js",
+      "counts": {
+        "tests": 35,
+        "failed": 10,
+        "passed": 25,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 35,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "marks comments edited only when the update timestamp changes",
+          "line": 25,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: true\nReceived: false] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: true\n  Received: false\n    matcherResult: {\n      actual: false,\n      expected: true,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: true\\n' +\n        'Received: false',\n    "
+        },
+        {
+          "case": "dedupes defensively when two pages overlap",
+          "line": 223,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: \"edited\"\nReceived: \"Original\"] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: \"edited\"\n  Received: \"Original\"\n    matcherResult: {\n      actual: 'Original',\n      expected: 'edited',\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: \"edited\"\\n' "
+        },
+        {
+          "case": "a refresh keeps exactly the rows it was asked for, not whole pages",
+          "line": 276,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toHaveLength(expected)\n\nExpected length: 51\nReceived length: 100\nReceived array:  [{\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"Original\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 401, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"Original\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 402, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"Original\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 403, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"Original\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 404, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"O"
+        },
+        {
+          "case": "an automatic refresh is capped no matter how much history is loaded",
+          "line": 311,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toHaveLength(expected)\n\nExpected length: 9\nReceived length: 100\nReceived array:  [{\"before\": null, \"size\": 50}, {\"before\": 4951, \"size\": 50}, {\"before\": 4901, \"size\": 50}, {\"before\": 4851, \"size\": 50}, {\"before\": 4801, \"size\": 50}, {\"before\": 4751, \"size\": 50}, {\"before\": 4701, \"size\": 50}, {\"before\": 4651, \"size\": 50}, {\"before\": 4601, \"size\": 50}, {\"before\": 4551, \"size\": 50}, …]] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toHaveLength(expected)\n  \n  Expected length: 9\n  Received length: 100\n  Received array:  [{\"before\": null, \"size\": 50}, {\"before\": 4951, \"size\": 50}, {\"before\": 4901, \"size\": 50}, {\"before\": 4851, \"size\": 50}, {\"before\": 4801, \"size\": 50}, {\"before\": 4751, \"size\": 50}, {\"before\": 4701, \"size\": 50}, {\"before\": 4651, \"size\": 50}, {\"before\": 4601, \"size\": 50}, {\"before\": 4551, \"size\": 50}, …]"
+        },
+        {
+          "case": "a capped refresh keeps the older rows the reader loaded by hand",
+          "line": 365,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toHaveLength(expected)\n\nExpected length: 800\nReceived length: 500\nReceived array:  [{\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"body\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 301, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"body\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 302, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"body\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 303, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content\": \"body\", \"created_at\": \"2026-08-13 10:00:00\", \"id\": 304, \"issue_id\": 7, \"page_id\": null, \"updated_at\": \"2026-08-13 10:00:00\", \"user_id\": 3}, {\"author\": \"owner\", \"author_display_name\": \"Owner\", \"content"
+        },
+        {
+          "case": "reconciliation orders preserved rows by the same key the cursor uses",
+          "line": 397,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 0\n\n  Array [\n-   5,\n    6,\n    7,\n  ]] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toEqual(expected) // deep equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    Array [\n  -   5,\n      6,\n      7,\n    ]\n    matcherResult: {\n      actual: [ 6, 7 ],\n      expected: [ 5, 6, 7 ],\n      message: 'expect(received).toEqual(expected) // "
+        },
+        {
+          "case": "only the newest comment-window operation may write",
+          "line": 425,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 1\n+ Received  + 1\n\n  Array [\n-   \"newer truth\",\n+   \"stale truth\",\n  ]] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toEqual(expected) // deep equality\n  \n  - Expected  - 1\n  + Received  + 1\n  \n    Array [\n  -   \"newer truth\",\n  +   \"stale truth\",\n    ]\n    matcherResult: {\n      actual: [ 'stale truth' ],\n      expected: [ 'newer truth' ],\n      m"
+        },
+        {
+          "case": "a replacement window applies, re-reads, or stands down",
+          "line": 434,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: \"saved mutation\"\nReceived: \"before mutation\"] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: \"saved mutation\"\n  Received: \"before mutation\"\n    matcherResult: {\n      actual: 'before mutation',\n      expected: 'saved mutation',\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n  "
+        },
+        {
+          "case": "a failing anchor fetch is not retried until more comments arrive",
+          "line": 450,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 2\nReceived: 1] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 2\n  Received: 1\n    matcherResult: {\n      actual: 1,\n      expected: 2,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 2\\n' +\n        'Received: 1',\n      name: 'toBe',\n      pass"
+        },
+        {
+          "case": "a manual load older does not hand the automatic walk a fresh budget",
+          "line": 469,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 11\nReceived: 21] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 11\n  Received: 21\n    matcherResult: {\n      actual: 21,\n      expected: 11,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 11\\n' +\n        'Received: 21',\n      name: 'toBe',\n   "
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/context-menu.browser.test.js",
+      "counts": {
+        "tests": 21,
+        "failed": 7,
+        "passed": 14,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 21,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "context menu: actionable items have 44px touch targets",
+          "line": 14,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: The expression evaluated to a falsy value:\n\n  assert.ok((await menu(p).getByRole('menuitem').first().boundingBox()).height>=44)\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: The expression evaluated to a falsy value:\n  \n    assert.ok((await menu(p).getByRole('menuitem').first().boundingBox()).height>=44)\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: false,\n    expected: tr"
+        },
+        {
+          "case": "context menu: arrows/Home/End wrap and one item owns the roving tab stop",
+          "line": 15,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:\n\nnull !== '0'\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n  \n  null !== '0'\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: null,\n    expected: '0',\n    operator: 'strictEqual',\n    diff: 'simple'\n  }\n}"
+        },
+        {
+          "case": "context menu: hover moves keyboard focus and Enter invokes one action",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toBeFocused() failed\n\nLocator:  getByRole('menu', { name: 'Issue reference actions' }).getByRole('menuitem', { name: 'Open in new tab' })\nExpected: focused\nReceived: inactive\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.be.focused\" with timeout 5000ms\n  - waiting for getByRole('menu', { name: 'Issue reference actions' }).getByRole('menuitem', { name: 'Open in new tab' })\n    12 × locator resolved to <button type=\"button\" role=\"menuitem\">Open in new tab</button>\n       - unexpected value \"inactive\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toBeFocused() failed\n  \n  Locator:  getByRole('menu', { name: 'Issue reference actions' }).getByRole('menuitem', { name: 'Open in new tab' })\n  Expected: focused\n  Received: inactive\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.be.focused\" with timeout 5000ms\n    - waiting for getByRole('menu', { name: 'Issue reference actions' }).getByRole('menuitem"
+        },
+        {
+          "case": "context menu: nonfocusable right-click trigger temporarily gains tabindex",
+          "line": 21,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toBeFocused() failed\n\nLocator:  locator('#right-target')\nExpected: focused\nReceived: inactive\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.be.focused\" with timeout 5000ms\n  - waiting for locator('#right-target')\n    14 × locator resolved to <a id=\"right-target\" data-issue-ident=\"ACC-1\">Right click target</a>\n       - unexpected value \"inactive\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toBeFocused() failed\n  \n  Locator:  locator('#right-target')\n  Expected: focused\n  Received: inactive\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.be.focused\" with timeout 5000ms\n    - waiting for locator('#right-target')\n      14 × locator resolved to <a id=\"right-target\" data-issue-ident=\"ACC-1\">Right click target</a>\n         - unexpected value \"inactive\""
+        },
+        {
+          "case": "context menu: Settings profile response updates session user and appearance control",
+          "line": 37,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: \"After\"\nReceived: \"Acceptance Admin\"\n\nCall Log:\n- Timeout 5000ms exceeded while waiting on the predicate] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: \"After\"\n  Received: \"Acceptance Admin\"\n  \n  Call Log:\n  - Timeout 5000ms exceeded while waiting on the predicate\n    matcherResult: {\n      "
+        },
+        {
+          "case": "context menu: keyboard focus has a visible selected background",
+          "line": 39,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: Focused menu action must have a distinct background] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Focused menu action must have a distinct background\n    generatedMessage: false,\n    code: 'ERR_ASSERTION',\n    actual: 'rgba(0, 0, 0, 0)',\n    expected: 'rgba(0, 0, 0, 0)',\n    operator: 'notStrictEqual',\n    diff: 'simple'\n  }\n}"
+        },
+        {
+          "case": "context menu: unsupported empty contract stays open and inert until Escape",
+          "line": 45,
+          "category": "unsupported_configurable_menu_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n+ [\n+   \"Cannot read properties of undefined (reading 'focus')\",\n+   \"Cannot read properties of undefined (reading 'focus')\"\n+ ]\n- []\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n  + actual - expected\n  \n  + [\n  +   \"Cannot read properties of undefined (reading 'focus')\",\n  +   \"Cannot read properties of undefined (reading 'focus')\"\n  + ]\n  - []\n    generatedMessage: true,\n    code: 'ERR_ASSERTION',\n    actual: [\n      \"Cannot read properties of undefined (reading 'focus')\",\n      \"Cannot read properties of undefined (reading 'fo"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/insertSnippet.test.js",
+      "counts": {
+        "tests": 9,
+        "failed": 8,
+        "passed": 1,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 9,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "inserting into an empty composer adds no leading break",
+          "line": 19,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 1\n+ Received  + 0\n\n  ![shot.png](/api/attachments/7)\n-] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    ![shot.png](/api/attachments/7)\n  -\n    matcherResult: {\n      actual: '![shot.png](/api/attachments/7)',\n      expected: '![shot.png](/api/attachments/7)\\n',\n    "
+        },
+        {
+          "case": "inserting mid-line breaks onto its own block",
+          "line": 25,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 1\n+ Received  + 0\n\n  see this\n  ![shot.png](/api/attachments/7)\n-] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    see this\n    ![shot.png](/api/attachments/7)\n  -\n    matcherResult: {\n      actual: 'see this\\n![shot.png](/api/attachments/7)',\n      expected: 'see th"
+        },
+        {
+          "case": "inserting at the start of a fresh line keeps it inline",
+          "line": 33,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 1\n+ Received  + 0\n\n  intro\n  ![shot.png](/api/attachments/7)\n-] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    intro\n    ![shot.png](/api/attachments/7)\n  -\n    matcherResult: {\n      actual: 'intro\\n![shot.png](/api/attachments/7)',\n      expected: 'intro\\n![shot.p"
+        },
+        {
+          "case": "inserting in the middle keeps the tail and lands the caret before it",
+          "line": 42,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 39\nReceived: 38] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 39\n  Received: 38\n    matcherResult: {\n      actual: 38,\n      expected: 39,\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        'Expected: 39\\n' +\n        'Received: 38',\n      name: 'toBe',"
+        },
+        {
+          "case": "a selection is replaced, not pushed aside",
+          "line": 54,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 0\n+ Received  + 1\n\n+\n   keep] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 0\n  + Received  + 1\n  \n  +\n     keep\n    matcherResult: {\n      actual: '\\n keep',\n      expected: ' keep',\n      message: 'expect(received).toBe(expected) // Object.is equality\\n' +\n        '\\n' +\n        '- Expecte"
+        },
+        {
+          "case": "a backwards selection is normalised",
+          "line": 62,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toEqual(expected) // deep equality\n\n- Expected  - 2\n+ Received  + 2\n\n  Object {\n-   \"caret\": 37,\n-   \"text\": \"keep \n+   \"caret\": 41,\n+   \"text\": \"keep DROP\n  ![shot.png](/api/attachments/7)\n   keep\",\n  }] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toEqual(expected) // deep equality\n  \n  - Expected  - 2\n  + Received  + 2\n  \n    Object {\n  -   \"caret\": 37,\n  -   \"text\": \"keep \n  +   \"caret\": 41,\n  +   \"text\": \"keep DROP\n    ![shot.png](/api/attachments/7)\n     keep\",\n    }"
+        },
+        {
+          "case": "out-of-range offsets clamp to the text instead of throwing",
+          "line": 67,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 1\n+ Received  + 0\n\n  short\n  ![shot.png](/api/attachments/7)\n-] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    short\n    ![shot.png](/api/attachments/7)\n  -\n    matcherResult: {\n      actual: 'short\\n![shot.png](/api/attachments/7)',\n      expected: 'short\\n![shot.p"
+        },
+        {
+          "case": "consecutive inserts stack one per line",
+          "line": 79,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\n- Expected  - 1\n+ Received  + 0\n\n  ![a](/api/attachments/1)\n  ![b](/api/attachments/2)\n-] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  - Expected  - 1\n  + Received  + 0\n  \n    ![a](/api/attachments/1)\n    ![b](/api/attachments/2)\n  -\n    matcherResult: {\n      actual: '![a](/api/attachments/1)\\n![b](/api/attachments/2"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/issue-topbar.browser.test.js",
+      "counts": {
+        "tests": 19,
+        "failed": 19,
+        "passed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 19,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "issue toolbar at 360px: layout, filter and create centers align within one pixel without overflow",
+          "line": 7,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: {\"width\":360,\"boxes\":[{\"x\":25.59375,\"y\":540.59375,\"width\":187.140625,\"height\":31.78125},{\"x\":25.59375,\"y\":282.34375,\"width\":149.609375,\"height\":31.78125},{\"x\":249.984375,\"y\":694.90625,\"width\":84.421875,\"height\":62.78125}]}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: {\"width\":360,\"boxes\":[{\"x\":25.59375,\"y\":540.59375,\"width\":187.140625,\"height\":31.78125},{\"x\":25.59375,\"y\":282.34375,\"width\":149.609375,\"height\":31.78125},{\"x\":249.984375,\"y\":694.90625,\"width\":84.421875,\"height\":62.78125}]}\n    gen"
+        },
+        {
+          "case": "issue toolbar at 360px: View options expands and focuses Display controls",
+          "line": 8,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'View options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 360px: Quick create and New issue each invoke creation exactly once",
+          "line": 9,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'More create options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 360px: search expands, fits viewport and collapses on Escape",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'Search issues', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 640px: layout, filter and create centers align within one pixel without overflow",
+          "line": 7,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: {\"width\":640,\"boxes\":[{\"x\":263.953125,\"y\":363.09375,\"width\":228.78125,\"height\":31.78125},{\"x\":256.109375,\"y\":233.96875,\"width\":113.59375,\"height\":31.78125},{\"x\":249.984375,\"y\":469.03125,\"width\":118.953125,\"height\":38.78125}]}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: {\"width\":640,\"boxes\":[{\"x\":263.953125,\"y\":363.09375,\"width\":228.78125,\"height\":31.78125},{\"x\":256.109375,\"y\":233.96875,\"width\":113.59375,\"height\":31.78125},{\"x\":249.984375,\"y\":469.03125,\"width\":118.953125,\"height\":38.78125}]}\n   "
+        },
+        {
+          "case": "issue toolbar at 640px: View options expands and focuses Display controls",
+          "line": 8,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'View options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 640px: Quick create and New issue each invoke creation exactly once",
+          "line": 9,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'More create options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 640px: search expands, fits viewport and collapses on Escape",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'Search issues', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 700px: layout, filter and create centers align within one pixel without overflow",
+          "line": 7,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: {\"width\":700,\"boxes\":[{\"x\":32,\"y\":369.5,\"width\":77.59375,\"height\":31.78125},{\"x\":321.03125,\"y\":240.375,\"width\":113.59375,\"height\":31.78125},{\"x\":366.78125,\"y\":410.875,\"width\":118.953125,\"height\":38.78125}]}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: {\"width\":700,\"boxes\":[{\"x\":32,\"y\":369.5,\"width\":77.59375,\"height\":31.78125},{\"x\":321.03125,\"y\":240.375,\"width\":113.59375,\"height\":31.78125},{\"x\":366.78125,\"y\":410.875,\"width\":118.953125,\"height\":38.78125}]}\n    generatedMessage: false,\n    code: 'E"
+        },
+        {
+          "case": "issue toolbar at 700px: View options expands and focuses Display controls",
+          "line": 8,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'View options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 700px: Quick create and New issue each invoke creation exactly once",
+          "line": 9,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'More create options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 700px: search expands, fits viewport and collapses on Escape",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'Search issues', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 767px: layout, filter and create centers align within one pixel without overflow",
+          "line": 7,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: {\"width\":767,\"boxes\":[{\"x\":32,\"y\":369.5,\"width\":77.59375,\"height\":31.78125},{\"x\":388.03125,\"y\":240.375,\"width\":113.59375,\"height\":31.78125},{\"x\":256.390625,\"y\":410.875,\"width\":118.953125,\"height\":38.78125}]}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: {\"width\":767,\"boxes\":[{\"x\":32,\"y\":369.5,\"width\":77.59375,\"height\":31.78125},{\"x\":388.03125,\"y\":240.375,\"width\":113.59375,\"height\":31.78125},{\"x\":256.390625,\"y\":410.875,\"width\":118.953125,\"height\":38.78125}]}\n    generatedMessage: false,\n    code: "
+        },
+        {
+          "case": "issue toolbar at 767px: View options expands and focuses Display controls",
+          "line": 8,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'View options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'View options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 767px: Quick create and New issue each invoke creation exactly once",
+          "line": 9,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'More create options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 767px: search expands, fits viewport and collapses on Escape",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'Search issues', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 1200px: layout, filter and create centers align within one pixel without overflow",
+          "line": 7,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: {\"width\":1200,\"boxes\":[{\"x\":627.5625,\"y\":312.9375,\"width\":77.59375,\"height\":31.78125},{\"x\":525.65625,\"y\":248.375,\"width\":113.59375,\"height\":31.78125},{\"x\":711.96875,\"y\":370.5,\"width\":118.953125,\"height\":38.78125}]}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: {\"width\":1200,\"boxes\":[{\"x\":627.5625,\"y\":312.9375,\"width\":77.59375,\"height\":31.78125},{\"x\":525.65625,\"y\":248.375,\"width\":113.59375,\"height\":31.78125},{\"x\":711.96875,\"y\":370.5,\"width\":118.953125,\"height\":38.78125}]}\n    generatedMessage: fal"
+        },
+        {
+          "case": "issue toolbar at 1200px: Quick create and New issue each invoke creation exactly once",
+          "line": 9,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'More create options', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'More create options', exact: true })\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "issue toolbar at 1200px: search expands, fits viewport and collapses on Escape",
+          "line": 10,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for getByRole('button', { name: 'Search issues', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for getByRole('button', { name: 'Search issues', exact: true })\"\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/peek-permissions.browser.test.js",
+      "counts": {
+        "tests": 5,
+        "failed": 5,
+        "passed": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 5,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "peek permissions: viewer",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByText('Read-only access', { exact: true }) to be visible\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByText('Read-only access', { exact: true }) to be visible\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('dialog.tc-issue-picker').getByText('Read-only access', { exact: true }) to be visible\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "peek permissions: maintainer",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "peek permissions: admin",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "peek permissions: legacy",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('dialog.tc-issue-picker').getByRole('button', { name: 'Viewer preview fixture', exact: true }) to be visible\"\n    ]\n  }\n}"
+        },
+        {
+          "case": "peek permissions: unavailable",
+          "line": 18,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.waitFor: Timeout 1500ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByText('Editing permissions could not be checked.', { exact: true }) to be visible\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.waitFor: Timeout 1500ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('dialog.tc-issue-picker').getByText('Editing permissions could not be checked.', { exact: true }) to be visible\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('dialog.tc-issue-picker').getByText('Editing permissions could not be checked.', { exact: true }) to be visible\"\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/pendingPatch.test.js",
+      "counts": {
+        "tests": 13,
+        "failed": 1,
+        "passed": 12,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 13,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "a failed replay retains an edit made during it",
+          "line": 39,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toContain(expected) // indexOf\n\nExpected value: \"session_lifetime_days\"\nReceived array: []] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toContain(expected) // indexOf\n  \n  Expected value: \"session_lifetime_days\"\n  Received array: []\n    matcherResult: {\n      message: 'expect(received).toContain(expected) // indexOf\\n' +\n        '\\n' +\n        'Expected value: \"session_lifetime_days\"\\n' +\n "
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/real.browser.test.js",
+      "counts": {
+        "tests": 18,
+        "failed": 5,
+        "passed": 13,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 9,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "issue waits: add a person with note through detail UI (LIF-485)",
+          "line": 33,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toContainText(expected) failed\n\nLocator: locator('[data-wait-list] li').filter({ hasText: 'Decide the scope' })\nExpected substring: \"@acceptance-admin\"\nReceived string:    \"Waiting for Acceptance Admin · holding · Decide the scopeClear\"\nTimeout: 5000ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 5000ms\n  - waiting for locator('[data-wait-list] li').filter({ hasText: 'Decide the scope' })\n    14 × locator resolved to <li data-wait-id=\"1\">…</li>\n       - unexpected value \"Waiting for Acceptance Admin · holding · Decide the scopeClear\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toContainText(expected) failed\n  \n  Locator: locator('[data-wait-list] li').filter({ hasText: 'Decide the scope' })\n  Expected substring: \"@acceptance-admin\"\n  Received string:    \"Waiting for Acceptance Admin · holding · Decide the scopeClear\"\n  Timeout: 5000ms\n  \n  Call log:\n    - Expect \"to.have.text\" with tim"
+        },
+        {
+          "case": "issue waits: add expired date window and show overdue headline and note (LIF-485)",
+          "line": 36,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toContainText(expected) failed\n\nLocator: locator('[data-wait-list] li').filter({ hasText: 'State filing office' })\nExpected substring: \"Overdue since\"\nReceived string:    \"Waiting 2026-09-29 through 2026-10-02 · overdue · State filing officeClear\"\nTimeout: 5000ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 5000ms\n  - waiting for locator('[data-wait-list] li').filter({ hasText: 'State filing office' })\n    14 × locator resolved to <li data-wait-id=\"2\">…</li>\n       - unexpected value \"Waiting 2026-09-29 through 2026-10-02 · overdue · State filing officeClear\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toContainText(expected) failed\n  \n  Locator: locator('[data-wait-list] li').filter({ hasText: 'State filing office' })\n  Expected substring: \"Overdue since\"\n  Received string:    \"Waiting 2026-09-29 through 2026-10-02 · overdue · State filing officeClear\"\n  Timeout: 5000ms\n  \n  Call log:"
+        },
+        {
+          "case": "issue waits: issues indicator names both waits and distinguishes overdue (LIF-485)",
+          "line": 39,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toHaveCount(expected) failed\n\nLocator:  locator('[data-issue-id=\"4\"]').locator('.tc-issues__wait')\nExpected: 1\nReceived: 2\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.have.count\" with timeout 5000ms\n  - waiting for locator('[data-issue-id=\"4\"]').locator('.tc-issues__wait')\n    14 × locator resolved to 2 elements\n       - unexpected value \"2\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toHaveCount(expected) failed\n  \n  Locator:  locator('[data-issue-id=\"4\"]').locator('.tc-issues__wait')\n  Expected: 1\n  Received: 2\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.have.count\" with timeout 5000ms\n    - waiting for locator('[data-issue-id=\"4\"]').locator('.tc-issues__wait')\n      14 × locator resolved to 2 elements\n         - unexpected value \"2\""
+        },
+        {
+          "case": "issue waits: board indicator names both waits and distinguishes overdue (LIF-485)",
+          "line": 39,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(locator).toHaveCount(expected) failed\n\nLocator:  locator('[data-issue-id=\"5\"]').locator('.tc-issues__wait')\nExpected: 1\nReceived: 2\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.have.count\" with timeout 5000ms\n  - waiting for locator('[data-issue-id=\"5\"]').locator('.tc-issues__wait')\n    14 × locator resolved to 2 elements\n       - unexpected value \"2\"\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toHaveCount(expected) failed\n  \n  Locator:  locator('[data-issue-id=\"5\"]').locator('.tc-issues__wait')\n  Expected: 1\n  Received: 2\n  Timeout:  5000ms\n  \n  Call log:\n    - Expect \"to.have.count\" with timeout 5000ms\n    - waiting for locator('[data-issue-id=\"5\"]').locator('.tc-issues__wait')\n      14 × locator resolved to 2 elements\n         - unexpected value \"2\""
+        },
+        {
+          "case": "duplicate relations: forward navigation and reverse link on desktop and mobile",
+          "line": 47,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: locator.click: Timeout 3000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[data-relation-list] li').filter({ hasText: 'Duplicate of' }).getByRole('link', { name: 'ACC-8', exact: true })\u001b[22m\n] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: locator.click: Timeout 3000ms exceeded.\n  Call log:\n  \u001b[2m  - waiting for locator('[data-relation-list] li').filter({ hasText: 'Duplicate of' }).getByRole('link', { name: 'ACC-8', exact: true })\u001b[22m\n    name: 'TimeoutError',\n    log: [\n      \"  - waiting for locator('[data-relation-list] li').filter({ hasText: 'Duplicate of' }).getByRole('link', { name: 'ACC-8', exact: true })\"\n    ]\n  }\n}"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/saveQueue.test.js",
+      "counts": {
+        "tests": 7,
+        "failed": 4,
+        "passed": 3,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 1,
+        "suites": 1
+      },
+      "failures": [
+        {
+          "case": "an edit made during an in-flight save is not dropped",
+          "line": 29,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n}"
+        },
+        {
+          "case": "queued patches coalesce, last write winning per field",
+          "line": 41,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n}"
+        },
+        {
+          "case": "everyone who pushed into a coalesced batch learns how it went",
+          "line": 56,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n}"
+        },
+        {
+          "case": "an edit arriving after dispatch is not merged into the sent patch",
+          "line": 94,
+          "category": "controller_contract",
+          "evidence": "[Error [ERR_TEST_FAILURE]: settings save did not settle while the next save was still in flight] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: settings save did not settle while the next save was still in flight\n}"
+        }
+      ]
+    },
+    {
+      "path": "src/topcoat/tests/main/issues/waits.browser.test.js",
+      "counts": {
+        "tests": 11,
+        "failed": 5,
+        "passed": 6,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0,
+        "topLevel": 8,
+        "suites": 0
+      },
+      "failures": [
+        {
+          "case": "windows collapse a shared month",
+          "line": 16,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toContain(expected) // indexOf\n\nExpected substring: \"28 to 29\"\nReceived string:    \"<li data-wait-id=\\\"1\\\"><span>Waiting 2026-09-28 through 2026-09-29 · holding</span></li>\"] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toContain(expected) // indexOf\n  \n  Expected substring: \"28 to 29\"\n  Received string:    \"<li data-wait-id=\\\"1\\\"><span>Waiting 2026-09-28 through 2026-09-29 · holding</span></li>\""
+        },
+        {
+          "case": "the detail headline names the state",
+          "line": 17,
+          "category": "observable_browser_behavior",
+          "evidence": "[Error [ERR_TEST_FAILURE]: expect(received).toContain(expected) // indexOf\n\nExpected substring: \"Waiting on Blake (@blake)\"\nReceived string:    \"<li data-wait-id=\\\"2\\\"><span>Waiting for Blake · holding · real-device check</span></li>\"] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toContain(expected) // indexOf\n  \n  Expected substring: \"Waiting on Blake (@blake)\"\n  Received string:    \"<li data-wait-id=\\\"2\\\"><span>Waiting for Blake · holding · real-device check</span></li>\""
+        },
+        {
+          "case": "a user-only summary is the username",
+          "line": 20,
+          "category": "observable_browser_behavior",
+          "evidence": "Error [ERR_TEST_FAILURE]: expect(locator).toHaveText(expected) failed\n\nLocator:  locator('[data-issue-id=\"10\"]').locator('.tc-issues__wait')\nExpected: \"@acceptance-admin\"\nReceived: \"holding: Acceptance Admin · real-device check\"\nTimeout:  5000ms\n\nCall log:\n  - Expect \"to.have.text\" with timeout 5000ms\n  - waiting for locator('[data-issue-id=\"10\"]').locator('.tc-issues__wait')\n    14 × locator resolved to <span class=\"tc-issues__wait\">holding: Acceptance Admin · real-device check</span>\n       - unexpected value \"holding: Acceptance Admin · real-device check\"\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(locator).toHaveText(expected) failed\n  \n  Locator:  locator('[data-issue-id=\"10\"]').locator('.tc-issues__wait')\n  Expected: \"@acceptance-admin\"\n  Received: \"holding: Acceptance Admin · real-device check\"\n  Timeout"
+        },
+        {
+          "case": "the most pressing date carries the other user wait",
+          "line": 21,
+          "category": "observable_browser_behavior",
+          "evidence": "Error [ERR_TEST_FAILURE]: expect(received).toBe(expected) // Object.is equality\n\nExpected: 1\nReceived: 2\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: Error: expect(received).toBe(expected) // Object.is equality\n  \n  Expected: 1\n  Received: 2"
+        }
+      ]
+    }
+  ],
+  "unresolvedAdapters": [],
+  "classificationNotes": [
+    "Failing assertions stay active. No test skip, missing-export sentinel or old production implementation was added.",
+    "Internal controller contracts are recorded separately from browser outcomes; parent orchestration may already enforce some safety guarantees. Product regression classification requires independent review.",
+    "Sequential original e2e phases were split where possible; assertions behind missing-feature failures remain in source and are not claimed as executed successes.",
+    "Owned consolidated counts combine latest full-file evidence with final changed theme-only evidence; root will run the complete translated suite after freeze.",
+    "Independent review corrected missing empty/single-user wait summaries and pageerror listeners. Disabled-only and empty shipped-menu DOM states preserve original open/inert requirements but are unreachable via current public menu configuration; failures are unsupported component contracts."
+  ]
+}

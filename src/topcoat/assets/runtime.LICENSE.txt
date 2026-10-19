@@ -1,0 +1,31 @@
+MIT License
+
+Copyright (c) 2026 Julien Scholz
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the “Software”), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Vendored file provenance
+
+- Cargo dependencies pin `topcoat-runtime` 0.10.0 to `e2444306b237c9b771ec33f76f9ae891392a0554`; this is not a crates.io archive.
+- Packaged JavaScript baseline: <https://github.com/mjc/topcoat/blob/8c3e6adee4694b504e6df13c90428666100ea167/crates/topcoat-runtime/browser/dist/index.js> (SHA-256 `ca88337f3e12d9654c570bfe90d8474cea9abad3264824ba20f44fb43f2e3495`).
+- JSON hydration marker parser source: <https://github.com/mjc/topcoat/blob/e2444306b237c9b771ec33f76f9ae891392a0554/crates/topcoat-runtime/browser/dist/index.js> (bundle SHA-256 `1669db19b20e4ba055b00691c7264fd3baa6b19c3c0c670e2de8791a6048c629`).
+- Packaged `assets/runtime.js` SHA-256: `b3fa177e3ea2875cfb0e3bfd6e5f380740e51e3daba50e8dc0073d0a2a11de77`.
+- Lific prepends the mounted-endpoint, navigation-owner, and scoped-mount helpers, then applies forty-four reversible transformations. They cover mounted HTTP paths and logical page Run paths, no-HTTP-fallback connected refresh, raw compact signal JSON with legacy-only comment decoding, JSON expression and shard marker parsing, scoped `@mount` and ordinary event contexts, native Event access, vector signal writes and helpers, Unicode uppercase/scalar operations, ECMAScript trimming, procedure keepalive/manual redirects, document-wide redirect arbitration including runless socket redirects, scoped render-error events, fresh page socket ownership, programmatic native navigation, and cancellable page-owner commit/transfer events.
+- The fork bundle already contains compact signal marker parsing, deferred local closures, tuple surrogates, and the shared document WebSocket Run/Stop protocol; the Lific patches retain those implementations.
+- `transport.test.cjs` reconstructs the original baseline by removing the exact helper prefix and reversing each declared transformation, then checks its SHA-256. Node VM tests cover the packaged JSON marker parser without a browser.

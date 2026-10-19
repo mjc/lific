@@ -1,4 +1,5 @@
 /target
+node_modules/
 /.devenv/
 /devenv.local.nix
 /devenv.local.yaml
@@ -9,6 +10,8 @@
 # LIF-262: runtime attachment blobs (content-addressed sidecar dir) live next
 # to the database; never commit a dev instance's uploads.
 /attachments/
+# Archived projects' files, beside the database like attachments.
+/archived-projects/
 .env
 AGENTS.md
 .openchamber

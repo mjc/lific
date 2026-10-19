@@ -49,10 +49,13 @@ pub struct AttachmentConfig {
     pub max_bytes: usize,
 }
 
+/// Largest attachment accepted by default, in bytes.
+pub const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+
 impl Default for AttachmentConfig {
     fn default() -> Self {
         Self {
-            max_bytes: 10 * 1024 * 1024,
+            max_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
         }
     }
 }
@@ -426,11 +429,7 @@ pub(super) async fn list_project_attachments(
     Path(project_id): Path<i64>,
     Query(query): Query<ProjectAttachmentQuery>,
 ) -> Result<axum::Json<ProjectAttachmentPage>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    with_read(&db, |conn| {
-        q::list_project_attachments(conn, project_id, &query)
-    })
-    .map(axum::Json)
+    crate::services::files::list_project_files(&db, &identity, project_id, &query).map(axum::Json)
 }
 
 /// `GET /api/projects/{id}/attachments/orphans` — uploads by this project's
@@ -443,16 +442,7 @@ pub(super) async fn list_project_orphans(
     Extension(identity): Extension<Option<crate::resolve_caller::ResolvedIdentity>>,
     Path(project_id): Path<i64>,
 ) -> Result<axum::Json<PendingOrphanList>, LificError> {
-    authz::require_role(&db, &identity, project_id, Role::Viewer)?;
-    let items = with_read(&db, |conn| {
-        q::list_project_orphans(conn, project_id, storage::ORPHAN_GRACE_SECONDS)
-    })?;
-    let total_bytes = items.iter().map(|orphan| orphan.size_bytes).sum();
-    Ok(axum::Json(PendingOrphanList {
-        items,
-        grace_seconds: storage::ORPHAN_GRACE_SECONDS,
-        total_bytes,
-    }))
+    crate::services::files::list_project_orphans(&db, &identity, project_id).map(axum::Json)
 }
 
 /// `GET /api/attachments/{id}` — stream the bytes with the correct
@@ -480,13 +470,17 @@ pub(super) async fn download_attachment(
     headers: axum::http::HeaderMap,
     Path(id): Path<i64>,
 ) -> Result<Response, LificError> {
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
+    crate::services::files::download_response(&db, &store, &identity, id, &headers)
+}
 
-    // Authorize: the caller must be able to view SOME project this attachment
-    // is linked into (Viewer), or be the uploader / an admin for a still-
-    // unlinked attachment.
-    authorize_read(&db, &identity, &attachment)?;
-
+/// Shared byte-response policy used by REST and native mounted downloads.
+/// Authorization and metadata lookup happen in `services::files` against a
+/// fresh identity before this helper reads the content-addressed blob.
+pub(crate) fn attachment_bytes_response(
+    attachment: &Attachment,
+    store: &AttachmentStore,
+    headers: &axum::http::HeaderMap,
+) -> Result<Response, LificError> {
     let bytes = store.read(&attachment.sha256)?;
     let total = bytes.len() as u64;
     let inline_safe = storage::is_inline_safe_mime(&attachment.mime);
@@ -566,7 +560,7 @@ pub(super) async fn download_attachment(
 
 /// What a `Range` header asked for, resolved against the resource length.
 #[derive(Debug, PartialEq, Eq)]
-enum RangeRequest {
+pub(super) enum RangeRequest {
     /// Serve the entire resource with a 200. Also the answer for a header we
     /// are entitled to ignore.
     Whole,
@@ -588,7 +582,7 @@ enum RangeRequest {
 /// ignore a multi-range request rather than build a multipart body. Only a
 /// well-formed range that points outside the resource is a 416, because that
 /// one is a genuine client error rather than a capability gap.
-fn parse_range(value: &str, total: u64) -> RangeRequest {
+pub(super) fn parse_range(value: &str, total: u64) -> RangeRequest {
     let Some(spec) = value.trim().strip_prefix("bytes=") else {
         return RangeRequest::Whole;
     };
@@ -779,46 +773,22 @@ pub(super) async fn delete_attachment(
     Extension(store): Extension<AttachmentStore>,
     Path(id): Path<i64>,
 ) -> Result<axum::Json<serde_json::Value>, LificError> {
-    let user = require_user(&identity)?;
-    let attachment = with_read(&db, |conn| q::get_attachment(conn, id))?;
-
-    authorize_delete(&db, &identity, &user, &attachment)?;
-
-    let events = store
-        .try_with_lock(|store| {
-            let events = with_write(&db, |conn| {
-                let events = linked_attachment_events(conn, id)?;
-                q::delete_attachment(conn, id)?;
-                Ok(events)
-            })?;
-
-            // GC the sidecar only when no remaining row references the same bytes.
-            let remaining = with_read(&db, |conn| q::count_rows_for_sha(conn, &attachment.sha256))?;
-            if remaining == 0 {
-                store.delete_unlocked(&attachment.sha256)?;
-            }
-            Ok(events)
-        })?
-        .ok_or_else(AttachmentStore::busy_error)?;
-    for event in events {
-        realtime.send(event);
-    }
-
+    let _reference_count = crate::services::files::delete(&db, &realtime, &store, &identity, id)?;
     Ok(axum::Json(serde_json::json!({ "deleted": true })))
 }
 
 // ── Where-used + dedup (LIF-418) ─────────────────────────────
 
-/// One place an attachment is referenced from. `identifier` is the
-/// human-facing key (`LIF-12`, `LIF-DOC-3`) where the entity has one, and null
-/// for a comment, which is addressed through its parent rather than in its own
-/// right.
+/// One place an attachment is referenced from. For comments, `identifier` and
+/// `page_id` describe the parent route, while `entity_id` remains the comment
+/// ID. `title` is the comment excerpt used in the where-used list.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LinkedEntity {
     pub entity_type: String,
     pub entity_id: i64,
     pub identifier: Option<String>,
     pub title: String,
+    pub page_id: Option<i64>,
 }
 
 /// Another attachment row over the same bytes, with its own usages.
@@ -934,6 +904,7 @@ fn describe_entity(
                             entity_id,
                             identifier: Some(issue.identifier),
                             title: issue.title,
+                            page_id: None,
                         })
                 }
                 AttachmentEntity::Page => {
@@ -944,17 +915,31 @@ fn describe_entity(
                             entity_id,
                             identifier: Some(page.identifier),
                             title: page.title,
+                            page_id: Some(page.id),
                         })
                 }
                 AttachmentEntity::Comment => queries::comments::get_comment(conn, entity_id)
                     .ok()
-                    .map(|comment| LinkedEntity {
-                        entity_type: "comment".into(),
-                        entity_id,
-                        // A comment is not addressable by identifier; the client
-                        // navigates to it through its parent issue or page.
-                        identifier: None,
-                        title: comment_title(&comment.content),
+                    .map(|comment| {
+                        let parent = if let Some(issue_id) = comment.issue_id {
+                            queries::get_issue(conn, issue_id)
+                                .ok()
+                                .map(|issue| (Some(issue.identifier), None))
+                        } else if let Some(page_id) = comment.page_id {
+                            queries::get_page(conn, page_id)
+                                .ok()
+                                .map(|page| (Some(page.identifier), Some(page.id)))
+                        } else {
+                            None
+                        };
+                        let (identifier, page_id) = parent.unwrap_or((None, None));
+                        LinkedEntity {
+                            entity_type: "comment".into(),
+                            entity_id,
+                            identifier,
+                            title: comment_title(&comment.content),
+                            page_id,
+                        }
                     }),
             };
         Ok(described)
@@ -1036,34 +1021,6 @@ pub(crate) fn linked_entity_event(
             Err(error) => Err(error),
         },
     }
-}
-
-/// Snapshot all affected issue/page entities before an attachment's link rows
-/// cascade away. A single attachment can affect multiple projects.
-fn linked_attachment_events(
-    conn: &rusqlite::Connection,
-    attachment_id: i64,
-) -> Result<Vec<RealtimeEvent>, LificError> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT entity_type, entity_id FROM attachment_links WHERE attachment_id = ?1",
-    )?;
-    let links: Vec<(String, i64)> = stmt
-        .query_map([attachment_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut events = Vec::new();
-    for (entity_type, entity_id) in links {
-        let event = match entity_type.parse::<AttachmentEntity>() {
-            Ok(entity) => linked_entity_event(conn, entity, entity_id)?,
-            Err(_) => None,
-        };
-        if let Some(event) = event
-            && !events.contains(&event)
-        {
-            events.push(event);
-        }
-    }
-    Ok(events)
 }
 
 // ── Authorization helpers ────────────────────────────────────
@@ -2725,6 +2682,31 @@ mod media_tests {
         }
     }
 
+    #[tokio::test]
+    async fn audio_mp4_upload_persists_and_reads_as_audio() {
+        let app = test_app();
+        let bytes = mp4_bytes();
+        let response = upload(&app, "voice.m4a", "audio/mp4", &bytes, None).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let row = parse_json(response).await;
+        assert_eq!(row["mime"], "audio/mp4");
+        let id = row["id"].as_i64().unwrap();
+        let response = json_get(&app, &format!("/api/attachments/{id}")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            header(&response, "content-type").as_deref(),
+            Some("audio/mp4")
+        );
+        assert!(
+            header(&response, "content-disposition")
+                .unwrap()
+                .starts_with("inline")
+        );
+        assert_eq!(body_bytes(response).await, bytes);
+        let response = upload(&app, "invalid.m4a", "audio/mp4", b"\x7FELF....", None).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     // ── Range requests ───────────────────────────────────────
 
     #[tokio::test]
@@ -3303,16 +3285,14 @@ mod media_tests {
             .unwrap();
         assert_eq!(page["title"], "Runbook");
         assert!(page["identifier"].as_str().unwrap().contains("-DOC-"));
+        assert_eq!(page["page_id"], page_id);
 
         let comment = entities
             .iter()
             .find(|e| e["entity_type"] == "comment")
             .unwrap();
-        assert_eq!(
-            comment["identifier"],
-            serde_json::Value::Null,
-            "a comment is reached through its parent, not by identifier"
-        );
+        assert_eq!(comment["identifier"], issue["identifier"]);
+        assert_eq!(comment["page_id"], serde_json::Value::Null);
         assert_eq!(comment["title"], "see this");
 
         assert!(links["duplicates"].as_array().unwrap().is_empty());
@@ -3321,10 +3301,10 @@ mod media_tests {
     /// Two uploads of identical bytes are two rows over one blob. The point
     /// of the duplicates list is telling the caller the file is already here.
     #[tokio::test]
-    async fn duplicates_surface_other_rows_over_the_same_bytes() {
+    async fn primary_and_duplicate_comment_usages_include_parent_routes() {
         let app = test_app();
         let (project_id, _) = seed_project(&app).await;
-        let issue_id = parse_json(
+        let issue = parse_json(
             json_post(
                 &app,
                 "/api/issues",
@@ -3332,38 +3312,73 @@ mod media_tests {
             )
             .await,
         )
-        .await["id"]
-            .as_i64()
-            .unwrap();
+        .await;
+        let issue_id = issue["id"].as_i64().unwrap();
 
         let bytes = png_image(24, 24);
-        let first = parse_json(
-            upload(
+        let page = parse_json(
+            json_post(
                 &app,
-                "a.png",
-                "image/png",
-                &bytes,
-                Some(("issue", issue_id)),
+                "/api/pages",
+                serde_json::json!({ "project_id": project_id, "title": "Duplicate home" }),
             )
             .await,
         )
-        .await["id"]
+        .await;
+        let page_id = page["id"].as_i64().unwrap();
+
+        let first = parse_json(upload(&app, "a.png", "image/png", &bytes, None).await).await["id"]
             .as_i64()
             .unwrap();
+        json_post(
+            &app,
+            &format!("/api/issues/{issue_id}/comments"),
+            serde_json::json!({ "content": format!("Issue comment links /api/attachments/{first}") }),
+        )
+        .await;
         let second =
             parse_json(upload(&app, "again.png", "image/png", &bytes, None).await).await["id"]
                 .as_i64()
                 .unwrap();
+        json_post(
+            &app,
+            &format!("/api/pages/{page_id}/comments"),
+            serde_json::json!({ "content": format!("Page comment links /api/attachments/{second}") }),
+        )
+        .await;
         assert_ne!(first, second);
 
         let links =
             parse_json(json_get(&app, &format!("/api/attachments/{second}/links")).await).await;
-        assert!(links["entities"].as_array().unwrap().is_empty());
+        let primary_comment = links["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["entity_type"] == "comment")
+            .unwrap();
+        assert_eq!(primary_comment["identifier"], page["identifier"]);
+        assert_eq!(primary_comment["page_id"], page_id);
+        assert_eq!(
+            primary_comment["title"],
+            format!("Page comment links /api/attachments/{second}")
+        );
+
         let dupes = links["duplicates"].as_array().unwrap();
         assert_eq!(dupes.len(), 1);
         assert_eq!(dupes[0]["attachment_id"], first);
         assert_eq!(dupes[0]["filename"], "a.png");
-        assert_eq!(dupes[0]["entities"][0]["title"], "Original home");
+        let duplicate_comment = dupes[0]["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entity| entity["entity_type"] == "comment")
+            .unwrap();
+        assert_eq!(duplicate_comment["identifier"], issue["identifier"]);
+        assert_eq!(duplicate_comment["page_id"], serde_json::Value::Null);
+        assert_eq!(
+            duplicate_comment["title"],
+            format!("Issue comment links /api/attachments/{first}")
+        );
     }
 
     /// The duplicate list must never become a read oracle: a caller who

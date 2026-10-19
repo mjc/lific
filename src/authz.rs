@@ -281,11 +281,21 @@ pub fn require_structure_role(
     identity: &Option<ResolvedIdentity>,
     project_id: i64,
 ) -> Result<(), LificError> {
-    if authz_enforced(db)? {
-        require_role(db, identity, project_id, Role::Maintainer)
+    let conn = db.read()?;
+    require_structure_role_conn(&conn, identity, project_id)
+}
+
+pub(crate) fn require_structure_role_conn(
+    conn: &Connection,
+    identity: &Option<ResolvedIdentity>,
+    project_id: i64,
+) -> Result<(), LificError> {
+    let minimum = if authz_enforced_conn(conn)? {
+        Role::Maintainer
     } else {
-        require_role(db, identity, project_id, Role::Lead)
-    }
+        Role::Lead
+    };
+    require_role_conn(conn, identity, project_id, minimum)
 }
 
 /// LIF-197: gate for `DELETE /api/projects/{id}`. Pre-LIF-194 this was
@@ -400,19 +410,27 @@ pub fn visible_project_ids(
     identity: &Option<ResolvedIdentity>,
 ) -> Result<Option<HashSet<i64>>, LificError> {
     let conn = db.read()?;
+    visible_project_ids_conn(&conn, identity)
+}
 
-    let effective = effective_user(&conn, &user_of(identity));
+/// Use the caller's existing snapshot, including a transaction that writes an
+/// issue and projects its authorized response before committing.
+pub(crate) fn visible_project_ids_conn(
+    conn: &Connection,
+    identity: &Option<ResolvedIdentity>,
+) -> Result<Option<HashSet<i64>>, LificError> {
+    let effective = effective_user(conn, &user_of(identity));
     if matches!(&effective, Some(u) if u.is_admin) {
         return Ok(None);
     }
-    if !authz_enforced_conn(&conn)? {
+    if !authz_enforced_conn(conn)? {
         return Ok(None);
     }
     let Some(user) = effective else {
         return Ok(Some(HashSet::new()));
     };
 
-    let ids = queries::members::list_project_ids_for_user(&conn, user.id)?;
+    let ids = queries::members::list_project_ids_for_user(conn, user.id)?;
     Ok(Some(ids.into_iter().collect()))
 }
 

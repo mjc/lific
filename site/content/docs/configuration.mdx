@@ -104,7 +104,7 @@ Attachments are stored in a directory named `attachments` next to the database f
 
 ## `[backup]`
 
-Automatic backups run only while `lific start` is serving. Five seconds after startup the server writes the first archive, then writes another every `interval_minutes`. Each one has the same format as [`lific dump`](/docs/cli#dump).
+Automatic backups run from any process that opens the database directly: `lific start`, the stdio MCP server `lific mcp`, and local data commands such as `lific issue list`. A backup is due when the newest archive in `dir` is at least `interval_minutes` old. The server and stdio sessions check five seconds after startup and then on schedule; a data command checks after it finishes. When several processes share a database, only one of them writes each archive. Each one has the same format as [`lific dump`](/docs/cli#dump).
 
 | Key | Type | Default | What it does |
 | --- | --- | --- | --- |

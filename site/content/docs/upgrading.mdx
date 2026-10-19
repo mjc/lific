@@ -31,6 +31,7 @@ Read each section under [Release notes](#release-notes) for versions newer than 
 | Scripts or agents with API keys | [v2.7](#v27) moved key and account creation to browser sessions and the local CLI, and made password resets revoke keys. |
 | `lific login` on other machines | Before a server moves to [v2.8](#v28) or later, upgrade those CLIs first. |
 | Multi-instance MCP | From [v2.9](#v29), every backend must have identical tool definitions. Upgrade them together before restarting the proxy. |
+| Agents running `lific mcp` over stdio | From [v2.11](#v211), stop every process that opens the database, agent sessions included, and upgrade them all together. |
 
 `lific doctor` reports pending migrations without applying them. `lific doctor --repair` does apply them, so only run it after taking the backup.
 
@@ -64,6 +65,16 @@ Migrations run on this first start.
 ## Release notes
 
 Newest first. Each section lists what changed for someone upgrading past that version.
+
+### v2.11
+
+Seven migrations run on first start. One of them rebuilds the attachments table, so a database with many attachments takes a little longer to open the first time. Take a backup first: a 2.10 binary refuses the upgraded database, so going back means restoring it.
+
+- **Stop everything that opens the database.** That includes `lific mcp` processes your agents started, not only the service. API keys created, rotated or used under 2.11 switch to a SHA-256 verifier that older binaries cannot check, so a 2.10 process left running would start rejecting them. Upgrade the server and every CLI that shares the database together.
+- **Very old unused keys are revoked.** Keys created before Lific 1.0 that have not authenticated since are revoked by the upgrade. Every other key keeps working and is converted on its next use. Run `lific key list` afterwards and replace any revoked key you still need.
+- **MCP tools reject unknown parameters.** Every tool now answers an unrecognized field with an error that suggests the right name, where it used to ignore it. Automation that sent extra fields must drop them.
+- **Backups run from stdio and the CLI.** With `[backup]` enabled, `lific mcp` over stdio and local data commands now write archives on the same schedule as the server, so an instance used only by agents starts getting backups. Restarting the server no longer forces one.
+- **`cargo install lific` works without `--locked` again.** 2.10.0 failed to build that way.
 
 ### v2.10
 
